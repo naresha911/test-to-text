@@ -14,7 +14,45 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      papers: {
+        Row: {
+          created_at: string
+          exam: string | null
+          id: string
+          image_paths: string[]
+          notes: string | null
+          questions: Json
+          subject: string | null
+          title: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          exam?: string | null
+          id?: string
+          image_paths?: string[]
+          notes?: string | null
+          questions?: Json
+          subject?: string | null
+          title?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          exam?: string | null
+          id?: string
+          image_paths?: string[]
+          notes?: string | null
+          questions?: Json
+          subject?: string | null
+          title?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
