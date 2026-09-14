@@ -1,0 +1,20 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1789372896498,
+      "tag": "0000_create_papers",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1789372937303,
+      "tag": "0001_paper_images_storage_policies",
+      "breakpoints": true
+    }
+  ]
+}
