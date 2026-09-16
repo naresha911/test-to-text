@@ -4,7 +4,7 @@ import { ArrowLeft, Download, Loader2, ScanText, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
-import { QuestionCard } from "@/components/questions/QuestionCard";
+import { PageReview } from "@/components/questions/PageReview";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/useAuth";
@@ -44,6 +44,7 @@ type PaperRow = {
   exam: string | null;
   notes: string | null;
   questions: unknown;
+  image_paths: string[];
   created_at: string;
 };
 
@@ -60,11 +61,14 @@ function figurePaths(questions: Question[]): string[] {
 }
 
 function PaperDetail({ paper }: { paper: PaperRow }) {
-  const questions = (Array.isArray(paper.questions) ? paper.questions : []) as Question[];
+  const queryClient = useQueryClient();
+  const [questions, setQuestions] = useState(
+    (Array.isArray(paper.questions) ? paper.questions : []) as Question[],
+  );
   const [urls, setUrls] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    const paths = figurePaths(questions);
+    const paths = [...paper.image_paths, ...figurePaths(questions)];
     if (!paths.length) return;
     let active = true;
     void supabase.storage
@@ -84,6 +88,24 @@ function PaperDetail({ paper }: { paper: PaperRow }) {
   const counts = new Map<QuestionType, number>();
   for (const question of questions) counts.set(question.type, (counts.get(question.type) ?? 0) + 1);
 
+  async function setApproved(questionId: string, approved: boolean) {
+    const previous = questions;
+    const next = questions.map((question) =>
+      question.id === questionId ? { ...question, approved } : question,
+    );
+    setQuestions(next);
+    const { error } = await supabase
+      .from("papers")
+      .update({ questions: JSON.parse(JSON.stringify(next)) })
+      .eq("id", paper.id);
+    if (error) {
+      setQuestions(previous);
+      toast.error("Could not update the approval status.");
+      return;
+    }
+    void queryClient.invalidateQueries({ queryKey: ["papers"] });
+  }
+
   return (
     <div className="mt-4 space-y-4">
       <div className="flex flex-wrap gap-2">
@@ -93,14 +115,12 @@ function PaperDetail({ paper }: { paper: PaperRow }) {
           </Badge>
         ))}
       </div>
-      {questions.map((question, index) => (
-        <QuestionCard
-          key={question.id ?? index}
-          question={question}
-          index={index}
-          resolve={(path) => urls[path]}
-        />
-      ))}
+      <PageReview
+        questions={questions}
+        pageUrls={paper.image_paths.map((path) => urls[path])}
+        resolveFigure={(path) => urls[path]}
+        onApprovalChange={(questionId, approved) => void setApproved(questionId, approved)}
+      />
     </div>
   );
 }
@@ -116,7 +136,7 @@ function LibraryPage() {
     queryFn: async (): Promise<PaperRow[]> => {
       const { data, error } = await supabase
         .from("papers")
-        .select("id, title, subject, exam, notes, questions, created_at")
+        .select("id, title, subject, exam, notes, questions, image_paths, created_at")
         .order("created_at", { ascending: false });
       if (error) throw error;
       return (data ?? []) as PaperRow[];
