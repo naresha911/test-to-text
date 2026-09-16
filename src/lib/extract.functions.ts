@@ -98,8 +98,11 @@ async function callGateway(apiKey: string, imageDataUrl: string, hint?: string):
       throw new Error("The AI reader is busy right now. Wait a moment and try this page again.");
     }
     if (response.status === 402 || response.status === 403) {
-      throw new Error(message || "AI credits are unavailable for this workspace.");
+      throw new Error(
+        `AI_CREDITS: ${message || "The AI reading credits for this workspace are used up. Add credits to keep digitising pages."}`,
+      );
     }
+
     throw new Error(message || `AI reader failed (${response.status}).`);
   }
 
