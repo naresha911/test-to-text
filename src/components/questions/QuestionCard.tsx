@@ -2,13 +2,14 @@ import { CheckCircle2, CircleDot, Image as ImageIcon, ListChecks } from "lucide-
 
 import { MathText } from "@/components/MathText";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Separator } from "@/components/ui/separator";
 import { QUESTION_TYPE_LABELS, type Figure, type Question } from "@/lib/question-schema";
 import { cn } from "@/lib/utils";
 
 type Resolver = (path: string) => string | undefined;
 
-function FigureBlock({ figure, resolve }: { figure: Figure; resolve?: Resolver }) {
+function FigureBlock({ figure, resolve }: { figure: Figure; resolve?: Resolver | undefined }) {
   const url = figure.image_path ? resolve?.(figure.image_path) : undefined;
   return (
     <figure className="rounded-md border border-border bg-secondary/50 p-3">
@@ -74,7 +75,7 @@ function OptionList({ question }: { question: Question }) {
   );
 }
 
-function TypeBody({ question, resolve }: { question: Question; resolve?: Resolver }) {
+function TypeBody({ question, resolve }: { question: Question; resolve?: Resolver | undefined }) {
   switch (question.type) {
     case "assertion_reason":
       return (
@@ -83,13 +84,13 @@ function TypeBody({ question, resolve }: { question: Question; resolve?: Resolve
             <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
               Assertion
             </p>
-            <MathText value={question.assertion} />
+            <MathText value={question.assertion ?? null} />
           </div>
           <div className="rounded-md border-l-2 border-highlight bg-secondary/40 px-3 py-2">
             <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
               Reason
             </p>
-            <MathText value={question.reason} />
+            <MathText value={question.reason ?? null} />
           </div>
           <OptionList question={question} />
         </div>
@@ -186,7 +187,13 @@ function TypeBody({ question, resolve }: { question: Question; resolve?: Resolve
           ) : null}
           <div className="space-y-3 border-l-2 border-border pl-4">
             {question.sub_questions.map((sub, index) => (
-              <QuestionCard key={sub.id} question={sub} index={index} nested resolve={resolve} />
+              <QuestionCard
+                key={sub.id}
+                question={sub}
+                index={index}
+                nested
+                {...(resolve ? { resolve } : {})}
+              />
             ))}
           </div>
         </div>
@@ -224,11 +231,13 @@ export function QuestionCard({
   index,
   nested = false,
   resolve,
+  onApprovalChange,
 }: {
   question: Question;
   index: number;
   nested?: boolean;
-  resolve?: Resolver;
+  resolve?: Resolver | undefined;
+  onApprovalChange?: ((approved: boolean) => void) | undefined;
 }) {
   return (
     <article
@@ -256,6 +265,21 @@ export function QuestionCard({
         {question.page != null ? (
           <span className="ml-auto text-xs text-muted-foreground">Page {question.page + 1}</span>
         ) : null}
+        {onApprovalChange ? (
+          <label className="ml-auto flex cursor-pointer items-center gap-2 text-sm font-medium text-foreground">
+            <Checkbox
+              checked={question.approved === true}
+              onCheckedChange={(checked) => onApprovalChange(checked === true)}
+              aria-label={`Mark question ${question.number ?? index + 1} approved`}
+            />
+            Approved
+          </label>
+        ) : question.approved ? (
+          <Badge variant="outline" className="border-success/60 bg-success/10 text-success">
+            <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
+            Approved
+          </Badge>
+        ) : null}
       </header>
 
       {question.instructions ? (
@@ -267,12 +291,12 @@ export function QuestionCard({
       {question.figures.length ? (
         <div className="mt-3 space-y-2">
           {question.figures.map((figure, i) => (
-            <FigureBlock key={i} figure={figure} resolve={resolve} />
+            <FigureBlock key={i} figure={figure} {...(resolve ? { resolve } : {})} />
           ))}
         </div>
       ) : null}
 
-      <TypeBody question={question} resolve={resolve} />
+      <TypeBody question={question} {...(resolve ? { resolve } : {})} />
 
       {question.explanation ? (
         <>
