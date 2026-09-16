@@ -89,6 +89,8 @@ export type Question = {
   page?: number | null;
   /** AI confidence in the reading of this question, 0..1. */
   confidence?: number | null;
+  /** Set after a reviewer compares this extraction with the source page. */
+  approved: boolean;
 };
 
 export type PaperMeta = {
@@ -118,6 +120,7 @@ export function emptyQuestion(partial: Partial<Question> = {}): Question {
     answer_keys: [],
     tags: [],
     figures: [],
+    approved: false,
     ...partial,
   };
 }
@@ -178,20 +181,25 @@ export function normalizeQuestion(raw: unknown, page: number): Question {
       return {
         description: str(ff["description"]) ?? "",
         caption: str(ff["caption"]),
-        bbox: bbox(ff["bbox"]),
+        bbox: bbox(ff["bbox"]) ?? null,
         page,
         image_path: null,
       };
     }),
     page,
     confidence: typeof r["confidence"] === "number" ? (r["confidence"] as number) : null,
+    approved: r["approved"] === true,
   };
 }
 
 export function buildExport(meta: PaperMeta, questions: Question[], id?: string): PaperExport {
   return {
     schema_version: 1,
-    paper: { ...meta, id, created_at: new Date().toISOString() },
+    paper: {
+      ...meta,
+      ...(id ? { id } : {}),
+      created_at: new Date().toISOString(),
+    },
     question_count: questions.length,
     questions,
   };

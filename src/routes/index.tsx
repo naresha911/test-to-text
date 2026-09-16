@@ -15,7 +15,7 @@ import {
 import { useCallback, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
-import { QuestionCard } from "@/components/questions/QuestionCard";
+import { PageReview } from "@/components/questions/PageReview";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -86,6 +86,13 @@ function HomePage() {
     () => (filter === "all" ? questions : questions.filter((q) => q.type === filter)),
     [questions, filter],
   );
+
+  function setApproved(questionId: string, approved: boolean) {
+    setQuestions((current) =>
+      current.map((question) => (question.id === questionId ? { ...question, approved } : question)),
+    );
+    setSavedId(null);
+  }
 
   const addFiles = useCallback(async (list: FileList | null) => {
     if (!list?.length) return;
@@ -471,16 +478,12 @@ function HomePage() {
                     ))}
                   </div>
 
-                  <div className="space-y-4">
-                    {visible.map((question, index) => (
-                      <QuestionCard
-                        key={question.id}
-                        question={question}
-                        index={index}
-                        resolve={(path) => figureUrls[path]}
-                      />
-                    ))}
-                  </div>
+                  <PageReview
+                    questions={visible}
+                    pageUrls={pages.map((page) => page.dataUrl)}
+                    resolveFigure={(path) => figureUrls[path]}
+                    onApprovalChange={setApproved}
+                  />
                 </>
               ) : (
                 <div
