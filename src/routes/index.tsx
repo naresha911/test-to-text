@@ -166,10 +166,20 @@ function HomePage() {
         if (!result.questions.length) failed += 1;
       } catch (error) {
         failed += 1;
-        toast.error(
-          error instanceof Error ? error.message : `Page ${index + 1} could not be read.`,
-        );
+        const raw = error instanceof Error ? error.message : "";
+        if (raw.includes("AI_CREDITS")) {
+          toast.error(
+            raw.replace(/^.*AI_CREDITS:\s*/, "") ||
+              "The AI reading credits for this workspace are used up.",
+          );
+          setProgress(null);
+          setQuestions([...collected]);
+          setImagePaths([...storedPages]);
+          return;
+        }
+        toast.error(raw || `Page ${index + 1} could not be read.`);
       }
+
 
       setProgress({ done: index + 1, total: pages.length });
       setQuestions([...collected]);
