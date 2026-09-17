@@ -4,6 +4,11 @@ import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { normalizeQuestion, type Question } from "@/lib/question-schema";
 
+export const READER_ENGINES = ["lovable", "openrouter", "vision"] as const;
+export type ReaderEngine = (typeof READER_ENGINES)[number];
+
+export const DEFAULT_OPENROUTER_MODEL = "google/gemini-2.5-flash";
+
 const InputSchema = z.object({
   /** Full data URL of the page image, e.g. data:image/jpeg;base64,... */
   imageDataUrl: z.string().min(32),
@@ -11,6 +16,10 @@ const InputSchema = z.object({
   page: z.number().int().min(0),
   /** Optional user hint, e.g. "CBSE class 10 maths, answers are printed at the end". */
   hint: z.string().max(600).optional(),
+  /** Which reading engine to use. */
+  engine: z.enum(READER_ENGINES).default("lovable"),
+  /** Model id, only used by the OpenRouter engine. */
+  model: z.string().min(2).max(120).optional(),
 });
 
 const SYSTEM_PROMPT = `You are an exam-paper digitiser. You read a scanned or photographed page of a question paper, practice test or intelligence test and return it as structured JSON.
@@ -55,34 +64,23 @@ function extractJson(text: string): unknown {
   }
 }
 
+type ChatMessage = {
+  role: "system" | "user";
+  content: string | { type: string; text?: string; image_url?: { url: string } }[];
+};
+
 /** Streamed chat completion, consumed server-side so long pages don't hit request timeouts. */
-async function callGateway(apiKey: string, imageDataUrl: string, hint?: string): Promise<string> {
-  const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+async function callChat(options: {
+  url: string;
+  headers: Record<string, string>;
+  model: string;
+  messages: ChatMessage[];
+  label: string;
+}): Promise<string> {
+  const response = await fetch(options.url, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Lovable-API-Key": apiKey,
-      "X-Lovable-AIG-SDK": "fetch",
-    },
-    body: JSON.stringify({
-      model: "google/gemini-3.8-flash",
-      stream: true,
-      messages: [
-        { role: "system", content: SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: [
-            {
-              type: "text",
-              text: hint
-                ? `Digitise this page. Context from the user: ${hint}`
-                : "Digitise this page.",
-            },
-            { type: "image_url", image_url: { url: imageDataUrl } },
-          ],
-        },
-      ],
-    }),
+    headers: { "Content-Type": "application/json", ...options.headers },
+    body: JSON.stringify({ model: options.model, stream: true, messages: options.messages }),
   });
 
   if (!response.ok || !response.body) {
@@ -95,15 +93,18 @@ async function callGateway(apiKey: string, imageDataUrl: string, hint?: string):
       /* keep raw body */
     }
     if (response.status === 429) {
-      throw new Error("The AI reader is busy right now. Wait a moment and try this page again.");
+      throw new Error(`${options.label} is busy or rate limited right now. Wait a moment and try this page again.`);
+    }
+    if (response.status === 401) {
+      throw new Error(`${options.label} rejected the saved API key. Check the key in Settings.`);
     }
     if (response.status === 402 || response.status === 403) {
       throw new Error(
-        `AI_CREDITS: ${message || "The AI reading credits for this workspace are used up. Add credits to keep digitising pages."}`,
+        `AI_CREDITS: ${message || `${options.label} has no credits left. Add credits or switch reader in Settings.`}`,
       );
     }
 
-    throw new Error(message || `AI reader failed (${response.status}).`);
+    throw new Error(message || `${options.label} failed (${response.status}).`);
   }
 
   const reader = response.body.getReader();
@@ -136,14 +137,112 @@ async function callGateway(apiKey: string, imageDataUrl: string, hint?: string):
   return text;
 }
 
+function visionMessages(imageDataUrl: string, hint?: string): ChatMessage[] {
+  return [
+    { role: "system", content: SYSTEM_PROMPT },
+    {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: hint ? `Digitise this page. Context from the user: ${hint}` : "Digitise this page.",
+        },
+        { type: "image_url", image_url: { url: imageDataUrl } },
+      ],
+    },
+  ];
+}
+
+/** Google Cloud Vision only returns text, so its output is structured by a language model afterwards. */
+async function googleVisionText(apiKey: string, imageDataUrl: string): Promise<string> {
+  const base64 = imageDataUrl.includes(",") ? imageDataUrl.split(",")[1]! : imageDataUrl;
+  const response = await fetch(
+    `https://vision.googleapis.com/v1/images:annotate?key=${encodeURIComponent(apiKey)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        requests: [
+          {
+            image: { content: base64 },
+            features: [{ type: "DOCUMENT_TEXT_DETECTION" }],
+            imageContext: { languageHints: ["en"] },
+          },
+        ],
+      }),
+    },
+  );
+
+  const payload = (await response.json().catch(() => null)) as {
+    error?: { message?: string };
+    responses?: { error?: { message?: string }; fullTextAnnotation?: { text?: string } }[];
+  } | null;
+
+  const errorMessage = payload?.error?.message ?? payload?.responses?.[0]?.error?.message;
+  if (!response.ok || errorMessage) {
+    throw new Error(errorMessage || `Google Cloud Vision failed (${response.status}).`);
+  }
+
+  const text = payload?.responses?.[0]?.fullTextAnnotation?.text ?? "";
+  if (!text.trim()) throw new Error("Google Cloud Vision found no text on this page.");
+  return text;
+}
+
 export const extractPage = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((input: unknown) => InputSchema.parse(input))
   .handler(async ({ data }): Promise<{ questions: Question[]; raw: string }> => {
-    const apiKey = process.env["LOVABLE_API_KEY"];
-    if (!apiKey) throw new Error("AI is not configured for this project.");
+    const lovableKey = process.env["LOVABLE_API_KEY"];
+    const openRouterKey = process.env["OPENROUTER_API_KEY"];
+    const visionKey = process.env["GOOGLE_CLOUD_VISION_API_KEY"];
 
-    const text = await callGateway(apiKey, data.imageDataUrl, data.hint);
+    const openRouter = (messages: ChatMessage[]) =>
+      callChat({
+        url: "https://openrouter.ai/api/v1/chat/completions",
+        headers: { Authorization: `Bearer ${openRouterKey}` },
+        model: data.model?.trim() || DEFAULT_OPENROUTER_MODEL,
+        messages,
+        label: "OpenRouter",
+      });
+
+    const lovable = (messages: ChatMessage[]) =>
+      callChat({
+        url: "https://ai.gateway.lovable.dev/v1/chat/completions",
+        headers: { "Lovable-API-Key": lovableKey ?? "", "X-Lovable-AIG-SDK": "fetch" },
+        model: "google/gemini-3.8-flash",
+        messages,
+        label: "The built-in AI reader",
+      });
+
+    let text: string;
+
+    if (data.engine === "openrouter") {
+      if (!openRouterKey) {
+        throw new Error("No OpenRouter API key is saved yet. Add it in Settings, then try again.");
+      }
+      text = await openRouter(visionMessages(data.imageDataUrl, data.hint));
+    } else if (data.engine === "vision") {
+      if (!visionKey) {
+        throw new Error(
+          "No Google Cloud Vision API key is saved yet. Add it in Settings, then try again.",
+        );
+      }
+      const pageText = await googleVisionText(visionKey, data.imageDataUrl);
+      const messages: ChatMessage[] = [
+        { role: "system", content: SYSTEM_PROMPT },
+        {
+          role: "user",
+          content: `Below is the raw OCR text of one page, in reading order. Structure it using the rules above. It contains no figures, so leave "figures" empty unless the text clearly refers to a printed figure.${
+            data.hint ? `\nContext from the user: ${data.hint}` : ""
+          }\n\n---\n${pageText}`,
+        },
+      ];
+      text = openRouterKey ? await openRouter(messages) : await lovable(messages);
+    } else {
+      if (!lovableKey) throw new Error("AI is not configured for this project.");
+      text = await lovable(visionMessages(data.imageDataUrl, data.hint));
+    }
+
     const parsed = extractJson(text) as { questions?: unknown[] } | null;
     const list = Array.isArray(parsed?.questions) ? parsed.questions : [];
 
@@ -152,3 +251,12 @@ export const extractPage = createServerFn({ method: "POST" })
       raw: list.length ? "" : text.slice(0, 2000),
     };
   });
+
+/** Reports which reader keys are configured, without ever revealing their values. */
+export const getReaderStatus = createServerFn({ method: "GET" })
+  .middleware([requireSupabaseAuth])
+  .handler(async (): Promise<{ lovable: boolean; openrouter: boolean; vision: boolean }> => ({
+    lovable: !!process.env["LOVABLE_API_KEY"],
+    openrouter: !!process.env["OPENROUTER_API_KEY"],
+    vision: !!process.env["GOOGLE_CLOUD_VISION_API_KEY"],
+  }));
