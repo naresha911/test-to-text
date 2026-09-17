@@ -8,11 +8,12 @@ import {
   Loader2,
   LogOut,
   ScanText,
+  Settings,
   Sparkles,
   Trash2,
   X,
 } from "lucide-react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { PageReview } from "@/components/questions/PageReview";
@@ -32,6 +33,11 @@ import {
   type Question,
   type QuestionType,
 } from "@/lib/question-schema";
+import {
+  DEFAULT_READER_SETTINGS,
+  READER_LABELS,
+  loadReaderSettings,
+} from "@/lib/reader-settings";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({
