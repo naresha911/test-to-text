@@ -280,6 +280,12 @@ function HomePage() {
                     Library
                   </Link>
                 </Button>
+                <Button variant="ghost" size="sm" asChild>
+                  <Link to="/settings">
+                    <Settings className="h-4 w-4" aria-hidden="true" />
+                    Settings
+                  </Link>
+                </Button>
                 <Button
                   variant="outline"
                   size="sm"
@@ -425,8 +431,18 @@ function HomePage() {
                   </div>
                 </div>
 
+                <p className="mt-4 flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+                  Reader: <span className="text-foreground">{READER_LABELS[reader.engine]}</span>
+                  {reader.engine === "openrouter" ? (
+                    <span className="font-mono">({reader.model})</span>
+                  ) : null}
+                  <Link to="/settings" className="underline underline-offset-2">
+                    change
+                  </Link>
+                </p>
+
                 <Button
-                  className="mt-4 w-full"
+                  className="mt-2 w-full"
                   onClick={() => void handleExtract()}
                   disabled={!!progress || !pages.length}
                 >
