@@ -81,6 +81,9 @@ function HomePage() {
   const [saving, setSaving] = useState(false);
   const [savedId, setSavedId] = useState<string | null>(null);
   const [filter, setFilter] = useState<QuestionType | "all">("all");
+  const [reader, setReader] = useState(DEFAULT_READER_SETTINGS);
+
+  useEffect(() => setReader(loadReaderSettings()), []);
 
   const counts = useMemo(() => {
     const map = new Map<QuestionType, number>();
@@ -149,6 +152,8 @@ function HomePage() {
           data: {
             imageDataUrl: page.dataUrl,
             page: index,
+            engine: reader.engine,
+            model: reader.model,
             ...(hint.trim() ? { hint: hint.trim() } : {}),
           },
         });
