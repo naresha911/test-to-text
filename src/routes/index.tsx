@@ -8,11 +8,12 @@ import {
   Loader2,
   LogOut,
   ScanText,
+  Settings,
   Sparkles,
   Trash2,
   X,
 } from "lucide-react";
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { PageReview } from "@/components/questions/PageReview";
@@ -32,6 +33,11 @@ import {
   type Question,
   type QuestionType,
 } from "@/lib/question-schema";
+import {
+  DEFAULT_READER_SETTINGS,
+  READER_LABELS,
+  loadReaderSettings,
+} from "@/lib/reader-settings";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({
@@ -75,6 +81,9 @@ function HomePage() {
   const [saving, setSaving] = useState(false);
   const [savedId, setSavedId] = useState<string | null>(null);
   const [filter, setFilter] = useState<QuestionType | "all">("all");
+  const [reader, setReader] = useState(DEFAULT_READER_SETTINGS);
+
+  useEffect(() => setReader(loadReaderSettings()), []);
 
   const counts = useMemo(() => {
     const map = new Map<QuestionType, number>();
@@ -143,6 +152,8 @@ function HomePage() {
           data: {
             imageDataUrl: page.dataUrl,
             page: index,
+            engine: reader.engine,
+            model: reader.model,
             ...(hint.trim() ? { hint: hint.trim() } : {}),
           },
         });
@@ -267,6 +278,12 @@ function HomePage() {
                   <Link to="/library">
                     <Library className="h-4 w-4" aria-hidden="true" />
                     Library
+                  </Link>
+                </Button>
+                <Button variant="ghost" size="sm" asChild>
+                  <Link to="/settings">
+                    <Settings className="h-4 w-4" aria-hidden="true" />
+                    Settings
                   </Link>
                 </Button>
                 <Button
@@ -414,8 +431,18 @@ function HomePage() {
                   </div>
                 </div>
 
+                <p className="mt-4 flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
+                  Reader: <span className="text-foreground">{READER_LABELS[reader.engine]}</span>
+                  {reader.engine === "openrouter" ? (
+                    <span className="font-mono">({reader.model})</span>
+                  ) : null}
+                  <Link to="/settings" className="underline underline-offset-2">
+                    change
+                  </Link>
+                </p>
+
                 <Button
-                  className="mt-4 w-full"
+                  className="mt-2 w-full"
                   onClick={() => void handleExtract()}
                   disabled={!!progress || !pages.length}
                 >
