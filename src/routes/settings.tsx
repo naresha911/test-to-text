@@ -27,7 +27,7 @@ export const Route = createFileRoute("/settings")({
       {
         name: "description",
         content:
-          "Choose which reader digitises your question papers — the built-in AI reader, OpenRouter with your own key, or Google Cloud Vision — and check which API keys are saved.",
+          "Choose which reader digitises your question papers — the built-in AI reader, OpenRouter, Google Cloud Vision or Optiic — and check which API keys are saved.",
       },
       { property: "og:title", content: "Reader settings — PaperParse" },
       {

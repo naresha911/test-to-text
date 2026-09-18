@@ -4,7 +4,7 @@ import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { normalizeQuestion, type Question } from "@/lib/question-schema";
 
-export const READER_ENGINES = ["lovable", "openrouter", "vision"] as const;
+export const READER_ENGINES = ["lovable", "openrouter", "vision", "optiic"] as const;
 export type ReaderEngine = (typeof READER_ENGINES)[number];
 
 export const DEFAULT_OPENROUTER_MODEL = "google/gemini-2.5-flash";
@@ -160,6 +160,19 @@ function visionMessages(imageDataUrl: string, hint?: string): ChatMessage[] {
   ];
 }
 
+/** Shared prompt used after a plain-text OCR engine (Vision / Optiic) returns raw text. */
+function structureTextMessages(pageText: string, hint?: string): ChatMessage[] {
+  return [
+    { role: "system", content: SYSTEM_PROMPT },
+    {
+      role: "user",
+      content: `Below is the raw OCR text of one page, in reading order. Structure it using the rules above. It contains no figures, so leave "figures" empty unless the text clearly refers to a printed figure.${
+        hint ? `\nContext from the user: ${hint}` : ""
+      }\n\n---\n${pageText}`,
+    },
+  ];
+}
+
 /** Google Cloud Vision only returns text, so its output is structured by a language model afterwards. */
 async function googleVisionText(apiKey: string, imageDataUrl: string): Promise<string> {
   const base64 = imageDataUrl.includes(",") ? imageDataUrl.split(",")[1]! : imageDataUrl;
@@ -195,6 +208,41 @@ async function googleVisionText(apiKey: string, imageDataUrl: string): Promise<s
   return text;
 }
 
+function dataUrlToBlob(dataUrl: string): Blob {
+  const base64 = dataUrl.includes(",") ? dataUrl.split(",")[1]! : dataUrl;
+  const mimeMatch = dataUrl.match(/^data:([^;]+);/);
+  const type = mimeMatch?.[1] ?? "image/jpeg";
+  return new Blob([Buffer.from(base64, "base64")], { type });
+}
+
+/** Optiic only returns plain text, so its output is structured by a language model afterwards. */
+async function optiicText(apiKey: string, imageDataUrl: string): Promise<string> {
+  const blob = dataUrlToBlob(imageDataUrl);
+  const formData = new FormData();
+  formData.append("image", blob, "page.jpg");
+  formData.append("mode", "ocr");
+
+  const response = await fetch("https://api.optiic.dev/process", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}` },
+    body: formData,
+  });
+
+  const payload = (await response.json().catch(() => null)) as {
+    text?: string;
+    error?: { message?: string };
+    message?: string;
+  } | null;
+
+  if (!response.ok) {
+    throw new Error(payload?.error?.message ?? payload?.message ?? `Optiic failed (${response.status}).`);
+  }
+
+  const text = payload?.text ?? "";
+  if (!text.trim()) throw new Error("Optiic found no text on this page.");
+  return text;
+}
+
 export const extractPage = createServerFn({ method: "POST" })
   .middleware([requireSupabaseAuth])
   .inputValidator((input: unknown) => InputSchema.parse(input))
@@ -202,6 +250,7 @@ export const extractPage = createServerFn({ method: "POST" })
     const lovableKey = process.env["LOVABLE_API_KEY"];
     const openRouterKey = process.env["OPENROUTER_API_KEY"];
     const visionKey = process.env["GOOGLE_CLOUD_VISION_API_KEY"];
+    const optiicKey = process.env["OPTIIC_API_KEY"];
 
     const openRouter = (messages: ChatMessage[]) =>
       callChat({
@@ -222,6 +271,11 @@ export const extractPage = createServerFn({ method: "POST" })
         label: "The built-in AI reader",
       });
 
+    async function structurePlainText(pageText: string): Promise<string> {
+      const messages = structureTextMessages(pageText, data.hint);
+      return openRouterKey ? await openRouter(messages) : await lovable(messages);
+    }
+
     let text: string;
 
     if (data.engine === "openrouter") {
@@ -235,17 +289,12 @@ export const extractPage = createServerFn({ method: "POST" })
           "No Google Cloud Vision API key is saved yet. Add it in Settings, then try again.",
         );
       }
-      const pageText = await googleVisionText(visionKey, data.imageDataUrl);
-      const messages: ChatMessage[] = [
-        { role: "system", content: SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: `Below is the raw OCR text of one page, in reading order. Structure it using the rules above. It contains no figures, so leave "figures" empty unless the text clearly refers to a printed figure.${
-            data.hint ? `\nContext from the user: ${data.hint}` : ""
-          }\n\n---\n${pageText}`,
-        },
-      ];
-      text = openRouterKey ? await openRouter(messages) : await lovable(messages);
+      text = await structurePlainText(await googleVisionText(visionKey, data.imageDataUrl));
+    } else if (data.engine === "optiic") {
+      if (!optiicKey) {
+        throw new Error("No Optiic API key is saved yet. Add it in Settings, then try again.");
+      }
+      text = await structurePlainText(await optiicText(optiicKey, data.imageDataUrl));
     } else {
       if (!lovableKey) throw new Error("AI is not configured for this project.");
       text = await lovable(visionMessages(data.imageDataUrl, data.hint));
@@ -263,8 +312,11 @@ export const extractPage = createServerFn({ method: "POST" })
 /** Reports which reader keys are configured, without ever revealing their values. */
 export const getReaderStatus = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
-  .handler(async (): Promise<{ lovable: boolean; openrouter: boolean; vision: boolean }> => ({
-    lovable: !!process.env["LOVABLE_API_KEY"],
-    openrouter: !!process.env["OPENROUTER_API_KEY"],
-    vision: !!process.env["GOOGLE_CLOUD_VISION_API_KEY"],
-  }));
+  .handler(
+    async (): Promise<{ lovable: boolean; openrouter: boolean; vision: boolean; optiic: boolean }> => ({
+      lovable: !!process.env["LOVABLE_API_KEY"],
+      openrouter: !!process.env["OPENROUTER_API_KEY"],
+      vision: !!process.env["GOOGLE_CLOUD_VISION_API_KEY"],
+      optiic: !!process.env["OPTIIC_API_KEY"],
+    }),
+  );
