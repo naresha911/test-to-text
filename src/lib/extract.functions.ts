@@ -76,6 +76,7 @@ async function callChat(options: {
   model: string;
   messages: ChatMessage[];
   label: string;
+  maxTokens?: number;
 }): Promise<string> {
   const response = await fetch(options.url, {
     method: "POST",
@@ -83,9 +84,8 @@ async function callChat(options: {
     body: JSON.stringify({
       model: options.model,
       stream: true,
-      // Cap output tokens: providers reject requests whose max_tokens exceeds
-      // the caller's remaining credit balance, and a page rarely needs more.
-      max_tokens: 12000,
+      // Keep OpenRouter requests below the free account's affordable ceiling.
+      max_tokens: options.maxTokens ?? 12000,
       messages: options.messages,
     }),
   });
@@ -210,6 +210,7 @@ export const extractPage = createServerFn({ method: "POST" })
         model: data.model?.trim() || DEFAULT_OPENROUTER_MODEL,
         messages,
         label: "OpenRouter",
+        maxTokens: 3000,
       });
 
     const lovable = (messages: ChatMessage[]) =>
