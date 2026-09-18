@@ -160,6 +160,19 @@ function visionMessages(imageDataUrl: string, hint?: string): ChatMessage[] {
   ];
 }
 
+/** Shared prompt used after a plain-text OCR engine (Vision / Optiic) returns raw text. */
+function structureTextMessages(pageText: string, hint?: string): ChatMessage[] {
+  return [
+    { role: "system", content: SYSTEM_PROMPT },
+    {
+      role: "user",
+      content: `Below is the raw OCR text of one page, in reading order. Structure it using the rules above. It contains no figures, so leave "figures" empty unless the text clearly refers to a printed figure.${
+        hint ? `\nContext from the user: ${hint}` : ""
+      }\n\n---\n${pageText}`,
+    },
+  ];
+}
+
 /** Google Cloud Vision only returns text, so its output is structured by a language model afterwards. */
 async function googleVisionText(apiKey: string, imageDataUrl: string): Promise<string> {
   const base64 = imageDataUrl.includes(",") ? imageDataUrl.split(",")[1]! : imageDataUrl;
@@ -192,6 +205,41 @@ async function googleVisionText(apiKey: string, imageDataUrl: string): Promise<s
 
   const text = payload?.responses?.[0]?.fullTextAnnotation?.text ?? "";
   if (!text.trim()) throw new Error("Google Cloud Vision found no text on this page.");
+  return text;
+}
+
+function dataUrlToBlob(dataUrl: string): Blob {
+  const base64 = dataUrl.includes(",") ? dataUrl.split(",")[1]! : dataUrl;
+  const mimeMatch = dataUrl.match(/^data:([^;]+);/);
+  const type = mimeMatch?.[1] ?? "image/jpeg";
+  return new Blob([Buffer.from(base64, "base64")], { type });
+}
+
+/** Optiic only returns plain text, so its output is structured by a language model afterwards. */
+async function optiicText(apiKey: string, imageDataUrl: string): Promise<string> {
+  const blob = dataUrlToBlob(imageDataUrl);
+  const formData = new FormData();
+  formData.append("image", blob, "page.jpg");
+  formData.append("mode", "ocr");
+
+  const response = await fetch("https://api.optiic.dev/process", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${apiKey}` },
+    body: formData,
+  });
+
+  const payload = (await response.json().catch(() => null)) as {
+    text?: string;
+    error?: { message?: string };
+    message?: string;
+  } | null;
+
+  if (!response.ok) {
+    throw new Error(payload?.error?.message ?? payload?.message ?? `Optiic failed (${response.status}).`);
+  }
+
+  const text = payload?.text ?? "";
+  if (!text.trim()) throw new Error("Optiic found no text on this page.");
   return text;
 }
 
