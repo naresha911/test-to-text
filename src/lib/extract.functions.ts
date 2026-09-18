@@ -80,7 +80,14 @@ async function callChat(options: {
   const response = await fetch(options.url, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...options.headers },
-    body: JSON.stringify({ model: options.model, stream: true, messages: options.messages }),
+    body: JSON.stringify({
+      model: options.model,
+      stream: true,
+      // Cap output tokens: providers reject requests whose max_tokens exceeds
+      // the caller's remaining credit balance, and a page rarely needs more.
+      max_tokens: 12000,
+      messages: options.messages,
+    }),
   });
 
   if (!response.ok || !response.body) {
