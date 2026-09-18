@@ -4,7 +4,7 @@ import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { normalizeQuestion, type Question } from "@/lib/question-schema";
 
-export const READER_ENGINES = ["lovable", "openrouter", "vision"] as const;
+export const READER_ENGINES = ["lovable", "openrouter", "vision", "optiic"] as const;
 export type ReaderEngine = (typeof READER_ENGINES)[number];
 
 export const DEFAULT_OPENROUTER_MODEL = "google/gemini-2.5-flash";
