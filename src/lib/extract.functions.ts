@@ -250,6 +250,7 @@ export const extractPage = createServerFn({ method: "POST" })
     const lovableKey = process.env["LOVABLE_API_KEY"];
     const openRouterKey = process.env["OPENROUTER_API_KEY"];
     const visionKey = process.env["GOOGLE_CLOUD_VISION_API_KEY"];
+    const optiicKey = process.env["OPTIIC_API_KEY"];
 
     const openRouter = (messages: ChatMessage[]) =>
       callChat({
@@ -270,6 +271,11 @@ export const extractPage = createServerFn({ method: "POST" })
         label: "The built-in AI reader",
       });
 
+    async function structurePlainText(pageText: string): Promise<string> {
+      const messages = structureTextMessages(pageText, data.hint);
+      return openRouterKey ? await openRouter(messages) : await lovable(messages);
+    }
+
     let text: string;
 
     if (data.engine === "openrouter") {
@@ -283,17 +289,12 @@ export const extractPage = createServerFn({ method: "POST" })
           "No Google Cloud Vision API key is saved yet. Add it in Settings, then try again.",
         );
       }
-      const pageText = await googleVisionText(visionKey, data.imageDataUrl);
-      const messages: ChatMessage[] = [
-        { role: "system", content: SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: `Below is the raw OCR text of one page, in reading order. Structure it using the rules above. It contains no figures, so leave "figures" empty unless the text clearly refers to a printed figure.${
-            data.hint ? `\nContext from the user: ${data.hint}` : ""
-          }\n\n---\n${pageText}`,
-        },
-      ];
-      text = openRouterKey ? await openRouter(messages) : await lovable(messages);
+      text = await structurePlainText(await googleVisionText(visionKey, data.imageDataUrl));
+    } else if (data.engine === "optiic") {
+      if (!optiicKey) {
+        throw new Error("No Optiic API key is saved yet. Add it in Settings, then try again.");
+      }
+      text = await structurePlainText(await optiicText(optiicKey, data.imageDataUrl));
     } else {
       if (!lovableKey) throw new Error("AI is not configured for this project.");
       text = await lovable(visionMessages(data.imageDataUrl, data.hint));
@@ -311,8 +312,11 @@ export const extractPage = createServerFn({ method: "POST" })
 /** Reports which reader keys are configured, without ever revealing their values. */
 export const getReaderStatus = createServerFn({ method: "GET" })
   .middleware([requireSupabaseAuth])
-  .handler(async (): Promise<{ lovable: boolean; openrouter: boolean; vision: boolean }> => ({
-    lovable: !!process.env["LOVABLE_API_KEY"],
-    openrouter: !!process.env["OPENROUTER_API_KEY"],
-    vision: !!process.env["GOOGLE_CLOUD_VISION_API_KEY"],
-  }));
+  .handler(
+    async (): Promise<{ lovable: boolean; openrouter: boolean; vision: boolean; optiic: boolean }> => ({
+      lovable: !!process.env["LOVABLE_API_KEY"],
+      openrouter: !!process.env["OPENROUTER_API_KEY"],
+      vision: !!process.env["GOOGLE_CLOUD_VISION_API_KEY"],
+      optiic: !!process.env["OPTIIC_API_KEY"],
+    }),
+  );
