@@ -2,6 +2,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
+import { structureOcrText } from "@/lib/ocr-structure";
 import { normalizeQuestion, type Question } from "@/lib/question-schema";
 
 export const READER_ENGINES = ["lovable", "openrouter", "vision", "optiic"] as const;
