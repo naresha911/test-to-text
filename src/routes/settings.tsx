@@ -80,6 +80,7 @@ function SettingsPage() {
     lovable: status.data?.lovable ?? false,
     openrouter: status.data?.openrouter ?? false,
     vision: status.data?.vision ?? false,
+    optiic: status.data?.optiic ?? false,
   };
 
   return (
