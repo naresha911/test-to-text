@@ -229,20 +229,26 @@ async function optiicText(apiKey: string, imageDataUrl: string): Promise<string>
     body: formData,
   });
 
-  const payload = (await response.json().catch(() => null)) as {
-    text?: string;
-    error?: { message?: string };
-    message?: string;
-  } | null;
+  // Optiic returns JSON on success but a plain-text sentence for quota / auth errors.
+  const body = await response.text();
+  let payload: { text?: string; error?: { message?: string }; message?: string } | null = null;
+  try {
+    payload = JSON.parse(body) as typeof payload;
+  } catch {
+    /* plain-text response */
+  }
 
   if (!response.ok) {
+    const detail = (payload?.error?.message ?? payload?.message ?? body).trim().slice(0, 300);
     if (response.status === 429) {
-      throw new Error("Optiic is rate limiting this key right now. Wait a minute and try this page again.");
+      throw new Error(
+        detail || "Optiic has hit its usage limit for now. Wait and try again, or switch reader in Settings.",
+      );
     }
     if (response.status === 401 || response.status === 403) {
       throw new Error("Optiic rejected the saved API key. Check the key in Settings.");
     }
-    throw new Error(payload?.error?.message ?? payload?.message ?? `Optiic failed (${response.status}).`);
+    throw new Error(detail || `Optiic failed (${response.status}).`);
   }
 
   const text = payload?.text ?? "";
