@@ -260,7 +260,7 @@ export const extractPage = createServerFn({ method: "POST" })
         model: data.model?.trim() || DEFAULT_OPENROUTER_MODEL,
         messages,
         label: "OpenRouter",
-        maxTokens: 3000,
+        maxTokens: 2000,
       });
 
     const lovable = (messages: ChatMessage[]) =>
