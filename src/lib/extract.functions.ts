@@ -236,6 +236,12 @@ async function optiicText(apiKey: string, imageDataUrl: string): Promise<string>
   } | null;
 
   if (!response.ok) {
+    if (response.status === 429) {
+      throw new Error("Optiic is rate limiting this key right now. Wait a minute and try this page again.");
+    }
+    if (response.status === 401 || response.status === 403) {
+      throw new Error("Optiic rejected the saved API key. Check the key in Settings.");
+    }
     throw new Error(payload?.error?.message ?? payload?.message ?? `Optiic failed (${response.status}).`);
   }
 
