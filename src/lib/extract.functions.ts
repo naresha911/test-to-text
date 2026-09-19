@@ -271,9 +271,27 @@ export const extractPage = createServerFn({ method: "POST" })
         label: "The built-in AI reader",
       });
 
-    async function structurePlainText(pageText: string): Promise<string> {
+    /**
+     * Plain-text OCR engines need a language model to organise their text. When no model is
+     * reachable (missing key or no credits) we fall back to offline structuring so the page
+     * still comes back as reviewable questions.
+     */
+    async function structurePlainText(pageText: string): Promise<{ text: string } | { questions: Question[] }> {
       const messages = structureTextMessages(pageText, data.hint);
-      return openRouterKey ? await openRouter(messages) : await lovable(messages);
+      try {
+        if (openRouterKey) return { text: await openRouter(messages) };
+        if (lovableKey) return { text: await lovable(messages) };
+      } catch (error) {
+        if (lovableKey && openRouterKey) {
+          try {
+            return { text: await lovable(messages) };
+          } catch {
+            /* fall through to offline structuring */
+          }
+        }
+        if (!(error instanceof Error)) throw error;
+      }
+      return { questions: structureOcrText(pageText, data.page) };
     }
 
     let text: string;
@@ -283,18 +301,27 @@ export const extractPage = createServerFn({ method: "POST" })
         throw new Error("No OpenRouter API key is saved yet. Add it in Settings, then try again.");
       }
       text = await openRouter(visionMessages(data.imageDataUrl, data.hint));
-    } else if (data.engine === "vision") {
-      if (!visionKey) {
-        throw new Error(
-          "No Google Cloud Vision API key is saved yet. Add it in Settings, then try again.",
-        );
-      }
-      text = await structurePlainText(await googleVisionText(visionKey, data.imageDataUrl));
-    } else if (data.engine === "optiic") {
-      if (!optiicKey) {
-        throw new Error("No Optiic API key is saved yet. Add it in Settings, then try again.");
-      }
-      text = await structurePlainText(await optiicText(optiicKey, data.imageDataUrl));
+    } else if (data.engine === "vision" || data.engine === "optiic") {
+      const pageText =
+        data.engine === "vision"
+          ? await (async () => {
+              if (!visionKey) {
+                throw new Error(
+                  "No Google Cloud Vision API key is saved yet. Add it in Settings, then try again.",
+                );
+              }
+              return googleVisionText(visionKey, data.imageDataUrl);
+            })()
+          : await (async () => {
+              if (!optiicKey) {
+                throw new Error("No Optiic API key is saved yet. Add it in Settings, then try again.");
+              }
+              return optiicText(optiicKey, data.imageDataUrl);
+            })();
+
+      const structured = await structurePlainText(pageText);
+      if ("questions" in structured) return { questions: structured.questions, raw: "" };
+      text = structured.text;
     } else {
       if (!lovableKey) throw new Error("AI is not configured for this project.");
       text = await lovable(visionMessages(data.imageDataUrl, data.hint));
