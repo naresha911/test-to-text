@@ -73,15 +73,16 @@ function AuthPage() {
 
   async function handleGoogle() {
     setBusy(true);
+    // Locally, OAuth runs on http://127.0.0.1:8080 (Lovable rejects localhost).
     const result = await lovable.auth.signInWithOAuth("google", {
       redirect_uri: window.location.origin,
     });
     if (result.error) {
       setBusy(false);
-      toast.error("Google sign-in failed. Try again or use your email.");
+      toast.error(result.error.message || "Google sign-in failed. Try again or use your email.");
       return;
     }
-    if (result.redirected) return;
+    if ("redirected" in result && result.redirected) return;
     void navigate({ to: "/" });
   }
 

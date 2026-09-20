@@ -9,9 +9,20 @@ type Props = {
   pageUrls: Array<string | undefined>;
   resolveFigure?: ((path: string) => string | undefined) | undefined;
   onApprovalChange?: ((questionId: string, approved: boolean) => void) | undefined;
+  onQuestionChange?: ((question: Question) => void) | undefined;
+  onRegenerate?: ((questionId: string) => void) | undefined;
+  generatingIds?: Set<string> | undefined;
 };
 
-export function PageReview({ questions, pageUrls, resolveFigure, onApprovalChange }: Props) {
+export function PageReview({
+  questions,
+  pageUrls,
+  resolveFigure,
+  onApprovalChange,
+  onQuestionChange,
+  onRegenerate,
+  generatingIds,
+}: Props) {
   const pageNumbers = [...new Set(questions.map((question) => question.page ?? 0))].sort(
     (a, b) => a - b,
   );
@@ -65,6 +76,9 @@ export function PageReview({ questions, pageUrls, resolveFigure, onApprovalChang
                         onApprovalChange: (next) => onApprovalChange(question.id, next),
                       }
                     : {})}
+                  {...(onQuestionChange ? { onChange: onQuestionChange } : {})}
+                  {...(onRegenerate ? { onRegenerate } : {})}
+                  {...(generatingIds ? { generatingIds } : {})}
                 />
               ))}
             </div>

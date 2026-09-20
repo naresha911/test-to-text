@@ -5,3 +5,5 @@
 - [x] Persist and display per-question Approved status
 - [x] Match saved-paper review to the same verification layout
 - [x] Verify AI extraction with a real request and test desktop/mobile UI
+- [x] Edit OCR questions in review (pencil), generate AI hint + solution on approve
+- [x] Persist hint / explanation (solution) in papers.questions and JSON export

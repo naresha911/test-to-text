@@ -1,7 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useServerFn } from "@tanstack/react-start";
 import { ArrowLeft, Download, Loader2, ScanText, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { PageReview } from "@/components/questions/PageReview";
@@ -9,9 +10,12 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
+import { generateForApprovedQuestion } from "@/lib/hint-solution-client";
+import { generateHintSolution } from "@/lib/hint-solution.functions";
 import {
   QUESTION_TYPE_LABELS,
   buildExport,
+  updateQuestionById,
   type Question,
   type QuestionType,
 } from "@/lib/question-schema";
@@ -62,10 +66,14 @@ function figurePaths(questions: Question[]): string[] {
 
 function PaperDetail({ paper }: { paper: PaperRow }) {
   const queryClient = useQueryClient();
+  const runHintSolution = useServerFn(generateHintSolution);
   const [questions, setQuestions] = useState(
     (Array.isArray(paper.questions) ? paper.questions : []) as Question[],
   );
   const [urls, setUrls] = useState<Record<string, string>>({});
+  const [generatingIds, setGeneratingIds] = useState<Set<string>>(() => new Set());
+  const questionsRef = useRef(questions);
+  questionsRef.current = questions;
 
   useEffect(() => {
     const paths = [...paper.image_paths, ...figurePaths(questions)];
@@ -88,22 +96,91 @@ function PaperDetail({ paper }: { paper: PaperRow }) {
   const counts = new Map<QuestionType, number>();
   for (const question of questions) counts.set(question.type, (counts.get(question.type) ?? 0) + 1);
 
-  async function setApproved(questionId: string, approved: boolean) {
-    const previous = questions;
-    const next = questions.map((question) =>
-      question.id === questionId ? { ...question, approved } : question,
-    );
-    setQuestions(next);
+  const audience = useMemo(
+    () => ({
+      subject: paper.subject,
+      exam: paper.exam,
+      notes: paper.notes,
+    }),
+    [paper.subject, paper.exam, paper.notes],
+  );
+
+  async function persist(next: Question[]) {
     const { error } = await supabase
       .from("papers")
       .update({ questions: JSON.parse(JSON.stringify(next)) })
       .eq("id", paper.id);
-    if (error) {
+    if (error) throw error;
+    void queryClient.invalidateQueries({ queryKey: ["papers"] });
+  }
+
+  async function runGeneration(questionId: string, force = false) {
+    let requested: string[] = [];
+    try {
+      const result = await generateForApprovedQuestion({
+        questions: questionsRef.current,
+        questionId,
+        force,
+        audience,
+        runGenerate: runHintSolution,
+        onProgress: (ids) => {
+          requested = ids;
+          setGeneratingIds((current) => {
+            const next = new Set(current);
+            for (const id of ids) next.add(id);
+            return next;
+          });
+        },
+      });
+      if (result.generatedIds.length) {
+        setQuestions(result.questions);
+        await persist(result.questions);
+        toast.success(
+          force ? "Hint and solution regenerated." : "Hint and solution ready.",
+        );
+      }
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not generate hint and solution.",
+      );
+    } finally {
+      if (requested.length) {
+        setGeneratingIds((current) => {
+          const next = new Set(current);
+          for (const id of requested) next.delete(id);
+          return next;
+        });
+      }
+    }
+  }
+
+  async function setApproved(questionId: string, approved: boolean) {
+    const previous = questions;
+    const next = updateQuestionById(questions, questionId, (question) => ({
+      ...question,
+      approved,
+    }));
+    setQuestions(next);
+    try {
+      await persist(next);
+    } catch {
       setQuestions(previous);
       toast.error("Could not update the approval status.");
       return;
     }
-    void queryClient.invalidateQueries({ queryKey: ["papers"] });
+    if (approved) void runGeneration(questionId, false);
+  }
+
+  async function patchQuestion(nextQuestion: Question) {
+    const previous = questions;
+    const next = updateQuestionById(questions, nextQuestion.id, () => nextQuestion);
+    setQuestions(next);
+    try {
+      await persist(next);
+    } catch {
+      setQuestions(previous);
+      toast.error("Could not save your edits.");
+    }
   }
 
   return (
@@ -120,6 +197,9 @@ function PaperDetail({ paper }: { paper: PaperRow }) {
         pageUrls={paper.image_paths.map((path) => urls[path])}
         resolveFigure={(path) => urls[path]}
         onApprovalChange={(questionId, approved) => void setApproved(questionId, approved)}
+        onQuestionChange={(question) => void patchQuestion(question)}
+        onRegenerate={(questionId) => void runGeneration(questionId, true)}
+        generatingIds={generatingIds}
       />
     </div>
   );

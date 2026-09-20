@@ -12,4 +12,17 @@ export default defineConfig({
     // nitro/vite builds from this
     server: { entry: "server" },
   },
+  // /~oauth/* is only served on *.lovable.app — proxy it for local Google sign-in.
+  // Use http://127.0.0.1:8080 (not localhost); Lovable rejects localhost redirect_uri.
+  vite: {
+    server: {
+      proxy: {
+        "/~oauth": {
+          target: "https://test-to-text.lovable.app",
+          changeOrigin: true,
+          secure: true,
+        },
+      },
+    },
+  },
 });

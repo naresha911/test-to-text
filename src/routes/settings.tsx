@@ -173,9 +173,14 @@ function SettingsPage() {
 
             <div className="mt-6 rounded-xl border border-dashed border-border p-5 text-sm text-muted-foreground">
               <p>
-                A key shown as missing means it has not been saved yet — ask in the chat to add it and
-                a secure form will open. Google Cloud Vision returns text only, so its pages are
-                organised into questions by a language model afterwards.
+                A key shown as missing means it is not available to this server. In the Lovable app,
+                secrets are stored in the project (not in git) — ask in chat to add one and a secure
+                form opens. When running locally in Cursor, put{" "}
+                <code className="font-mono text-xs">OPENROUTER_API_KEY</code> or{" "}
+                <code className="font-mono text-xs">LOVABLE_API_KEY</code> in{" "}
+                <code className="font-mono text-xs">.env.local</code>, then restart the dev server.
+                Hints and solutions use OpenRouter when that key exists, otherwise the built-in AI
+                reader.
               </p>
             </div>
           </>

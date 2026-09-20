@@ -26,10 +26,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { useAuth } from "@/hooks/useAuth";
 import { supabase } from "@/integrations/supabase/client";
 import { extractPage } from "@/lib/extract.functions";
+import { generateForApprovedQuestion } from "@/lib/hint-solution-client";
+import { generateHintSolution } from "@/lib/hint-solution.functions";
 import { cropFigure, preparePageImage } from "@/lib/image-utils";
 import {
   QUESTION_TYPE_LABELS,
   buildExport,
+  updateQuestionById,
   type Question,
   type QuestionType,
 } from "@/lib/question-schema";
@@ -67,6 +70,7 @@ type Page = { name: string; dataUrl: string; blob: Blob };
 function HomePage() {
   const { session, loading } = useAuth();
   const runExtract = useServerFn(extractPage);
+  const runHintSolution = useServerFn(generateHintSolution);
   const fileInput = useRef<HTMLInputElement>(null);
 
   const [pages, setPages] = useState<Page[]>([]);
@@ -82,6 +86,9 @@ function HomePage() {
   const [savedId, setSavedId] = useState<string | null>(null);
   const [filter, setFilter] = useState<QuestionType | "all">("all");
   const [reader, setReader] = useState(DEFAULT_READER_SETTINGS);
+  const [generatingIds, setGeneratingIds] = useState<Set<string>>(() => new Set());
+  const questionsRef = useRef(questions);
+  questionsRef.current = questions;
 
   useEffect(() => setReader(loadReaderSettings()), []);
 
@@ -96,11 +103,66 @@ function HomePage() {
     [questions, filter],
   );
 
+  const audience = useMemo(
+    () => ({
+      subject: subject.trim() || null,
+      exam: exam.trim() || null,
+      notes: hint.trim() || null,
+    }),
+    [subject, exam, hint],
+  );
+
+  function patchQuestion(next: Question) {
+    setQuestions((current) => updateQuestionById(current, next.id, () => next));
+    setSavedId(null);
+  }
+
+  async function runGeneration(questionId: string, force = false) {
+    let requested: string[] = [];
+    try {
+      const result = await generateForApprovedQuestion({
+        questions: questionsRef.current,
+        questionId,
+        force,
+        audience,
+        runGenerate: runHintSolution,
+        onProgress: (ids) => {
+          requested = ids;
+          setGeneratingIds((current) => {
+            const next = new Set(current);
+            for (const id of ids) next.add(id);
+            return next;
+          });
+        },
+      });
+      if (result.generatedIds.length) {
+        setQuestions(result.questions);
+        setSavedId(null);
+        toast.success(
+          force ? "Hint and solution regenerated." : "Hint and solution ready.",
+        );
+      }
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Could not generate hint and solution.",
+      );
+    } finally {
+      if (requested.length) {
+        setGeneratingIds((current) => {
+          const next = new Set(current);
+          for (const id of requested) next.delete(id);
+          return next;
+        });
+      }
+    }
+  }
+
   function setApproved(questionId: string, approved: boolean) {
     setQuestions((current) =>
-      current.map((question) => (question.id === questionId ? { ...question, approved } : question)),
+      updateQuestionById(current, questionId, (question) => ({ ...question, approved })),
     );
     setSavedId(null);
+    if (approved) void runGeneration(questionId, false);
   }
 
   const addFiles = useCallback(async (list: FileList | null) => {
@@ -520,6 +582,9 @@ function HomePage() {
                     pageUrls={pages.map((page) => page.dataUrl)}
                     resolveFigure={(path) => figureUrls[path]}
                     onApprovalChange={setApproved}
+                    onQuestionChange={patchQuestion}
+                    onRegenerate={(questionId) => void runGeneration(questionId, true)}
+                    generatingIds={generatingIds}
                   />
                 </>
               ) : (

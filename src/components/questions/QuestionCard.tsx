@@ -1,10 +1,29 @@
-import { CheckCircle2, CircleDot, Image as ImageIcon, ListChecks } from "lucide-react";
+import {
+  CheckCircle2,
+  CircleDot,
+  Image as ImageIcon,
+  ListChecks,
+  Loader2,
+  Pencil,
+  RefreshCw,
+  X,
+} from "lucide-react";
+import { useState, type ReactNode } from "react";
 
 import { MathText } from "@/components/MathText";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
-import { QUESTION_TYPE_LABELS, type Figure, type Question } from "@/lib/question-schema";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  QUESTION_TYPE_LABELS,
+  QUESTION_TYPES,
+  type Figure,
+  type Question,
+  type QuestionType,
+} from "@/lib/question-schema";
 import { cn } from "@/lib/utils";
 
 type Resolver = (path: string) => string | undefined;
@@ -40,10 +59,77 @@ function FigureBlock({ figure, resolve }: { figure: Figure; resolve?: Resolver |
   );
 }
 
-function OptionList({ question }: { question: Question }) {
-  if (!question.options.length) return null;
+function FieldLabel({ children }: { children: ReactNode }) {
+  return (
+    <p className="mb-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+      {children}
+    </p>
+  );
+}
+
+function OptionList({
+  question,
+  editing,
+  onChange,
+}: {
+  question: Question;
+  editing: boolean;
+  onChange?: ((next: Question) => void) | undefined;
+}) {
+  if (!question.options.length && !editing) return null;
   const correct = new Set(question.answer_keys);
   const multi = question.type === "multi_select";
+
+  if (editing && onChange) {
+    return (
+      <ul className="mt-3 grid gap-2">
+        {question.options.map((option, index) => (
+          <li key={`${option.key}-${index}`} className="flex items-start gap-2">
+            <Input
+              value={option.key}
+              className="h-9 w-14 shrink-0"
+              aria-label={`Option ${index + 1} key`}
+              onChange={(event) => {
+                const options = question.options.map((item, i) =>
+                  i === index ? { ...item, key: event.target.value } : item,
+                );
+                onChange({ ...question, options });
+              }}
+            />
+            <Textarea
+              value={option.text}
+              rows={2}
+              className="min-h-[2.5rem] flex-1"
+              aria-label={`Option ${option.key} text`}
+              onChange={(event) => {
+                const options = question.options.map((item, i) =>
+                  i === index ? { ...item, text: event.target.value } : item,
+                );
+                onChange({ ...question, options });
+              }}
+            />
+            <label className="flex items-center gap-1 pt-2 text-xs text-muted-foreground">
+              <Checkbox
+                checked={option.is_correct === true || correct.has(option.key)}
+                onCheckedChange={(checked) => {
+                  const isCorrect = checked === true;
+                  const options = question.options.map((item, i) =>
+                    i === index ? { ...item, is_correct: isCorrect } : item,
+                  );
+                  const answer_keys = isCorrect
+                    ? [...new Set([...question.answer_keys, option.key])]
+                    : question.answer_keys.filter((key) => key !== option.key);
+                  onChange({ ...question, options, answer_keys });
+                }}
+              />
+              Correct
+            </label>
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
   return (
     <ul className="mt-3 grid gap-2 sm:grid-cols-2">
       {question.options.map((option) => {
@@ -75,24 +161,50 @@ function OptionList({ question }: { question: Question }) {
   );
 }
 
-function TypeBody({ question, resolve }: { question: Question; resolve?: Resolver | undefined }) {
+function TypeBody({
+  question,
+  resolve,
+  editing,
+  onChange,
+  generatingIds,
+  onRegenerate,
+}: {
+  question: Question;
+  resolve?: Resolver | undefined;
+  editing: boolean;
+  onChange?: ((next: Question) => void) | undefined;
+  generatingIds?: Set<string> | undefined;
+  onRegenerate?: ((questionId: string) => void) | undefined;
+}) {
   switch (question.type) {
     case "assertion_reason":
       return (
         <div className="mt-3 space-y-2">
           <div className="rounded-md border-l-2 border-primary bg-secondary/40 px-3 py-2">
-            <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-              Assertion
-            </p>
-            <MathText value={question.assertion ?? null} />
+            <FieldLabel>Assertion</FieldLabel>
+            {editing && onChange ? (
+              <Textarea
+                value={question.assertion ?? ""}
+                rows={3}
+                onChange={(event) => onChange({ ...question, assertion: event.target.value })}
+              />
+            ) : (
+              <MathText value={question.assertion ?? null} />
+            )}
           </div>
           <div className="rounded-md border-l-2 border-highlight bg-secondary/40 px-3 py-2">
-            <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-              Reason
-            </p>
-            <MathText value={question.reason ?? null} />
+            <FieldLabel>Reason</FieldLabel>
+            {editing && onChange ? (
+              <Textarea
+                value={question.reason ?? ""}
+                rows={3}
+                onChange={(event) => onChange({ ...question, reason: event.target.value })}
+              />
+            ) : (
+              <MathText value={question.reason ?? null} />
+            )}
           </div>
-          <OptionList question={question} />
+          <OptionList question={question} editing={editing} {...(onChange ? { onChange } : {})} />
         </div>
       );
 
@@ -100,11 +212,15 @@ function TypeBody({ question, resolve }: { question: Question; resolve?: Resolve
       return (
         <div className="mt-3 flex gap-2">
           {[true, false].map((value) => (
-            <span
+            <button
               key={String(value)}
+              type="button"
+              disabled={!editing || !onChange}
+              onClick={() => onChange?.({ ...question, answer_boolean: value })}
               className={cn(
                 "inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm",
                 question.answer_boolean === value && "border-success/60 bg-success/10 font-medium",
+                editing && "cursor-pointer hover:bg-secondary/60",
               )}
             >
               {question.answer_boolean === value ? (
@@ -113,7 +229,7 @@ function TypeBody({ question, resolve }: { question: Question; resolve?: Resolve
                 <CircleDot className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
               )}
               {value ? "True" : "False"}
-            </span>
+            </button>
           ))}
         </div>
       );
@@ -121,9 +237,9 @@ function TypeBody({ question, resolve }: { question: Question; resolve?: Resolve
     case "fill_blank":
       return (
         <div className="mt-3 space-y-2">
-          {question.blanks.length ? (
+          {question.blanks.length || editing ? (
             <ol className="grid gap-2 sm:grid-cols-2">
-              {question.blanks.map((blank, index) => (
+              {(question.blanks.length ? question.blanks : [""]).map((blank, index) => (
                 <li
                   key={index}
                   className="flex items-baseline gap-2 rounded-md border border-border px-3 py-2 text-sm"
@@ -131,7 +247,18 @@ function TypeBody({ question, resolve }: { question: Question; resolve?: Resolve
                   <span className="text-xs font-semibold text-muted-foreground">
                     Blank {index + 1}
                   </span>
-                  {blank ? (
+                  {editing && onChange ? (
+                    <Input
+                      value={blank}
+                      className="h-8 flex-1"
+                      onChange={(event) => {
+                        const blanks = [...question.blanks];
+                        if (!blanks.length) blanks.push("");
+                        blanks[index] = event.target.value;
+                        onChange({ ...question, blanks });
+                      }}
+                    />
+                  ) : blank ? (
                     <MathText value={blank} className="font-medium" />
                   ) : (
                     <span className="text-muted-foreground italic">not printed</span>
@@ -140,7 +267,7 @@ function TypeBody({ question, resolve }: { question: Question; resolve?: Resolve
               ))}
             </ol>
           ) : null}
-          <OptionList question={question} />
+          <OptionList question={question} editing={editing} {...(onChange ? { onChange } : {})} />
         </div>
       );
 
@@ -158,10 +285,34 @@ function TypeBody({ question, resolve }: { question: Question; resolve?: Resolve
               {question.match_pairs.map((pair, index) => (
                 <tr key={index} className="border-t border-border">
                   <td className="px-3 py-2 align-top">
-                    <MathText value={pair.left} />
+                    {editing && onChange ? (
+                      <Textarea
+                        value={pair.left}
+                        rows={2}
+                        onChange={(event) => {
+                          const match_pairs = question.match_pairs.map((item, i) =>
+                            i === index ? { ...item, left: event.target.value } : item,
+                          );
+                          onChange({ ...question, match_pairs });
+                        }}
+                      />
+                    ) : (
+                      <MathText value={pair.left} />
+                    )}
                   </td>
                   <td className="px-3 py-2 align-top">
-                    {pair.right ? (
+                    {editing && onChange ? (
+                      <Textarea
+                        value={pair.right}
+                        rows={2}
+                        onChange={(event) => {
+                          const match_pairs = question.match_pairs.map((item, i) =>
+                            i === index ? { ...item, right: event.target.value } : item,
+                          );
+                          onChange({ ...question, match_pairs });
+                        }}
+                      />
+                    ) : pair.right ? (
                       <MathText value={pair.right} />
                     ) : (
                       <span className="text-muted-foreground italic">unmatched</span>
@@ -177,12 +328,18 @@ function TypeBody({ question, resolve }: { question: Question; resolve?: Resolve
     case "comprehension":
       return (
         <div className="mt-3 space-y-4">
-          {question.passage ? (
+          {question.passage || editing ? (
             <blockquote className="rounded-md border border-border bg-secondary/40 px-4 py-3 text-sm">
-              <p className="mb-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-                Passage
-              </p>
-              <MathText value={question.passage} />
+              <FieldLabel>Passage</FieldLabel>
+              {editing && onChange ? (
+                <Textarea
+                  value={question.passage ?? ""}
+                  rows={6}
+                  onChange={(event) => onChange({ ...question, passage: event.target.value })}
+                />
+              ) : (
+                <MathText value={question.passage ?? null} />
+              )}
             </blockquote>
           ) : null}
           <div className="space-y-3 border-l-2 border-border pl-4">
@@ -193,6 +350,18 @@ function TypeBody({ question, resolve }: { question: Question; resolve?: Resolve
                 index={index}
                 nested
                 {...(resolve ? { resolve } : {})}
+                {...(onChange
+                  ? {
+                      onChange: (next) => {
+                        const sub_questions = question.sub_questions.map((item) =>
+                          item.id === next.id ? next : item,
+                        );
+                        onChange({ ...question, sub_questions });
+                      },
+                    }
+                  : {})}
+                {...(generatingIds ? { generatingIds } : {})}
+                {...(onRegenerate ? { onRegenerate } : {})}
               />
             ))}
           </div>
@@ -204,11 +373,18 @@ function TypeBody({ question, resolve }: { question: Question; resolve?: Resolve
     case "numerical":
       return (
         <div className="mt-3">
-          {question.answer_text ? (
+          {editing && onChange ? (
+            <div className="rounded-md border border-border px-3 py-2 text-sm">
+              <FieldLabel>Answer</FieldLabel>
+              <Textarea
+                value={question.answer_text ?? ""}
+                rows={3}
+                onChange={(event) => onChange({ ...question, answer_text: event.target.value })}
+              />
+            </div>
+          ) : question.answer_text ? (
             <div className="rounded-md border border-success/40 bg-success/10 px-3 py-2 text-sm">
-              <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-                Answer
-              </p>
+              <FieldLabel>Answer</FieldLabel>
               <MathText value={question.answer_text} />
             </div>
           ) : (
@@ -222,8 +398,92 @@ function TypeBody({ question, resolve }: { question: Question; resolve?: Resolve
       );
 
     default:
-      return <OptionList question={question} />;
+      return <OptionList question={question} editing={editing} {...(onChange ? { onChange } : {})} />;
   }
+}
+
+function HintSolutionBlock({
+  question,
+  editing,
+  generating,
+  onChange,
+  onRegenerate,
+}: {
+  question: Question;
+  editing: boolean;
+  generating?: boolean | undefined;
+  onChange?: ((next: Question) => void) | undefined;
+  onRegenerate?: (() => void) | undefined;
+}) {
+  const show = editing || generating || question.hint || question.explanation || onRegenerate;
+  if (!show) return null;
+
+  return (
+    <>
+      <Separator className="my-3" />
+      <div className="space-y-3 text-sm">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+            Hint & solution
+          </p>
+          {generating ? (
+            <Badge variant="outline" className="gap-1">
+              <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+              Generating…
+            </Badge>
+          ) : null}
+          {onRegenerate && question.approved && !generating ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              className="ml-auto h-7 px-2 text-xs"
+              onClick={onRegenerate}
+            >
+              <RefreshCw className="h-3 w-3" aria-hidden="true" />
+              Regenerate
+            </Button>
+          ) : null}
+        </div>
+
+        <div>
+          <FieldLabel>Hint</FieldLabel>
+          {editing && onChange ? (
+            <Textarea
+              value={question.hint ?? ""}
+              rows={2}
+              placeholder="Short nudge — no final answer"
+              onChange={(event) => onChange({ ...question, hint: event.target.value })}
+            />
+          ) : question.hint ? (
+            <MathText value={question.hint} className="text-muted-foreground" />
+          ) : (
+            <p className="text-muted-foreground italic">
+              {generating ? "Writing a hint…" : "Approve this question to generate a hint."}
+            </p>
+          )}
+        </div>
+
+        <div>
+          <FieldLabel>Solution</FieldLabel>
+          {editing && onChange ? (
+            <Textarea
+              value={question.explanation ?? ""}
+              rows={5}
+              placeholder="Full worked solution"
+              onChange={(event) => onChange({ ...question, explanation: event.target.value })}
+            />
+          ) : question.explanation ? (
+            <MathText value={question.explanation} className="text-muted-foreground" />
+          ) : (
+            <p className="text-muted-foreground italic">
+              {generating ? "Writing a solution…" : "Approve this question to generate a solution."}
+            </p>
+          )}
+        </div>
+      </div>
+    </>
+  );
 }
 
 export function QuestionCard({
@@ -232,13 +492,23 @@ export function QuestionCard({
   nested = false,
   resolve,
   onApprovalChange,
+  onChange,
+  onRegenerate,
+  generatingIds,
 }: {
   question: Question;
   index: number;
   nested?: boolean;
   resolve?: Resolver | undefined;
   onApprovalChange?: ((approved: boolean) => void) | undefined;
+  onChange?: ((next: Question) => void) | undefined;
+  onRegenerate?: ((questionId: string) => void) | undefined;
+  generatingIds?: Set<string> | undefined;
 }) {
+  const [editing, setEditing] = useState(false);
+  const generating = generatingIds?.has(question.id) === true;
+  const canEdit = !!onChange;
+
   return (
     <article
       className={cn(
@@ -246,16 +516,46 @@ export function QuestionCard({
         nested
           ? "pt-1"
           : "rounded-lg border border-border bg-card p-5 shadow-[var(--shadow-paper)]",
+        editing && "ring-1 ring-primary/30",
       )}
     >
       <header className="flex flex-wrap items-center gap-2">
-        <span className="rounded-md bg-primary px-2 py-0.5 text-xs font-semibold text-primary-foreground">
-          {question.number ?? `Q${index + 1}`}
-        </span>
-        <Badge variant="secondary" className="gap-1">
-          <ListChecks className="h-3 w-3" aria-hidden="true" />
-          {QUESTION_TYPE_LABELS[question.type]}
-        </Badge>
+        {editing && onChange ? (
+          <Input
+            value={question.number ?? ""}
+            className="h-7 w-20"
+            placeholder={`Q${index + 1}`}
+            aria-label="Question number"
+            onChange={(event) => onChange({ ...question, number: event.target.value || null })}
+          />
+        ) : (
+          <span className="rounded-md bg-primary px-2 py-0.5 text-xs font-semibold text-primary-foreground">
+            {question.number ?? `Q${index + 1}`}
+          </span>
+        )}
+
+        {editing && onChange ? (
+          <select
+            className="h-7 rounded-md border border-input bg-background px-2 text-xs"
+            value={question.type}
+            aria-label="Question type"
+            onChange={(event) =>
+              onChange({ ...question, type: event.target.value as QuestionType })
+            }
+          >
+            {QUESTION_TYPES.map((type) => (
+              <option key={type} value={type}>
+                {QUESTION_TYPE_LABELS[type]}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <Badge variant="secondary" className="gap-1">
+            <ListChecks className="h-3 w-3" aria-hidden="true" />
+            {QUESTION_TYPE_LABELS[question.type]}
+          </Badge>
+        )}
+
         {question.section ? <Badge variant="outline">Section {question.section}</Badge> : null}
         {question.marks != null ? (
           <Badge variant="outline">
@@ -263,30 +563,73 @@ export function QuestionCard({
           </Badge>
         ) : null}
         {question.page != null ? (
-          <span className="ml-auto text-xs text-muted-foreground">Page {question.page + 1}</span>
+          <span className="text-xs text-muted-foreground">Page {question.page + 1}</span>
         ) : null}
-        {onApprovalChange ? (
-          <label className="ml-auto flex cursor-pointer items-center gap-2 text-sm font-medium text-foreground">
-            <Checkbox
-              checked={question.approved === true}
-              onCheckedChange={(checked) => onApprovalChange(checked === true)}
-              aria-label={`Mark question ${question.number ?? index + 1} approved`}
-            />
-            Approved
-          </label>
-        ) : question.approved ? (
-          <Badge variant="outline" className="border-success/60 bg-success/10 text-success">
-            <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
-            Approved
-          </Badge>
-        ) : null}
+
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {canEdit ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              aria-label={editing ? "Done editing" : "Edit question"}
+              onClick={() => setEditing((value) => !value)}
+            >
+              {editing ? (
+                <X className="h-4 w-4" aria-hidden="true" />
+              ) : (
+                <Pencil className="h-4 w-4" aria-hidden="true" />
+              )}
+            </Button>
+          ) : null}
+
+          {!nested && onApprovalChange ? (
+            <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-foreground">
+              <Checkbox
+                checked={question.approved === true}
+                onCheckedChange={(checked) => onApprovalChange(checked === true)}
+                aria-label={`Mark question ${question.number ?? index + 1} approved`}
+              />
+              Approved
+            </label>
+          ) : question.approved ? (
+            <Badge variant="outline" className="border-success/60 bg-success/10 text-success">
+              <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
+              Approved
+            </Badge>
+          ) : null}
+        </div>
       </header>
 
-      {question.instructions ? (
-        <p className="mt-2 text-xs text-muted-foreground italic">{question.instructions}</p>
+      {question.instructions || editing ? (
+        editing && onChange ? (
+          <div className="mt-2">
+            <FieldLabel>Instructions</FieldLabel>
+            <Input
+              value={question.instructions ?? ""}
+              onChange={(event) =>
+                onChange({ ...question, instructions: event.target.value || null })
+              }
+            />
+          </div>
+        ) : question.instructions ? (
+          <p className="mt-2 text-xs text-muted-foreground italic">{question.instructions}</p>
+        ) : null
       ) : null}
 
-      <MathText value={question.stem} className="mt-3 text-[15px]" />
+      {editing && onChange ? (
+        <div className="mt-3">
+          <FieldLabel>Stem</FieldLabel>
+          <Textarea
+            value={question.stem}
+            rows={4}
+            onChange={(event) => onChange({ ...question, stem: event.target.value })}
+          />
+        </div>
+      ) : (
+        <MathText value={question.stem} className="mt-3 text-[15px]" />
+      )}
 
       {question.figures.length ? (
         <div className="mt-3 space-y-2">
@@ -296,18 +639,25 @@ export function QuestionCard({
         </div>
       ) : null}
 
-      <TypeBody question={question} {...(resolve ? { resolve } : {})} />
+      <TypeBody
+        question={question}
+        editing={editing}
+        {...(resolve ? { resolve } : {})}
+        {...(onChange ? { onChange } : {})}
+        {...(generatingIds ? { generatingIds } : {})}
+        {...(onRegenerate ? { onRegenerate } : {})}
+      />
 
-      {question.explanation ? (
-        <>
-          <Separator className="my-3" />
-          <div className="text-sm">
-            <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-              Explanation
-            </p>
-            <MathText value={question.explanation} className="text-muted-foreground" />
-          </div>
-        </>
+      {question.type !== "comprehension" || !question.sub_questions.length ? (
+        <HintSolutionBlock
+          question={question}
+          editing={editing}
+          {...(generating ? { generating: true } : {})}
+          {...(onChange ? { onChange } : {})}
+          {...(onRegenerate
+            ? { onRegenerate: () => onRegenerate(question.id) }
+            : {})}
+        />
       ) : null}
     </article>
   );

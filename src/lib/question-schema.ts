@@ -80,6 +80,9 @@ export type Question = {
   answer_keys: string[];
   answer_text?: string | null;
   answer_boolean?: boolean | null;
+  /** Learner nudge only — never reveals the final answer. */
+  hint?: string | null;
+  /** Full worked solution / explanation (printed or AI-generated). */
   explanation?: string | null;
   marks?: number | null;
   section?: string | null;
@@ -169,6 +172,7 @@ export function normalizeQuestion(raw: unknown, page: number): Question {
     answer_text: str(r["answer_text"]),
     answer_boolean:
       typeof r["answer_boolean"] === "boolean" ? (r["answer_boolean"] as boolean) : null,
+    hint: str(r["hint"]),
     explanation: str(r["explanation"]),
     marks: typeof r["marks"] === "number" ? (r["marks"] as number) : null,
     section: str(r["section"]),
@@ -203,4 +207,32 @@ export function buildExport(meta: PaperMeta, questions: Question[], id?: string)
     question_count: questions.length,
     questions,
   };
+}
+
+/** Deep-update a question (including nested sub_questions) by id. */
+export function updateQuestionById(
+  list: Question[],
+  id: string,
+  updater: (question: Question) => Question,
+): Question[] {
+  return list.map((question) => {
+    if (question.id === id) return updater(question);
+    if (question.sub_questions.length) {
+      return {
+        ...question,
+        sub_questions: updateQuestionById(question.sub_questions, id, updater),
+      };
+    }
+    return question;
+  });
+}
+
+/** Find a question by id in a nested tree. */
+export function findQuestionById(list: Question[], id: string): Question | undefined {
+  for (const question of list) {
+    if (question.id === id) return question;
+    const nested = findQuestionById(question.sub_questions, id);
+    if (nested) return nested;
+  }
+  return undefined;
 }

@@ -10,6 +10,7 @@ import {
 import { useEffect, type ReactNode } from "react";
 
 import { Toaster } from "@/components/ui/sonner";
+import { preferLoopbackHost } from "@/integrations/lovable/local-oauth";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
@@ -130,6 +131,11 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+
+  // Lovable OAuth allowlists 127.0.0.1 but rejects localhost.
+  useEffect(() => {
+    preferLoopbackHost();
+  }, []);
 
   return (
     <QueryClientProvider client={queryClient}>

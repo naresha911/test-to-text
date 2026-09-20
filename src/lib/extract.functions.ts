@@ -231,9 +231,10 @@ async function optiicText(apiKey: string, imageDataUrl: string): Promise<string>
 
   // Optiic returns JSON on success but a plain-text sentence for quota / auth errors.
   const body = await response.text();
-  let payload: { text?: string; error?: { message?: string }; message?: string } | null = null;
+  type OptiicPayload = { text?: string; error?: { message?: string }; message?: string };
+  let payload: OptiicPayload | null = null;
   try {
-    payload = JSON.parse(body) as typeof payload;
+    payload = JSON.parse(body) as OptiicPayload;
   } catch {
     /* plain-text response */
   }
