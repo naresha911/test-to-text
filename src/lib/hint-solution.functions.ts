@@ -266,7 +266,7 @@ function parseResult(raw: unknown, source: Question): HintSolutionResult {
 }
 
 export const generateHintSolution = createServerFn({ method: "POST" })
-  .inputValidator((input: unknown) => InputSchema.parse(input))
+  .validator((input: unknown) => InputSchema.parse(input))
   .handler(async ({ data }): Promise<HintSolutionResult> => {
     const openRouterKey = process.env["OPENROUTER_API_KEY"];
     const lovableKey = process.env["LOVABLE_API_KEY"];

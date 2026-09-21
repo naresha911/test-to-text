@@ -3,7 +3,10 @@ import { DEFAULT_OPENROUTER_MODEL, type ReaderEngine } from "@/lib/extract.funct
 export type ReaderSettings = {
   engine: ReaderEngine;
   model: string;
+  apiKeys?: Partial<Record<ReaderEngine, string>>;
 };
+
+export const READER_KEY_ENGINES = ["openrouter", "vision", "optiic"] as const satisfies readonly ReaderEngine[];
 
 export const READER_LABELS: Record<ReaderEngine, string> = {
   lovable: "Built-in AI reader",
@@ -37,11 +40,18 @@ export function loadReaderSettings(): ReaderSettings {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return DEFAULT_READER_SETTINGS;
     const parsed = JSON.parse(raw) as Partial<ReaderSettings>;
+    const apiKeys = parsed.apiKeys && typeof parsed.apiKeys === "object" ? parsed.apiKeys : {};
     return {
       engine: VALID_ENGINES.includes(parsed.engine as ReaderEngine)
         ? (parsed.engine as ReaderEngine)
         : "lovable",
       model: typeof parsed.model === "string" && parsed.model.trim() ? parsed.model : DEFAULT_OPENROUTER_MODEL,
+      apiKeys: Object.fromEntries(
+        READER_KEY_ENGINES.filter((engine) => typeof apiKeys[engine] === "string").map((engine) => [
+          engine,
+          (apiKeys[engine] as string).trim(),
+        ]),
+      ) as Partial<Record<ReaderEngine, string>>,
     };
   } catch {
     return DEFAULT_READER_SETTINGS;

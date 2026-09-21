@@ -324,6 +324,7 @@ function HomePage() {
     const collected = [...questionsRef.current];
     const urls = { ...figureUrls };
     let failed = 0;
+    let configurationError: string | null = null;
 
     for (let i = 0; i < toRead.length; i += 1) {
       const page = toRead[i]!;
@@ -332,12 +333,14 @@ function HomePage() {
         continue;
       }
       try {
+        const apiKey = reader.apiKeys?.[reader.engine]?.trim();
         const result = await runExtract({
           data: {
             imageDataUrl: page.dataUrl!,
             page: page.page_index,
             engine: reader.engine,
             model: reader.model,
+            ...(apiKey ? { apiKey } : {}),
             ...(meta.notes?.trim() ? { hint: meta.notes.trim() } : {}),
           },
         });
@@ -380,7 +383,7 @@ function HomePage() {
         if (raw.includes("AI_CREDITS")) {
           toast.error(
             raw.replace(/^.*AI_CREDITS:\s*/, "") ||
-              "The AI reading credits for this workspace are used up.",
+            "The AI reading credits for this workspace are used up.",
           );
           break;
         }
@@ -399,10 +402,9 @@ function HomePage() {
     setQuestions(sorted);
     persist(id, sorted);
     if (sorted.length) {
+      const failedNote = failed ? ` — ${failed} page(s) returned nothing` : "";
       toast.success(
-        `Now ${sorted.length} question${sorted.length === 1 ? "" : "s"} in sequence${
-          failed ? ` — ${failed} page(s) returned nothing` : ""
-        }.`,
+        `Now ${sorted.length} question${sorted.length === 1 ? "" : "s"} in sequence${failedNote}.`,
       );
     } else {
       toast.error("No questions were found. Try a sharper or more zoomed-in photo.");

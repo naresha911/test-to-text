@@ -14,6 +14,7 @@ import { getReaderStatus, READER_ENGINES, type ReaderEngine } from "@/lib/extrac
 import { getLocalCatalog, importLocalCatalog } from "@/lib/local-store.functions";
 import {
   DEFAULT_READER_SETTINGS,
+  READER_KEY_ENGINES,
   READER_LABELS,
   READER_NOTES,
   loadReaderSettings,
@@ -40,8 +41,17 @@ function SettingsPage() {
   const loadCatalog = useServerFn(getLocalCatalog);
   const catalogInput = useRef<HTMLInputElement>(null);
   const [settings, setSettings] = useState(DEFAULT_READER_SETTINGS);
+  const [apiKeyDrafts, setApiKeyDrafts] = useState<Partial<Record<ReaderEngine, string>>>({});
 
-  useEffect(() => setSettings(loadReaderSettings()), []);
+  useEffect(() => {
+    const loaded = loadReaderSettings();
+    setSettings(loaded);
+    setApiKeyDrafts(loaded.apiKeys ?? {});
+  }, []);
+
+  useEffect(() => {
+    setApiKeyDrafts(settings.apiKeys ?? {});
+  }, [settings.apiKeys]);
 
   const status = useQuery({
     queryKey: ["reader-status"],
@@ -83,11 +93,25 @@ function SettingsPage() {
   }
 
   const configured: Record<ReaderEngine, boolean> = {
-    lovable: status.data?.lovable ?? false,
-    openrouter: status.data?.openrouter ?? false,
-    vision: status.data?.vision ?? false,
-    optiic: status.data?.optiic ?? false,
+    lovable: Boolean(status.data?.lovable),
+    openrouter: Boolean(status.data?.openrouter || settings.apiKeys?.openrouter?.trim()),
+    vision: Boolean(status.data?.vision || settings.apiKeys?.vision?.trim()),
+    optiic: Boolean(status.data?.optiic || settings.apiKeys?.optiic?.trim()),
   };
+
+  function saveApiKey(engine: ReaderEngine, value: string) {
+    const trimmed = value.trim();
+    const apiKeys = { ...(settings.apiKeys ?? {}) };
+    if (trimmed) {
+      apiKeys[engine] = trimmed;
+    } else {
+      delete apiKeys[engine];
+    }
+    const next = { ...settings, apiKeys };
+    setSettings(next);
+    saveReaderSettings(next);
+    toast.success(`${READER_LABELS[engine]} key ${trimmed ? "saved" : "removed"}.`);
+  }
 
   return (
     <div className="min-h-screen">

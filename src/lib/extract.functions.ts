@@ -18,6 +18,8 @@ const InputSchema = z.object({
   hint: z.string().max(600).optional(),
   /** Which reading engine to use. */
   engine: z.enum(READER_ENGINES).default("lovable"),
+  /** Optional reader key supplied by the browser for self-hosted/local use. */
+  apiKey: z.string().max(1000).optional(),
   /** Model id, only used by the OpenRouter engine. */
   model: z.string().min(2).max(120).optional(),
 });
@@ -119,7 +121,7 @@ async function callChat(options: {
   let buffer = "";
   let text = "";
 
-  for (;;) {
+  for (; ;) {
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
@@ -166,9 +168,8 @@ function structureTextMessages(pageText: string, hint?: string): ChatMessage[] {
     { role: "system", content: SYSTEM_PROMPT },
     {
       role: "user",
-      content: `Below is the raw OCR text of one page, in reading order. Structure it using the rules above. It contains no figures, so leave "figures" empty unless the text clearly refers to a printed figure.${
-        hint ? `\nContext from the user: ${hint}` : ""
-      }\n\n---\n${pageText}`,
+      content: `Below is the raw OCR text of one page, in reading order. Structure it using the rules above. It contains no figures, so leave "figures" empty unless the text clearly refers to a printed figure.${hint ? `\nContext from the user: ${hint}` : ""
+        }\n\n---\n${pageText}`,
     },
   ];
 }
@@ -219,12 +220,12 @@ function dataUrlToBlob(dataUrl: string): Blob {
 async function optiicText(apiKey: string, imageDataUrl: string): Promise<string> {
   const blob = dataUrlToBlob(imageDataUrl);
   const formData = new FormData();
+  formData.append("apiKey", apiKey);
   formData.append("image", blob, "page.jpg");
   formData.append("mode", "ocr");
 
   const response = await fetch("https://api.optiic.dev/process", {
     method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}` },
     body: formData,
   });
 
@@ -257,17 +258,27 @@ async function optiicText(apiKey: string, imageDataUrl: string): Promise<string>
 }
 
 export const extractPage = createServerFn({ method: "POST" })
-  .inputValidator((input: unknown) => InputSchema.parse(input))
+  .validator((input: unknown) => InputSchema.parse(input))
   .handler(async ({ data }): Promise<{ questions: Question[]; raw: string }> => {
     const lovableKey = process.env["LOVABLE_API_KEY"];
     const openRouterKey = process.env["OPENROUTER_API_KEY"];
     const visionKey = process.env["GOOGLE_CLOUD_VISION_API_KEY"];
     const optiicKey = process.env["OPTIIC_API_KEY"];
+    const suppliedApiKey = data.apiKey?.trim();
+
+    // A browser-supplied key is scoped to the selected engine. Environment keys remain
+    // the default for deployments that configure readers server-side.
+    const effectiveOpenRouterKey =
+      data.engine === "openrouter" ? (suppliedApiKey || openRouterKey) : openRouterKey;
+    const effectiveVisionKey =
+      data.engine === "vision" ? (suppliedApiKey || visionKey) : visionKey;
+    const effectiveOptiicKey =
+      data.engine === "optiic" ? (suppliedApiKey || optiicKey) : optiicKey;
 
     const openRouter = (messages: ChatMessage[]) =>
       callChat({
         url: "https://openrouter.ai/api/v1/chat/completions",
-        headers: { Authorization: `Bearer ${openRouterKey}` },
+        headers: { Authorization: `Bearer ${effectiveOpenRouterKey}` },
         model: data.model?.trim() || DEFAULT_OPENROUTER_MODEL,
         messages,
         label: "OpenRouter",
@@ -291,10 +302,10 @@ export const extractPage = createServerFn({ method: "POST" })
     async function structurePlainText(pageText: string): Promise<{ text: string } | { questions: Question[] }> {
       const messages = structureTextMessages(pageText, data.hint);
       try {
-        if (openRouterKey) return { text: await openRouter(messages) };
+        if (effectiveOpenRouterKey) return { text: await openRouter(messages) };
         if (lovableKey) return { text: await lovable(messages) };
       } catch (error) {
-        if (lovableKey && openRouterKey) {
+        if (lovableKey && effectiveOpenRouterKey) {
           try {
             return { text: await lovable(messages) };
           } catch {
@@ -309,7 +320,7 @@ export const extractPage = createServerFn({ method: "POST" })
     let text: string;
 
     if (data.engine === "openrouter") {
-      if (!openRouterKey) {
+      if (!effectiveOpenRouterKey) {
         throw new Error("No OpenRouter API key is saved yet. Add it in Settings, then try again.");
       }
       text = await openRouter(visionMessages(data.imageDataUrl, data.hint));
@@ -317,19 +328,19 @@ export const extractPage = createServerFn({ method: "POST" })
       const pageText =
         data.engine === "vision"
           ? await (async () => {
-              if (!visionKey) {
-                throw new Error(
-                  "No Google Cloud Vision API key is saved yet. Add it in Settings, then try again.",
-                );
-              }
-              return googleVisionText(visionKey, data.imageDataUrl);
-            })()
+            if (!effectiveVisionKey) {
+              throw new Error(
+                "No Google Cloud Vision API key is saved yet. Add it in Settings, then try again.",
+              );
+            }
+            return googleVisionText(effectiveVisionKey, data.imageDataUrl);
+          })()
           : await (async () => {
-              if (!optiicKey) {
-                throw new Error("No Optiic API key is saved yet. Add it in Settings, then try again.");
-              }
-              return optiicText(optiicKey, data.imageDataUrl);
-            })();
+            if (!effectiveOptiicKey) {
+              throw new Error("No Optiic API key is saved yet. Add it in Settings, then try again.");
+            }
+            return optiicText(effectiveOptiicKey, data.imageDataUrl);
+          })();
 
       const structured = await structurePlainText(pageText);
       if ("questions" in structured) return { questions: structured.questions, raw: "" };
@@ -350,10 +361,10 @@ export const extractPage = createServerFn({ method: "POST" })
 
 /** Reports which reader keys are configured, without ever revealing their values. */
 export const getReaderStatus = createServerFn({ method: "GET" }).handler(
-    async (): Promise<{ lovable: boolean; openrouter: boolean; vision: boolean; optiic: boolean }> => ({
-      lovable: !!process.env["LOVABLE_API_KEY"],
-      openrouter: !!process.env["OPENROUTER_API_KEY"],
-      vision: !!process.env["GOOGLE_CLOUD_VISION_API_KEY"],
-      optiic: !!process.env["OPTIIC_API_KEY"],
-    }),
-  );
+  async (): Promise<{ lovable: boolean; openrouter: boolean; vision: boolean; optiic: boolean }> => ({
+    lovable: !!process.env["LOVABLE_API_KEY"],
+    openrouter: !!process.env["OPENROUTER_API_KEY"],
+    vision: !!process.env["GOOGLE_CLOUD_VISION_API_KEY"],
+    optiic: !!process.env["OPTIIC_API_KEY"],
+  }),
+);

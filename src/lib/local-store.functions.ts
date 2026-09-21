@@ -24,11 +24,11 @@ export const listLocalDocuments = createServerFn({ method: "GET" }).handler(asyn
 );
 
 export const getLocalDocument = createServerFn({ method: "POST" })
-  .inputValidator((input: unknown) => z.object({ id: z.string().uuid() }).parse(input))
+  .validator((input: unknown) => z.object({ id: z.string().uuid() }).parse(input))
   .handler(async ({ data }) => getDocument(data.id));
 
 export const createLocalDocument = createServerFn({ method: "POST" })
-  .inputValidator((input: unknown) =>
+  .validator((input: unknown) =>
     z
       .object({
         kind: z.enum(["past_paper", "practice_test"]),
@@ -62,7 +62,7 @@ const MetaPatch = z.object({
 });
 
 export const saveLocalDocument = createServerFn({ method: "POST" })
-  .inputValidator((input: unknown) =>
+  .validator((input: unknown) =>
     z.object({ id: z.string().uuid(), patch: MetaPatch }).parse(input),
   )
   .handler(async ({ data }) => {
@@ -94,14 +94,14 @@ export const saveLocalDocument = createServerFn({ method: "POST" })
   });
 
 export const deleteLocalDocument = createServerFn({ method: "POST" })
-  .inputValidator((input: unknown) => z.object({ id: z.string().uuid() }).parse(input))
+  .validator((input: unknown) => z.object({ id: z.string().uuid() }).parse(input))
   .handler(async ({ data }) => {
     await deleteDocument(data.id);
     return { ok: true };
   });
 
 export const appendLocalPage = createServerFn({ method: "POST" })
-  .inputValidator((input: unknown) =>
+  .validator((input: unknown) =>
     z
       .object({
         documentId: z.string().uuid(),
@@ -113,14 +113,14 @@ export const appendLocalPage = createServerFn({ method: "POST" })
   .handler(async ({ data }) => appendPage(data));
 
 export const removeLocalPage = createServerFn({ method: "POST" })
-  .inputValidator((input: unknown) => z.object({ pageId: z.string().uuid() }).parse(input))
+  .validator((input: unknown) => z.object({ pageId: z.string().uuid() }).parse(input))
   .handler(async ({ data }) => {
     await removePage(data.pageId);
     return { ok: true };
   });
 
 export const markLocalPageOcr = createServerFn({ method: "POST" })
-  .inputValidator((input: unknown) =>
+  .validator((input: unknown) =>
     z.object({ pageId: z.string().uuid(), status: z.string().max(40) }).parse(input),
   )
   .handler(async ({ data }) => {
@@ -129,7 +129,7 @@ export const markLocalPageOcr = createServerFn({ method: "POST" })
   });
 
 export const saveLocalFigure = createServerFn({ method: "POST" })
-  .inputValidator((input: unknown) =>
+  .validator((input: unknown) =>
     z
       .object({
         documentId: z.string().uuid(),
@@ -143,11 +143,11 @@ export const saveLocalFigure = createServerFn({ method: "POST" })
 export const getLocalCatalog = createServerFn({ method: "GET" }).handler(async () => getCatalog());
 
 export const importLocalCatalog = createServerFn({ method: "POST" })
-  .inputValidator((input: unknown) => z.object({ dump: z.unknown() }).parse(input))
+  .validator((input: unknown) => z.object({ dump: z.unknown() }).parse(input))
   .handler(async ({ data }) => importCatalogDump(data.dump));
 
 export const exportLocalDocument = createServerFn({ method: "POST" })
-  .inputValidator((input: unknown) => z.object({ id: z.string().uuid() }).parse(input))
+  .validator((input: unknown) => z.object({ id: z.string().uuid() }).parse(input))
   .handler(async ({ data }) => {
     const loaded = await getDocument(data.id);
     if (!loaded) throw new Error("Document not found");
