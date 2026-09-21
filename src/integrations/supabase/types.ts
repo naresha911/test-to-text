@@ -53,6 +53,197 @@ export type Database = {
         }
         Relationships: []
       }
+      pp_catalog_standards: {
+        Row: {
+          display_order: number | null
+          id: number
+          name: string
+        }
+        Insert: {
+          display_order?: number | null
+          id: number
+          name: string
+        }
+        Update: {
+          display_order?: number | null
+          id?: number
+          name?: string
+        }
+        Relationships: []
+      }
+      pp_catalog_streams: {
+        Row: {
+          id: number
+          name: string
+          standard_id: number | null
+        }
+        Insert: {
+          id: number
+          name: string
+          standard_id?: number | null
+        }
+        Update: {
+          id?: number
+          name?: string
+          standard_id?: number | null
+        }
+        Relationships: []
+      }
+      pp_catalog_subjects: {
+        Row: {
+          code: string | null
+          id: number
+          name: string
+        }
+        Insert: {
+          code?: string | null
+          id: number
+          name: string
+        }
+        Update: {
+          code?: string | null
+          id?: number
+          name?: string
+        }
+        Relationships: []
+      }
+      pp_catalog_topics: {
+        Row: {
+          id: number
+          name: string
+          parent_topic_id: number | null
+          subject_id: number | null
+        }
+        Insert: {
+          id: number
+          name: string
+          parent_topic_id?: number | null
+          subject_id?: number | null
+        }
+        Update: {
+          id?: number
+          name?: string
+          parent_topic_id?: number | null
+          subject_id?: number | null
+        }
+        Relationships: []
+      }
+      pp_documents: {
+        Row: {
+          allow_pause: boolean
+          created_at: string
+          default_marks: number | null
+          default_negative_marks: number | null
+          description: string | null
+          difficulty: string | null
+          duration_minutes: number | null
+          exam: string | null
+          id: string
+          kind: string
+          max_attempts: number
+          negative_marking: boolean
+          notes: string | null
+          questions: Json
+          section_timing: boolean
+          source: string | null
+          standard_id: number | null
+          stream_id: number | null
+          subject_id: number | null
+          title: string
+          total_marks: number | null
+          updated_at: string
+          year: number | null
+        }
+        Insert: {
+          allow_pause?: boolean
+          created_at?: string
+          default_marks?: number | null
+          default_negative_marks?: number | null
+          description?: string | null
+          difficulty?: string | null
+          duration_minutes?: number | null
+          exam?: string | null
+          id?: string
+          kind?: string
+          max_attempts?: number
+          negative_marking?: boolean
+          notes?: string | null
+          questions?: Json
+          section_timing?: boolean
+          source?: string | null
+          standard_id?: number | null
+          stream_id?: number | null
+          subject_id?: number | null
+          title?: string
+          total_marks?: number | null
+          updated_at?: string
+          year?: number | null
+        }
+        Update: {
+          allow_pause?: boolean
+          created_at?: string
+          default_marks?: number | null
+          default_negative_marks?: number | null
+          description?: string | null
+          difficulty?: string | null
+          duration_minutes?: number | null
+          exam?: string | null
+          id?: string
+          kind?: string
+          max_attempts?: number
+          negative_marking?: boolean
+          notes?: string | null
+          questions?: Json
+          section_timing?: boolean
+          source?: string | null
+          standard_id?: number | null
+          stream_id?: number | null
+          subject_id?: number | null
+          title?: string
+          total_marks?: number | null
+          updated_at?: string
+          year?: number | null
+        }
+        Relationships: []
+      }
+      pp_pages: {
+        Row: {
+          created_at: string
+          document_id: string
+          file_path: string
+          id: string
+          ocr_status: string
+          original_name: string
+          page_index: number
+        }
+        Insert: {
+          created_at?: string
+          document_id: string
+          file_path: string
+          id?: string
+          ocr_status?: string
+          original_name?: string
+          page_index: number
+        }
+        Update: {
+          created_at?: string
+          document_id?: string
+          file_path?: string
+          id?: string
+          ocr_status?: string
+          original_name?: string
+          page_index?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "pp_pages_document_id_fkey"
+            columns: ["document_id"]
+            isOneToOne: false
+            referencedRelation: "pp_documents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
