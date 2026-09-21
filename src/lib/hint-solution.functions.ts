@@ -1,7 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 
-import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import {
   buildQuestionPromptPayload,
   type SolutionAudience,
@@ -267,7 +266,6 @@ function parseResult(raw: unknown, source: Question): HintSolutionResult {
 }
 
 export const generateHintSolution = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
   .inputValidator((input: unknown) => InputSchema.parse(input))
   .handler(async ({ data }): Promise<HintSolutionResult> => {
     const openRouterKey = process.env["OPENROUTER_API_KEY"];

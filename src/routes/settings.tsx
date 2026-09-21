@@ -1,16 +1,17 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, CheckCircle2, CircleAlert, Loader2, ScanText } from "lucide-react";
-import { useEffect, useState } from "react";
+import { CheckCircle2, CircleAlert, Loader2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
+import { AppHeader } from "@/components/AppHeader";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useAuth } from "@/hooks/useAuth";
 import { getReaderStatus, READER_ENGINES, type ReaderEngine } from "@/lib/extract.functions";
+import { getLocalCatalog, importLocalCatalog } from "@/lib/local-store.functions";
 import {
   DEFAULT_READER_SETTINGS,
   READER_LABELS,
@@ -26,24 +27,18 @@ export const Route = createFileRoute("/settings")({
       { title: "Reader settings — PaperParse" },
       {
         name: "description",
-        content:
-          "Choose which reader digitises your question papers — the built-in AI reader, OpenRouter, Google Cloud Vision or Optiic — and check which API keys are saved.",
+        content: "Choose the OCR reader and import exam-prep catalog IDs.",
       },
-      { property: "og:title", content: "Reader settings — PaperParse" },
-      {
-        property: "og:description",
-        content: "Pick your OCR engine and model, and see which API keys are configured.",
-      },
-      { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary" },
     ],
   }),
   component: SettingsPage,
 });
 
 function SettingsPage() {
-  const { session, loading } = useAuth();
   const fetchStatus = useServerFn(getReaderStatus);
+  const importCatalog = useServerFn(importLocalCatalog);
+  const loadCatalog = useServerFn(getLocalCatalog);
+  const catalogInput = useRef<HTMLInputElement>(null);
   const [settings, setSettings] = useState(DEFAULT_READER_SETTINGS);
 
   useEffect(() => setSettings(loadReaderSettings()), []);
@@ -51,7 +46,11 @@ function SettingsPage() {
   const status = useQuery({
     queryKey: ["reader-status"],
     queryFn: () => fetchStatus(),
-    enabled: !!session,
+  });
+
+  const catalog = useQuery({
+    queryKey: ["local-catalog"],
+    queryFn: () => loadCatalog(),
   });
 
   function update(engine: ReaderEngine) {
@@ -68,12 +67,19 @@ function SettingsPage() {
     toast.success("Model saved.");
   }
 
-  if (loading) {
-    return (
-      <main className="flex min-h-screen items-center justify-center">
-        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" aria-hidden="true" />
-      </main>
-    );
+  async function onCatalogFile(file: File | undefined) {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const dump = JSON.parse(text) as unknown;
+      const result = await importCatalog({ data: { dump } });
+      toast.success(
+        `Imported ${result.standards.length} standards, ${result.subjects.length} subjects, ${result.topics.length} topics.`,
+      );
+      void catalog.refetch();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not import that JSON dump.");
+    }
   }
 
   const configured: Record<ReaderEngine, boolean> = {
@@ -85,106 +91,99 @@ function SettingsPage() {
 
   return (
     <div className="min-h-screen">
-      <header className="sticky top-0 z-20 border-b border-border bg-background/85 backdrop-blur">
-        <div className="mx-auto flex max-w-3xl items-center gap-3 px-4 py-3">
-          <Link to="/" className="flex items-center gap-2 text-primary">
-            <ScanText className="h-5 w-5" aria-hidden="true" />
-            <span className="font-display text-xl">PaperParse</span>
-          </Link>
-          <Button variant="ghost" size="sm" className="ml-auto" asChild>
-            <Link to="/">
-              <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-              Back
-            </Link>
-          </Button>
-        </div>
-      </header>
+      <AppHeader />
 
       <main className="mx-auto max-w-3xl px-4 py-10">
-        <h1 className="text-3xl sm:text-4xl">Reader settings</h1>
+        <h1 className="text-3xl sm:text-4xl">Settings</h1>
         <p className="mt-3 text-muted-foreground">
-          Pick which service reads your uploaded pages. Keys are stored securely on the server and
-          are never shown in the browser.
+          Pick which service reads uploaded pages. Import standards/subjects/topics/streams JSON so
+          exported IDs match exam-prep.
         </p>
 
-        {!session ? (
-          <div className="mt-8 rounded-xl border border-border bg-card p-6 shadow-[var(--shadow-paper)]">
-            <h2 className="text-xl">Sign in first</h2>
-            <Button className="mt-4" asChild>
-              <Link to="/auth">Sign in</Link>
+        <div className="mt-8 rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-paper)]">
+          <h2 className="text-lg">Catalog IDs</h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Paste a JSON object with arrays: <code className="font-mono text-xs">standards</code>,{" "}
+            <code className="font-mono text-xs">subjects</code>,{" "}
+            <code className="font-mono text-xs">topics</code>,{" "}
+            <code className="font-mono text-xs">streams</code> (same columns as exam-prep).
+          </p>
+          <p className="mt-2 text-xs text-muted-foreground">
+            Loaded: {catalog.data?.standards.length ?? 0} standards · {catalog.data?.subjects.length ?? 0}{" "}
+            subjects · {catalog.data?.topics.length ?? 0} topics · {catalog.data?.streams.length ?? 0}{" "}
+            streams
+          </p>
+          <Button
+            className="mt-3"
+            variant="outline"
+            type="button"
+            onClick={() => catalogInput.current?.click()}
+          >
+            Import catalog JSON
+          </Button>
+          <input
+            ref={catalogInput}
+            type="file"
+            accept="application/json,.json"
+            className="hidden"
+            onChange={(event) => {
+              void onCatalogFile(event.target.files?.[0]);
+              event.target.value = "";
+            }}
+          />
+        </div>
+
+        <ul className="mt-8 space-y-3">
+          {READER_ENGINES.map((engine) => (
+            <li key={engine}>
+              <button
+                type="button"
+                onClick={() => update(engine)}
+                aria-pressed={settings.engine === engine}
+                className={cn(
+                  "w-full rounded-xl border bg-card p-5 text-left shadow-[var(--shadow-paper)] transition-colors",
+                  settings.engine === engine
+                    ? "border-primary ring-1 ring-primary"
+                    : "border-border hover:border-primary/60",
+                )}
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-lg">{READER_LABELS[engine]}</span>
+                  {settings.engine === engine ? <Badge>In use</Badge> : null}
+                  {status.isPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+                  ) : configured[engine] ? (
+                    <Badge variant="outline" className="gap-1">
+                      <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
+                      Key saved
+                    </Badge>
+                  ) : (
+                    <Badge variant="outline" className="gap-1 text-muted-foreground">
+                      <CircleAlert className="h-3.5 w-3.5" aria-hidden="true" />
+                      Key missing
+                    </Badge>
+                  )}
+                </div>
+                <p className="mt-2 text-sm text-muted-foreground">{READER_NOTES[engine]}</p>
+              </button>
+            </li>
+          ))}
+        </ul>
+
+        <div className="mt-6 rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-paper)]">
+          <Label htmlFor="model">OpenRouter model</Label>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Input
+              id="model"
+              className="max-w-sm"
+              value={settings.model}
+              onChange={(event) => setSettings({ ...settings, model: event.target.value })}
+            />
+            <Button variant="outline" onClick={saveModel}>
+              Save model
             </Button>
           </div>
-        ) : (
-          <>
-            <ul className="mt-8 space-y-3">
-              {READER_ENGINES.map((engine) => (
-                <li key={engine}>
-                  <button
-                    type="button"
-                    onClick={() => update(engine)}
-                    aria-pressed={settings.engine === engine}
-                    className={cn(
-                      "w-full rounded-xl border bg-card p-5 text-left shadow-[var(--shadow-paper)] transition-colors",
-                      settings.engine === engine
-                        ? "border-primary ring-1 ring-primary"
-                        : "border-border hover:border-primary/60",
-                    )}
-                  >
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-lg">{READER_LABELS[engine]}</span>
-                      {settings.engine === engine ? <Badge>In use</Badge> : null}
-                      {status.isPending ? null : configured[engine] ? (
-                        <Badge variant="outline" className="gap-1">
-                          <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
-                          Key saved
-                        </Badge>
-                      ) : (
-                        <Badge variant="outline" className="gap-1 text-muted-foreground">
-                          <CircleAlert className="h-3.5 w-3.5" aria-hidden="true" />
-                          Key missing
-                        </Badge>
-                      )}
-                    </div>
-                    <p className="mt-2 text-sm text-muted-foreground">{READER_NOTES[engine]}</p>
-                  </button>
-                </li>
-              ))}
-            </ul>
-
-            <div className="mt-6 rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-paper)]">
-              <Label htmlFor="model">OpenRouter model</Label>
-              <p className="mt-1 text-sm text-muted-foreground">
-                Any vision-capable model id from openrouter.ai/models, for example{" "}
-                <code className="font-mono text-xs">google/gemini-2.5-flash</code> or{" "}
-                <code className="font-mono text-xs">qwen/qwen2.5-vl-72b-instruct:free</code>.
-              </p>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <Input
-                  id="model"
-                  className="max-w-sm"
-                  value={settings.model}
-                  onChange={(event) => setSettings({ ...settings, model: event.target.value })}
-                />
-                <Button variant="outline" onClick={saveModel}>
-                  Save model
-                </Button>
-              </div>
-            </div>
-
-            <div className="mt-6 rounded-xl border border-dashed border-border p-5 text-sm text-muted-foreground">
-              <p>
-                A key shown as missing means it is not available to this server. In the Lovable app,
-                secrets are stored in the project (not in git) — ask in chat to add one and a secure
-                form opens. When running locally in Cursor, put{" "}
-                <code className="font-mono text-xs">OPENROUTER_API_KEY</code> or{" "}
-                <code className="font-mono text-xs">LOVABLE_API_KEY</code> in{" "}
-                <code className="font-mono text-xs">.env.local</code>, then restart the dev server.
-                Hints and solutions use OpenRouter when that key exists, otherwise the built-in AI
-                reader.
-              </p>
-            </div>
-          </>
-        )}
+        </div>
       </main>
     </div>
   );

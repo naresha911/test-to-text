@@ -1,24 +1,24 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { ArrowLeft, Download, Loader2, ScanText, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Download, Loader2, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
+import { AppHeader } from "@/components/AppHeader";
 import { PageReview } from "@/components/questions/PageReview";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { useAuth } from "@/hooks/useAuth";
-import { supabase } from "@/integrations/supabase/client";
 import { generateForApprovedQuestion } from "@/lib/hint-solution-client";
 import { generateHintSolution } from "@/lib/hint-solution.functions";
 import {
-  QUESTION_TYPE_LABELS,
-  buildExport,
-  updateQuestionById,
-  type Question,
-  type QuestionType,
-} from "@/lib/question-schema";
+  deleteLocalDocument,
+  exportLocalDocument,
+  getLocalDocument,
+  listLocalDocuments,
+  saveLocalDocument,
+} from "@/lib/local-store.functions";
+import { updateQuestionById, type Question } from "@/lib/question-schema";
 
 export const Route = createFileRoute("/library")({
   head: () => ({
@@ -26,92 +26,47 @@ export const Route = createFileRoute("/library")({
       { title: "Your paper library — PaperParse" },
       {
         name: "description",
-        content:
-          "Browse the question papers you have digitised, review every question type and download the JSON again.",
+        content: "Open in-progress papers stored on this machine and download exam-prep JSON.",
       },
-      { property: "og:title", content: "Your paper library — PaperParse" },
-      {
-        property: "og:description",
-        content: "Review and re-download the structured JSON of every paper you have digitised.",
-      },
-      { property: "og:type", content: "website" },
-      { name: "twitter:card", content: "summary_large_image" },
     ],
   }),
   component: LibraryPage,
 });
 
-type PaperRow = {
-  id: string;
-  title: string;
-  subject: string | null;
-  exam: string | null;
-  notes: string | null;
-  questions: unknown;
-  image_paths: string[];
-  created_at: string;
-};
-
-function figurePaths(questions: Question[]): string[] {
-  const paths: string[] = [];
-  const walk = (list: Question[]) => {
-    for (const question of list) {
-      for (const figure of question.figures) if (figure.image_path) paths.push(figure.image_path);
-      walk(question.sub_questions);
-    }
-  };
-  walk(questions);
-  return paths;
-}
-
-function PaperDetail({ paper }: { paper: PaperRow }) {
-  const queryClient = useQueryClient();
+function PaperDetail({ id }: { id: string }) {
+  const runGet = useServerFn(getLocalDocument);
+  const runSave = useServerFn(saveLocalDocument);
   const runHintSolution = useServerFn(generateHintSolution);
-  const [questions, setQuestions] = useState(
-    (Array.isArray(paper.questions) ? paper.questions : []) as Question[],
-  );
-  const [urls, setUrls] = useState<Record<string, string>>({});
+  const [questions, setQuestions] = useState<Question[]>([]);
+  const [pageUrls, setPageUrls] = useState<Array<string | undefined>>([]);
+  const [figureUrls, setFigureUrls] = useState<Record<string, string>>({});
   const [generatingIds, setGeneratingIds] = useState<Set<string>>(() => new Set());
+  const [ready, setReady] = useState(false);
   const questionsRef = useRef(questions);
   questionsRef.current = questions;
 
   useEffect(() => {
-    const paths = [...paper.image_paths, ...figurePaths(questions)];
-    if (!paths.length) return;
-    let active = true;
-    void supabase.storage
-      .from("paper-images")
-      .createSignedUrls(paths, 3600)
-      .then(({ data }) => {
-        if (!active || !data) return;
-        const map: Record<string, string> = {};
-        for (const item of data) if (item.path && item.signedUrl) map[item.path] = item.signedUrl;
-        setUrls(map);
-      });
-    return () => {
-      active = false;
-    };
-  }, [paper.id]);
+    void runGet({ data: { id } }).then((loaded) => {
+      if (!loaded) return;
+      setQuestions(loaded.questions);
+      const urls: Array<string | undefined> = [];
+      for (const page of loaded.pages) urls[page.page_index] = page.dataUrl;
+      setPageUrls(urls);
+      setFigureUrls(loaded.figureUrls);
+      setReady(true);
+    });
+  }, [id, runGet]);
 
-  const counts = new Map<QuestionType, number>();
-  for (const question of questions) counts.set(question.type, (counts.get(question.type) ?? 0) + 1);
+  function persist(next: Question[]) {
+    void runSave({ data: { id, patch: { questions: next } } });
+  }
 
-  const audience = useMemo(
-    () => ({
-      subject: paper.subject,
-      exam: paper.exam,
-      notes: paper.notes,
-    }),
-    [paper.subject, paper.exam, paper.notes],
-  );
-
-  async function persist(next: Question[]) {
-    const { error } = await supabase
-      .from("papers")
-      .update({ questions: JSON.parse(JSON.stringify(next)) })
-      .eq("id", paper.id);
-    if (error) throw error;
-    void queryClient.invalidateQueries({ queryKey: ["papers"] });
+  function patchQuestion(next: Question) {
+    setQuestions((current) => {
+      const updated = updateQuestionById(current, next.id, () => next);
+      persist(updated);
+      return updated;
+    });
   }
 
   async function runGeneration(questionId: string, force = false) {
@@ -121,83 +76,57 @@ function PaperDetail({ paper }: { paper: PaperRow }) {
         questions: questionsRef.current,
         questionId,
         force,
-        audience,
         runGenerate: runHintSolution,
         onProgress: (ids) => {
           requested = ids;
           setGeneratingIds((current) => {
             const next = new Set(current);
-            for (const id of ids) next.add(id);
+            for (const qid of ids) next.add(qid);
             return next;
           });
         },
       });
       if (result.generatedIds.length) {
         setQuestions(result.questions);
-        await persist(result.questions);
-        toast.success(
-          force ? "Hint and solution regenerated." : "Hint and solution ready.",
-        );
+        persist(result.questions);
+        toast.success(force ? "Hint and solution regenerated." : "Hint and solution ready.");
       }
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Could not generate hint and solution.",
-      );
+      toast.error(error instanceof Error ? error.message : "Could not generate hint and solution.");
     } finally {
       if (requested.length) {
         setGeneratingIds((current) => {
           const next = new Set(current);
-          for (const id of requested) next.delete(id);
+          for (const qid of requested) next.delete(qid);
           return next;
         });
       }
     }
   }
 
-  async function setApproved(questionId: string, approved: boolean) {
-    const previous = questions;
-    const next = updateQuestionById(questions, questionId, (question) => ({
-      ...question,
-      approved,
-    }));
-    setQuestions(next);
-    try {
-      await persist(next);
-    } catch {
-      setQuestions(previous);
-      toast.error("Could not update the approval status.");
-      return;
-    }
-    if (approved) void runGeneration(questionId, false);
-  }
-
-  async function patchQuestion(nextQuestion: Question) {
-    const previous = questions;
-    const next = updateQuestionById(questions, nextQuestion.id, () => nextQuestion);
-    setQuestions(next);
-    try {
-      await persist(next);
-    } catch {
-      setQuestions(previous);
-      toast.error("Could not save your edits.");
-    }
+  if (!ready) {
+    return (
+      <div className="mt-4 flex justify-center">
+        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+      </div>
+    );
   }
 
   return (
-    <div className="mt-4 space-y-4">
-      <div className="flex flex-wrap gap-2">
-        {[...counts.entries()].map(([type, count]) => (
-          <Badge key={type} variant="outline">
-            {QUESTION_TYPE_LABELS[type]} {count}
-          </Badge>
-        ))}
-      </div>
+    <div className="mt-6">
       <PageReview
         questions={questions}
-        pageUrls={paper.image_paths.map((path) => urls[path])}
-        resolveFigure={(path) => urls[path]}
-        onApprovalChange={(questionId, approved) => void setApproved(questionId, approved)}
-        onQuestionChange={(question) => void patchQuestion(question)}
+        pageUrls={pageUrls}
+        resolveFigure={(path) => figureUrls[path]}
+        onApprovalChange={(questionId, approved) => {
+          setQuestions((current) => {
+            const updated = updateQuestionById(current, questionId, (q) => ({ ...q, approved }));
+            persist(updated);
+            return updated;
+          });
+          if (approved) void runGeneration(questionId, false);
+        }}
+        onQuestionChange={patchQuestion}
         onRegenerate={(questionId) => void runGeneration(questionId, true)}
         generatingIds={generatingIds}
       />
@@ -206,98 +135,65 @@ function PaperDetail({ paper }: { paper: PaperRow }) {
 }
 
 function LibraryPage() {
-  const { session, loading } = useAuth();
   const queryClient = useQueryClient();
+  const listFn = useServerFn(listLocalDocuments);
+  const deleteFn = useServerFn(deleteLocalDocument);
+  const exportFn = useServerFn(exportLocalDocument);
   const [openId, setOpenId] = useState<string | null>(null);
 
   const papers = useQuery({
-    queryKey: ["papers", session?.user.id],
-    enabled: !!session,
-    queryFn: async (): Promise<PaperRow[]> => {
-      const { data, error } = await supabase
-        .from("papers")
-        .select("id, title, subject, exam, notes, questions, image_paths, created_at")
-        .order("created_at", { ascending: false });
-      if (error) throw error;
-      return (data ?? []) as PaperRow[];
-    },
+    queryKey: ["local-documents"],
+    queryFn: () => listFn(),
   });
 
   const remove = useMutation({
-    mutationFn: async (id: string) => {
-      const { error } = await supabase.from("papers").delete().eq("id", id);
-      if (error) throw error;
-    },
+    mutationFn: async (id: string) => deleteFn({ data: { id } }),
     onSuccess: () => {
-      toast.success("Paper deleted.");
-      void queryClient.invalidateQueries({ queryKey: ["papers"] });
+      toast.success("Deleted from this machine.");
+      void queryClient.invalidateQueries({ queryKey: ["local-documents"] });
     },
     onError: () => toast.error("Could not delete that paper."),
   });
 
-  function download(paper: PaperRow) {
-    const questions = (Array.isArray(paper.questions) ? paper.questions : []) as Question[];
-    const payload = buildExport(
-      { title: paper.title, subject: paper.subject, exam: paper.exam, notes: paper.notes },
-      questions,
-      paper.id,
-    );
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `${paper.title.replace(/[^a-z0-9-_]+/gi, "-").toLowerCase()}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
+  async function download(id: string, title: string) {
+    try {
+      const payload = await exportFn({ data: { id } });
+      const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${title.replace(/[^a-z0-9-_]+/gi, "-").toLowerCase() || "paper"}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error("Could not export JSON.");
+    }
   }
 
   return (
     <div className="min-h-screen">
-      <header className="sticky top-0 z-20 border-b border-border bg-background/85 backdrop-blur">
-        <div className="mx-auto flex max-w-5xl items-center gap-3 px-4 py-3">
-          <Link to="/" className="flex items-center gap-2 text-primary">
-            <ScanText className="h-5 w-5" aria-hidden="true" />
-            <span className="font-display text-xl">PaperParse</span>
-          </Link>
-          <Button variant="ghost" size="sm" className="ml-auto" asChild>
-            <Link to="/">
-              <ArrowLeft className="h-4 w-4" aria-hidden="true" />
-              Back to converter
-            </Link>
-          </Button>
-        </div>
-      </header>
+      <AppHeader />
 
       <main className="mx-auto max-w-5xl px-4 py-10">
         <h1 className="text-4xl">Your library</h1>
         <p className="mt-2 text-muted-foreground">
-          Every paper you saved, with its questions and JSON export.
+          Papers stored in local SQLite on this computer. Open one to keep adding pages.
         </p>
 
-        {loading || papers.isLoading ? (
+        {papers.isLoading ? (
           <div className="mt-10 flex justify-center">
             <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" aria-hidden="true" />
           </div>
-        ) : !session ? (
-          <div className="mt-8 rounded-xl border border-border bg-card p-6">
-            <p className="text-sm text-muted-foreground">Sign in to see your saved papers.</p>
-            <Button className="mt-4" asChild>
-              <Link to="/auth">Sign in</Link>
-            </Button>
-          </div>
         ) : !papers.data?.length ? (
           <div className="mt-8 rounded-xl border border-dashed border-border p-10 text-center">
-            <p className="text-muted-foreground">
-              Nothing saved yet. Convert a paper and hit “Save to library”.
-            </p>
+            <p className="text-muted-foreground">Nothing saved yet. Convert a paper on the home page.</p>
             <Button className="mt-4" asChild>
-              <Link to="/">Convert a paper</Link>
+              <Link to="/" search={{ id: undefined }}>Convert a paper</Link>
             </Button>
           </div>
         ) : (
           <ul className="mt-8 space-y-4">
             {papers.data.map((paper) => {
-              const count = Array.isArray(paper.questions) ? paper.questions.length : 0;
               const open = openId === paper.id;
               return (
                 <li
@@ -309,16 +205,23 @@ function LibraryPage() {
                       <h2 className="truncate text-2xl">{paper.title}</h2>
                       <p className="mt-1 text-xs text-muted-foreground">
                         {[
-                          paper.subject,
-                          paper.exam,
-                          `${count} question${count === 1 ? "" : "s"}`,
-                          new Date(paper.created_at).toLocaleDateString(),
+                          paper.kind === "practice_test" ? "Practice test" : "Past paper",
+                          paper.year,
+                          `${paper.question_count} question${paper.question_count === 1 ? "" : "s"}`,
+                          `${paper.page_count} page${paper.page_count === 1 ? "" : "s"}`,
+                          new Date(paper.updated_at).toLocaleDateString(),
                         ]
                           .filter(Boolean)
                           .join(" · ")}
                       </p>
                     </div>
-                    <Button variant="outline" size="sm" onClick={() => download(paper)}>
+                    <Badge variant="outline">{paper.kind === "practice_test" ? "Test" : "Paper"}</Badge>
+                    <Button variant="outline" size="sm" asChild>
+                      <Link to="/" search={{ id: paper.id }}>
+                        Continue
+                      </Link>
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => void download(paper.id, paper.title)}>
                       <Download className="h-4 w-4" aria-hidden="true" />
                       JSON
                     </Button>
@@ -334,7 +237,7 @@ function LibraryPage() {
                       <Trash2 className="h-4 w-4 text-destructive" aria-hidden="true" />
                     </Button>
                   </div>
-                  {open ? <PaperDetail paper={paper} /> : null}
+                  {open ? <PaperDetail id={paper.id} /> : null}
                 </li>
               );
             })}

@@ -16,6 +16,9 @@ dist-ssr
 .nitro
 *.local
 
+# Local PaperParse workspace
+data/
+
 # Wrangler / Cloudflare
 .wrangler/
 .dev.vars

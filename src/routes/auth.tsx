@@ -40,7 +40,7 @@ function AuthPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    if (!loading && session) void navigate({ to: "/" });
+    if (!loading && session) void navigate({ to: "/", search: { id: undefined } });
   }, [loading, session, navigate]);
 
   async function handleSubmit(event: React.FormEvent) {
@@ -63,7 +63,7 @@ function AuthPage() {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
       }
-      void navigate({ to: "/" });
+      void navigate({ to: "/", search: { id: undefined } });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not sign you in.");
     } finally {
@@ -83,13 +83,13 @@ function AuthPage() {
       return;
     }
     if ("redirected" in result && result.redirected) return;
-    void navigate({ to: "/" });
+    void navigate({ to: "/", search: { id: undefined } });
   }
 
   return (
     <main className="flex min-h-screen items-center justify-center px-4 py-12">
       <div className="w-full max-w-sm">
-        <Link to="/" className="mb-8 flex items-center justify-center gap-2 text-primary">
+        <Link to="/" search={{ id: undefined }} className="mb-8 flex items-center justify-center gap-2 text-primary">
           <ScanText className="h-5 w-5" aria-hidden="true" />
           <span className="font-display text-2xl">PaperParse</span>
         </Link>

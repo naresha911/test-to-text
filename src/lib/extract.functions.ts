@@ -1,7 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 
-import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { structureOcrText } from "@/lib/ocr-structure";
 import { normalizeQuestion, type Question } from "@/lib/question-schema";
 
@@ -258,7 +257,6 @@ async function optiicText(apiKey: string, imageDataUrl: string): Promise<string>
 }
 
 export const extractPage = createServerFn({ method: "POST" })
-  .middleware([requireSupabaseAuth])
   .inputValidator((input: unknown) => InputSchema.parse(input))
   .handler(async ({ data }): Promise<{ questions: Question[]; raw: string }> => {
     const lovableKey = process.env["LOVABLE_API_KEY"];
@@ -351,9 +349,7 @@ export const extractPage = createServerFn({ method: "POST" })
   });
 
 /** Reports which reader keys are configured, without ever revealing their values. */
-export const getReaderStatus = createServerFn({ method: "GET" })
-  .middleware([requireSupabaseAuth])
-  .handler(
+export const getReaderStatus = createServerFn({ method: "GET" }).handler(
     async (): Promise<{ lovable: boolean; openrouter: boolean; vision: boolean; optiic: boolean }> => ({
       lovable: !!process.env["LOVABLE_API_KEY"],
       openrouter: !!process.env["OPENROUTER_API_KEY"],

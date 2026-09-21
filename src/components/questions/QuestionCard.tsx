@@ -562,6 +562,14 @@ export function QuestionCard({
             {question.marks} mark{question.marks === 1 ? "" : "s"}
           </Badge>
         ) : null}
+        {question.negative_marks != null ? (
+          <Badge variant="outline">−{question.negative_marks}</Badge>
+        ) : null}
+        {question.difficulty ? (
+          <Badge variant="outline" className="capitalize">
+            {question.difficulty}
+          </Badge>
+        ) : null}
         {question.page != null ? (
           <span className="text-xs text-muted-foreground">Page {question.page + 1}</span>
         ) : null}
@@ -630,6 +638,106 @@ export function QuestionCard({
       ) : (
         <MathText value={question.stem} className="mt-3 text-[15px]" />
       )}
+
+      {editing && onChange ? (
+        <div className="mt-3 grid gap-2 sm:grid-cols-3">
+          <div>
+            <FieldLabel>Section</FieldLabel>
+            <Input
+              value={question.section ?? ""}
+              onChange={(event) =>
+                onChange({ ...question, section: event.target.value || null })
+              }
+            />
+          </div>
+          <div>
+            <FieldLabel>Marks</FieldLabel>
+            <Input
+              type="number"
+              value={question.marks ?? ""}
+              onChange={(event) =>
+                onChange({
+                  ...question,
+                  marks: event.target.value === "" ? null : Number(event.target.value),
+                })
+              }
+            />
+          </div>
+          <div>
+            <FieldLabel>Negative marks</FieldLabel>
+            <Input
+              type="number"
+              value={question.negative_marks ?? ""}
+              onChange={(event) =>
+                onChange({
+                  ...question,
+                  negative_marks:
+                    event.target.value === "" ? null : Number(event.target.value),
+                })
+              }
+            />
+          </div>
+          <div>
+            <FieldLabel>Difficulty</FieldLabel>
+            <select
+              className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+              value={question.difficulty ?? ""}
+              onChange={(event) =>
+                onChange({
+                  ...question,
+                  difficulty: (event.target.value || null) as "easy" | "medium" | "hard" | null,
+                })
+              }
+            >
+              <option value="">Unset</option>
+              <option value="easy">Easy</option>
+              <option value="medium">Medium</option>
+              <option value="hard">Hard</option>
+            </select>
+          </div>
+          <div>
+            <FieldLabel>Subject ID</FieldLabel>
+            <Input
+              type="number"
+              value={question.subject_id ?? ""}
+              onChange={(event) =>
+                onChange({
+                  ...question,
+                  subject_id: event.target.value === "" ? null : Number(event.target.value),
+                })
+              }
+            />
+          </div>
+          <div>
+            <FieldLabel>Topic ID</FieldLabel>
+            <Input
+              type="number"
+              value={question.topic_id ?? ""}
+              onChange={(event) =>
+                onChange({
+                  ...question,
+                  topic_id: event.target.value === "" ? null : Number(event.target.value),
+                })
+              }
+            />
+          </div>
+          <div className="sm:col-span-3">
+            <FieldLabel>Tags (comma separated)</FieldLabel>
+            <Input
+              value={question.tags.join(", ")}
+              onChange={(event) =>
+                onChange({
+                  ...question,
+                  tags: event.target.value
+                    .split(",")
+                    .map((t) => t.trim())
+                    .filter(Boolean),
+                })
+              }
+            />
+          </div>
+        </div>
+      ) : null}
 
       {question.figures.length ? (
         <div className="mt-3 space-y-2">

@@ -94,6 +94,13 @@ export type Question = {
   confidence?: number | null;
   /** Set after a reviewer compares this extraction with the source page. */
   approved: boolean;
+  subject_id?: number | null;
+  topic_id?: number | null;
+  standard_id?: number | null;
+  stream_id?: number | null;
+  negative_marks?: number | null;
+  year?: number | null;
+  source?: string | null;
 };
 
 export type PaperMeta = {
@@ -124,6 +131,13 @@ export function emptyQuestion(partial: Partial<Question> = {}): Question {
     tags: [],
     figures: [],
     approved: false,
+    subject_id: null,
+    topic_id: null,
+    standard_id: null,
+    stream_id: null,
+    negative_marks: null,
+    year: null,
+    source: null,
     ...partial,
   };
 }
@@ -193,6 +207,13 @@ export function normalizeQuestion(raw: unknown, page: number): Question {
     page,
     confidence: typeof r["confidence"] === "number" ? (r["confidence"] as number) : null,
     approved: r["approved"] === true,
+    subject_id: typeof r["subject_id"] === "number" ? (r["subject_id"] as number) : null,
+    topic_id: typeof r["topic_id"] === "number" ? (r["topic_id"] as number) : null,
+    standard_id: typeof r["standard_id"] === "number" ? (r["standard_id"] as number) : null,
+    stream_id: typeof r["stream_id"] === "number" ? (r["stream_id"] as number) : null,
+    negative_marks: typeof r["negative_marks"] === "number" ? (r["negative_marks"] as number) : null,
+    year: typeof r["year"] === "number" ? (r["year"] as number) : null,
+    source: str(r["source"]),
   };
 }
 
