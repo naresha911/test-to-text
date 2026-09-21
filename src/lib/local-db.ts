@@ -1,217 +1,114 @@
-import fs from "node:fs";
-import path from "node:path";
-import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
-import type { Database, SqlJsStatic } from "sql.js";
-
+/**
+ * Document store backed by Lovable Cloud (Postgres + private image bucket).
+ * Runs inside server functions only; the admin client is imported lazily so
+ * this module stays safe to reference from *.functions.ts files.
+ */
 import type { Catalog, DocumentKind, DocumentMeta, PageRecord } from "@/lib/document-types";
 import type { Question } from "@/lib/question-schema";
 
-const require = createRequire(import.meta.url);
+const BUCKET = "paper-images";
+const SIGNED_URL_TTL = 60 * 60 * 8;
 
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS catalog_standards (
-  id INTEGER PRIMARY KEY,
-  name TEXT NOT NULL,
-  display_order INTEGER
-);
-CREATE TABLE IF NOT EXISTS catalog_subjects (
-  id INTEGER PRIMARY KEY,
-  name TEXT NOT NULL,
-  code TEXT
-);
-CREATE TABLE IF NOT EXISTS catalog_topics (
-  id INTEGER PRIMARY KEY,
-  subject_id INTEGER,
-  name TEXT NOT NULL,
-  parent_topic_id INTEGER
-);
-CREATE TABLE IF NOT EXISTS catalog_streams (
-  id INTEGER PRIMARY KEY,
-  name TEXT NOT NULL,
-  standard_id INTEGER
-);
-CREATE TABLE IF NOT EXISTS documents (
-  id TEXT PRIMARY KEY,
-  kind TEXT NOT NULL,
-  title TEXT NOT NULL DEFAULT 'Untitled',
-  year INTEGER,
-  standard_id INTEGER,
-  stream_id INTEGER,
-  subject_id INTEGER,
-  duration_minutes INTEGER,
-  total_marks REAL,
-  difficulty TEXT,
-  exam TEXT,
-  notes TEXT,
-  source TEXT,
-  description TEXT,
-  section_timing INTEGER NOT NULL DEFAULT 0,
-  negative_marking INTEGER NOT NULL DEFAULT 1,
-  allow_pause INTEGER NOT NULL DEFAULT 1,
-  max_attempts INTEGER NOT NULL DEFAULT 1,
-  default_marks REAL,
-  default_negative_marks REAL,
-  questions_json TEXT NOT NULL DEFAULT '[]',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS pages (
-  id TEXT PRIMARY KEY,
-  document_id TEXT NOT NULL,
-  page_index INTEGER NOT NULL,
-  file_path TEXT NOT NULL,
-  original_name TEXT NOT NULL DEFAULT '',
-  ocr_status TEXT NOT NULL DEFAULT 'pending',
-  FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
-);
-`;
-
-let SQL: SqlJsStatic | null = null;
-let db: Database | null = null;
-let writeChain: Promise<void> = Promise.resolve();
-
-export function dataDir(): string {
-  return path.join(process.cwd(), "data");
+async function admin() {
+  const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+  return supabaseAdmin;
 }
 
-export function dbPath(): string {
-  return path.join(dataDir(), "paperparse.sqlite");
+function fail(context: string, error: { message: string } | null): never {
+  throw new Error(`${context}: ${error?.message ?? "unknown error"}`);
 }
 
-export function imagesDir(documentId?: string): string {
-  const dir = path.join(dataDir(), "images");
-  return documentId ? path.join(dir, documentId) : dir;
-}
-
-async function loadSql(): Promise<SqlJsStatic> {
-  if (SQL) return SQL;
-  const initSqlJs = require("sql.js") as (opts?: { locateFile?: (file: string) => string }) => Promise<SqlJsStatic>;
-  const wasmDir = path.dirname(fileURLToPath(import.meta.url));
-  const locateFile = (file: string) => {
-    const fromPkg = path.join(process.cwd(), "node_modules", "sql.js", "dist", file);
-    if (fs.existsSync(fromPkg)) return fromPkg;
-    return path.join(wasmDir, file);
-  };
-  SQL = await initSqlJs({ locateFile });
-  return SQL;
-}
-
-function persist(instance: Database) {
-  fs.mkdirSync(dataDir(), { recursive: true });
-  const data = instance.export();
-  fs.writeFileSync(dbPath(), Buffer.from(data));
-}
-
-export async function getDb(): Promise<Database> {
-  if (db) return db;
-  const sql = await loadSql();
-  fs.mkdirSync(dataDir(), { recursive: true });
-  const file = dbPath();
-  if (fs.existsSync(file)) {
-    db = new sql.Database(fs.readFileSync(file));
-  } else {
-    db = new sql.Database();
-  }
-  db.run("PRAGMA foreign_keys = ON;");
-  db.exec(SCHEMA);
-  seedCatalogIfEmpty(db);
-  persist(db);
-  return db;
-}
-
-function withWrite<T>(fn: (instance: Database) => T): Promise<T> {
-  const run = writeChain.then(async () => {
-    const instance = await getDb();
-    const result = fn(instance);
-    persist(instance);
-    return result;
-  });
-  writeChain = run.then(
-    () => undefined,
-    () => undefined,
-  );
-  return run;
-}
-
-function nowIso() {
-  return new Date().toISOString();
-}
-
-function pick(row: Record<string, unknown>, key: string): unknown {
-  return row[key];
-}
-
-function asNum(value: unknown): number | null {
+function num(value: unknown): number | null {
   return value == null ? null : Number(value);
 }
 
-function asStr(value: unknown): string | null {
+function str(value: unknown): string | null {
   return value == null ? null : String(value);
 }
 
 function rowToMeta(row: Record<string, unknown>): DocumentMeta {
   return {
-    id: String(pick(row, "id")),
-    kind: (asStr(pick(row, "kind")) as DocumentKind) || "past_paper",
-    title: asStr(pick(row, "title")) ?? "Untitled",
-    year: asNum(pick(row, "year")),
-    standard_id: asNum(pick(row, "standard_id")),
-    stream_id: asNum(pick(row, "stream_id")),
-    subject_id: asNum(pick(row, "subject_id")),
-    duration_minutes: asNum(pick(row, "duration_minutes")),
-    total_marks: asNum(pick(row, "total_marks")),
-    difficulty: (asStr(pick(row, "difficulty")) as DocumentMeta["difficulty"]) ?? null,
-    exam: asStr(pick(row, "exam")),
-    notes: asStr(pick(row, "notes")),
-    source: asStr(pick(row, "source")),
-    description: asStr(pick(row, "description")),
-    section_timing: Number(pick(row, "section_timing")) === 1,
-    negative_marking: Number(pick(row, "negative_marking")) !== 0,
-    allow_pause: Number(pick(row, "allow_pause")) !== 0,
-    max_attempts: asNum(pick(row, "max_attempts")) ?? 1,
-    default_marks: asNum(pick(row, "default_marks")),
-    default_negative_marks: asNum(pick(row, "default_negative_marks")),
-    created_at: String(pick(row, "created_at")),
-    updated_at: String(pick(row, "updated_at")),
+    id: String(row["id"]),
+    kind: (str(row["kind"]) as DocumentKind) || "past_paper",
+    title: str(row["title"]) ?? "Untitled",
+    year: num(row["year"]),
+    standard_id: num(row["standard_id"]),
+    stream_id: num(row["stream_id"]),
+    subject_id: num(row["subject_id"]),
+    duration_minutes: num(row["duration_minutes"]),
+    total_marks: num(row["total_marks"]),
+    difficulty: (str(row["difficulty"]) as DocumentMeta["difficulty"]) ?? null,
+    exam: str(row["exam"]),
+    notes: str(row["notes"]),
+    source: str(row["source"]),
+    description: str(row["description"]),
+    section_timing: row["section_timing"] === true,
+    negative_marking: row["negative_marking"] !== false,
+    allow_pause: row["allow_pause"] !== false,
+    max_attempts: num(row["max_attempts"]) ?? 1,
+    default_marks: num(row["default_marks"]),
+    default_negative_marks: num(row["default_negative_marks"]),
+    created_at: String(row["created_at"]),
+    updated_at: String(row["updated_at"]),
   };
 }
 
-function queryAll(instance: Database, sql: string, params: unknown[] = []): Record<string, unknown>[] {
-  const stmt = instance.prepare(sql);
-  stmt.bind(params as never[]);
-  const rows: Record<string, unknown>[] = [];
-  while (stmt.step()) rows.push(stmt.getAsObject());
-  stmt.free();
-  return rows;
+function toQuestions(value: unknown): Question[] {
+  return Array.isArray(value) ? (value as Question[]) : [];
 }
 
-function queryOne(instance: Database, sql: string, params: unknown[] = []): Record<string, unknown> | null {
-  const rows = queryAll(instance, sql, params);
-  return rows[0] ?? null;
+function rowToPage(row: Record<string, unknown>): PageRecord {
+  return {
+    id: String(row["id"]),
+    document_id: String(row["document_id"]),
+    page_index: Number(row["page_index"]),
+    file_path: String(row["file_path"]),
+    original_name: String(row["original_name"] ?? ""),
+    ocr_status: String(row["ocr_status"] ?? "pending"),
+  };
 }
 
-export async function listDocuments(): Promise<Array<DocumentMeta & { question_count: number; page_count: number }>> {
-  const instance = await getDb();
-  const rows = queryAll(
-    instance,
-    `SELECT d.*,
-      (SELECT COUNT(*) FROM pages p WHERE p.document_id = d.id) AS page_count,
-      d.questions_json
-     FROM documents d
-     ORDER BY d.updated_at DESC`,
-  );
-  return rows.map((row) => {
-    const meta = rowToMeta(row);
-    let count = 0;
-    try {
-      const qs = JSON.parse(String(pick(row, "questions_json") || "[]")) as unknown[];
-      count = Array.isArray(qs) ? qs.length : 0;
-    } catch {
-      count = 0;
+function dataUrlToBytes(dataUrl: string): { bytes: Uint8Array; contentType: string } {
+  const [head, payload] = dataUrl.includes(",") ? dataUrl.split(",") : ["", dataUrl];
+  const contentType = /data:([^;]+)/.exec(head ?? "")?.[1] ?? "image/jpeg";
+  const binary = atob(payload ?? "");
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
+  return { bytes, contentType };
+}
+
+async function signPath(path: string): Promise<string | undefined> {
+  const db = await admin();
+  const { data } = await db.storage.from(BUCKET).createSignedUrl(path, SIGNED_URL_TTL);
+  return data?.signedUrl;
+}
+
+export async function listDocuments(): Promise<
+  Array<DocumentMeta & { question_count: number; page_count: number }>
+> {
+  const db = await admin();
+  const { data, error } = await db
+    .from("pp_documents")
+    .select("*")
+    .order("updated_at", { ascending: false });
+  if (error) fail("Could not list documents", error);
+  const rows = (data ?? []) as Record<string, unknown>[];
+  const counts = new Map<string, number>();
+  if (rows.length) {
+    const { data: pageRows } = await db
+      .from("pp_pages")
+      .select("document_id")
+      .in("document_id", rows.map((r) => String(r["id"])));
+    for (const p of (pageRows ?? []) as Record<string, unknown>[]) {
+      const key = String(p["document_id"]);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
     }
-    return { ...meta, question_count: count, page_count: Number(pick(row, "page_count") ?? 0) };
-  });
+  }
+  return rows.map((row) => ({
+    ...rowToMeta(row),
+    question_count: toQuestions(row["questions"]).length,
+    page_count: counts.get(String(row["id"])) ?? 0,
+  }));
 }
 
 export async function getDocument(id: string): Promise<{
@@ -220,133 +117,90 @@ export async function getDocument(id: string): Promise<{
   pages: PageRecord[];
   figureUrls: Record<string, string>;
 } | null> {
-  const instance = await getDb();
-  const row = queryOne(instance, "SELECT * FROM documents WHERE id = ?", [id]);
+  const db = await admin();
+  const { data: row } = await db.from("pp_documents").select("*").eq("id", id).maybeSingle();
   if (!row) return null;
-  let questions: Question[] = [];
-  try {
-    questions = JSON.parse(String(pick(row, "questions_json") || "[]")) as Question[];
-    if (!Array.isArray(questions)) questions = [];
-  } catch {
-    questions = [];
+  const { data: pageRows } = await db
+    .from("pp_pages")
+    .select("*")
+    .eq("document_id", id)
+    .order("page_index", { ascending: true });
+
+  const pages: PageRecord[] = [];
+  for (const raw of (pageRows ?? []) as Record<string, unknown>[]) {
+    const page = rowToPage(raw);
+    const url = await signPath(page.file_path);
+    pages.push(url ? { ...page, dataUrl: url } : page);
   }
-  const pageRows = queryAll(
-    instance,
-    "SELECT * FROM pages WHERE document_id = ? ORDER BY page_index ASC",
-    [id],
-  );
-  const pages: PageRecord[] = pageRows.map((p) => {
-    const file_path = String(pick(p, "file_path"));
-    const abs = path.isAbsolute(file_path) ? file_path : path.join(process.cwd(), file_path);
-    let dataUrl: string | undefined;
-    if (fs.existsSync(abs)) {
-      const buf = fs.readFileSync(abs);
-      dataUrl = `data:image/jpeg;base64,${buf.toString("base64")}`;
-    }
-    return {
-      id: String(pick(p, "id")),
-      document_id: String(pick(p, "document_id")),
-      page_index: Number(pick(p, "page_index")),
-      file_path,
-      original_name: String(pick(p, "original_name") ?? ""),
-      ocr_status: String(pick(p, "ocr_status") ?? "pending"),
-      ...(dataUrl ? { dataUrl } : {}),
-    };
-  });
+
   const figureUrls: Record<string, string> = {};
-  const dir = imagesDir(id);
-  if (fs.existsSync(dir)) {
-    for (const name of fs.readdirSync(dir)) {
-      if (!name.startsWith("fig-") && !name.includes("-fig-")) continue;
-      const rel = path.join("data", "images", id, name).replaceAll("\\", "/");
-      const buf = fs.readFileSync(path.join(dir, name));
-      figureUrls[rel] = `data:image/jpeg;base64,${buf.toString("base64")}`;
-    }
+  const { data: objects } = await db.storage.from(BUCKET).list(id, { limit: 1000 });
+  for (const obj of objects ?? []) {
+    if (!obj.name.includes("fig-")) continue;
+    const path = `${id}/${obj.name}`;
+    const url = await signPath(path);
+    if (url) figureUrls[path] = url;
   }
-  return { document: rowToMeta(row), questions, pages, figureUrls };
+
+  return {
+    document: rowToMeta(row as Record<string, unknown>),
+    questions: toQuestions((row as Record<string, unknown>)["questions"]),
+    pages,
+    figureUrls,
+  };
 }
 
-export type DocumentPatch = Partial<
-  Omit<DocumentMeta, "id" | "created_at" | "updated_at">
-> & { questions?: Question[] };
+export type DocumentPatch = Partial<Omit<DocumentMeta, "id" | "created_at" | "updated_at">> & {
+  questions?: Question[];
+};
 
 export async function createDocument(kind: DocumentKind, title?: string): Promise<DocumentMeta> {
-  return withWrite((instance) => {
-    const id = crypto.randomUUID();
-    const ts = nowIso();
-    instance.run(
-      `INSERT INTO documents (id, kind, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
-      [id, kind, title?.trim() || "Untitled", ts, ts],
-    );
-    const row = queryOne(instance, "SELECT * FROM documents WHERE id = ?", [id])!;
-    return rowToMeta(row);
-  });
+  const db = await admin();
+  const { data, error } = await db
+    .from("pp_documents")
+    .insert({ kind, title: title?.trim() || "Untitled" })
+    .select("*")
+    .single();
+  if (error || !data) fail("Could not create the document", error);
+  return rowToMeta(data as Record<string, unknown>);
 }
 
-export async function updateDocument(id: string, patch: DocumentPatch): Promise<DocumentMeta | null> {
-  return withWrite((instance) => {
-    const existing = queryOne(instance, "SELECT * FROM documents WHERE id = ?", [id]);
-    if (!existing) return null;
-    const current = rowToMeta(existing);
-    const next: DocumentMeta = {
-      ...current,
-      ...patch,
-      id: current.id,
-      created_at: current.created_at,
-      updated_at: nowIso(),
-    };
-    const questionsJson =
-      patch.questions !== undefined
-        ? JSON.stringify(patch.questions)
-        : String(pick(existing, "questions_json") ?? "[]");
-    instance.run(
-      `UPDATE documents SET
-        kind = ?, title = ?, year = ?, standard_id = ?, stream_id = ?, subject_id = ?,
-        duration_minutes = ?, total_marks = ?, difficulty = ?, exam = ?, notes = ?, source = ?,
-        description = ?, section_timing = ?, negative_marking = ?, allow_pause = ?, max_attempts = ?,
-        default_marks = ?, default_negative_marks = ?, questions_json = ?, updated_at = ?
-       WHERE id = ?`,
-      [
-        next.kind,
-        next.title,
-        next.year,
-        next.standard_id,
-        next.stream_id,
-        next.subject_id,
-        next.duration_minutes,
-        next.total_marks,
-        next.difficulty,
-        next.exam,
-        next.notes,
-        next.source,
-        next.description,
-        next.section_timing ? 1 : 0,
-        next.negative_marking ? 1 : 0,
-        next.allow_pause ? 1 : 0,
-        next.max_attempts,
-        next.default_marks,
-        next.default_negative_marks,
-        questionsJson,
-        next.updated_at,
-        id,
-      ],
-    );
-    return next;
-  });
+export async function updateDocument(
+  id: string,
+  patch: DocumentPatch,
+): Promise<DocumentMeta | null> {
+  const db = await admin();
+  const update: Record<string, unknown> = { updated_at: new Date().toISOString() };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === undefined) continue;
+    update[key === "questions" ? "questions" : key] = value;
+  }
+  const { data, error } = await db
+    .from("pp_documents")
+    .update(update)
+    .eq("id", id)
+    .select("*")
+    .maybeSingle();
+  if (error) fail("Could not save the document", error);
+  return data ? rowToMeta(data as Record<string, unknown>) : null;
 }
 
 export async function deleteDocument(id: string): Promise<void> {
-  await withWrite((instance) => {
-    instance.run("DELETE FROM pages WHERE document_id = ?", [id]);
-    instance.run("DELETE FROM documents WHERE id = ?", [id]);
-  });
-  const dir = imagesDir(id);
-  if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+  const db = await admin();
+  const { data: objects } = await db.storage.from(BUCKET).list(id, { limit: 1000 });
+  const paths = (objects ?? []).map((o) => `${id}/${o.name}`);
+  if (paths.length) await db.storage.from(BUCKET).remove(paths);
+  const { error } = await db.from("pp_documents").delete().eq("id", id);
+  if (error) fail("Could not delete the document", error);
 }
 
-function dataUrlToBuffer(dataUrl: string): Buffer {
-  const base64 = dataUrl.includes(",") ? dataUrl.split(",")[1]! : dataUrl;
-  return Buffer.from(base64, "base64");
+async function uploadImage(path: string, dataUrl: string): Promise<void> {
+  const db = await admin();
+  const { bytes, contentType } = dataUrlToBytes(dataUrl);
+  const { error } = await db.storage
+    .from(BUCKET)
+    .upload(path, bytes, { contentType, upsert: true });
+  if (error) fail("Could not store the page image", error);
 }
 
 export async function appendPage(input: {
@@ -354,35 +208,31 @@ export async function appendPage(input: {
   dataUrl: string;
   originalName: string;
 }): Promise<PageRecord> {
-  return withWrite((instance) => {
-    const countRow = queryOne(
-      instance,
-      "SELECT COUNT(*) AS n FROM pages WHERE document_id = ?",
-      [input.documentId],
-    );
-    const page_index = Number(pick(countRow ?? {}, "n") ?? 0);
-    const id = crypto.randomUUID();
-    const dir = imagesDir(input.documentId);
-    fs.mkdirSync(dir, { recursive: true });
-    const rel = path.join("data", "images", input.documentId, `page-${page_index + 1}.jpg`);
-    const abs = path.join(process.cwd(), rel);
-    fs.writeFileSync(abs, dataUrlToBuffer(input.dataUrl));
-    instance.run(
-      `INSERT INTO pages (id, document_id, page_index, file_path, original_name, ocr_status)
-       VALUES (?, ?, ?, ?, ?, 'pending')`,
-      [id, input.documentId, page_index, rel.replaceAll("\\", "/"), input.originalName],
-    );
-    instance.run("UPDATE documents SET updated_at = ? WHERE id = ?", [nowIso(), input.documentId]);
-    return {
-      id,
+  const db = await admin();
+  const { count } = await db
+    .from("pp_pages")
+    .select("id", { count: "exact", head: true })
+    .eq("document_id", input.documentId);
+  const page_index = count ?? 0;
+  const file_path = `${input.documentId}/page-${page_index + 1}.jpg`;
+  await uploadImage(file_path, input.dataUrl);
+  const { data, error } = await db
+    .from("pp_pages")
+    .insert({
       document_id: input.documentId,
       page_index,
-      file_path: rel.replaceAll("\\", "/"),
+      file_path,
       original_name: input.originalName,
       ocr_status: "pending",
-      dataUrl: input.dataUrl,
-    };
-  });
+    })
+    .select("*")
+    .single();
+  if (error || !data) fail("Could not add the page", error);
+  await db
+    .from("pp_documents")
+    .update({ updated_at: new Date().toISOString() })
+    .eq("id", input.documentId);
+  return { ...rowToPage(data as Record<string, unknown>), dataUrl: input.dataUrl };
 }
 
 export async function saveFigure(input: {
@@ -390,133 +240,115 @@ export async function saveFigure(input: {
   dataUrl: string;
   filename: string;
 }): Promise<string> {
-  const dir = imagesDir(input.documentId);
-  fs.mkdirSync(dir, { recursive: true });
-  const rel = path.join("data", "images", input.documentId, input.filename).replaceAll("\\", "/");
-  fs.writeFileSync(path.join(process.cwd(), rel), dataUrlToBuffer(input.dataUrl));
-  return rel;
+  const path = `${input.documentId}/${input.filename}`;
+  await uploadImage(path, input.dataUrl);
+  return path;
 }
 
 export async function removePage(pageId: string): Promise<void> {
-  await withWrite((instance) => {
-    const row = queryOne(instance, "SELECT * FROM pages WHERE id = ?", [pageId]);
-    if (!row) return;
-    const file_path = String(pick(row, "file_path"));
-    const abs = path.isAbsolute(file_path) ? file_path : path.join(process.cwd(), file_path);
-    if (fs.existsSync(abs)) fs.unlinkSync(abs);
-    const documentId = String(pick(row, "document_id"));
-    instance.run("DELETE FROM pages WHERE id = ?", [pageId]);
-    const remaining = queryAll(
-      instance,
-      "SELECT id FROM pages WHERE document_id = ? ORDER BY page_index ASC",
-      [documentId],
-    );
-    remaining.forEach((p, i) => {
-      instance.run("UPDATE pages SET page_index = ? WHERE id = ?", [i, String(pick(p, "id"))]);
-    });
-    instance.run("UPDATE documents SET updated_at = ? WHERE id = ?", [nowIso(), documentId]);
-  });
+  const db = await admin();
+  const { data: row } = await db.from("pp_pages").select("*").eq("id", pageId).maybeSingle();
+  if (!row) return;
+  const page = rowToPage(row as Record<string, unknown>);
+  await db.storage.from(BUCKET).remove([page.file_path]);
+  await db.from("pp_pages").delete().eq("id", pageId);
+  const { data: remaining } = await db
+    .from("pp_pages")
+    .select("id")
+    .eq("document_id", page.document_id)
+    .order("page_index", { ascending: true });
+  let index = 0;
+  for (const p of (remaining ?? []) as Record<string, unknown>[]) {
+    await db.from("pp_pages").update({ page_index: index }).eq("id", String(p["id"]));
+    index += 1;
+  }
+  await db
+    .from("pp_documents")
+    .update({ updated_at: new Date().toISOString() })
+    .eq("id", page.document_id);
 }
 
 export async function markPageOcr(pageId: string, status: string): Promise<void> {
-  await withWrite((instance) => {
-    instance.run("UPDATE pages SET ocr_status = ? WHERE id = ?", [status, pageId]);
-  });
-}
-
-function applyCatalog(instance: Database, raw: unknown) {
-  const obj = (raw ?? {}) as Record<string, unknown>;
-  const asArr = (v: unknown) => (Array.isArray(v) ? v : []);
-
-  instance.run("DELETE FROM catalog_streams");
-  instance.run("DELETE FROM catalog_topics");
-  instance.run("DELETE FROM catalog_subjects");
-  instance.run("DELETE FROM catalog_standards");
-
-  for (const item of asArr(obj["standards"] ?? obj["catalog_standards"])) {
-    const r = item as Record<string, unknown>;
-    if (pick(r, "id") == null || !pick(r, "name")) continue;
-    instance.run("INSERT INTO catalog_standards (id, name, display_order) VALUES (?, ?, ?)", [
-      Number(pick(r, "id")),
-      String(pick(r, "name")),
-      asNum(pick(r, "display_order")),
-    ]);
-  }
-  for (const item of asArr(obj["subjects"] ?? obj["catalog_subjects"])) {
-    const r = item as Record<string, unknown>;
-    if (pick(r, "id") == null || !pick(r, "name")) continue;
-    instance.run("INSERT INTO catalog_subjects (id, name, code) VALUES (?, ?, ?)", [
-      Number(pick(r, "id")),
-      String(pick(r, "name")),
-      asStr(pick(r, "code")),
-    ]);
-  }
-  for (const item of asArr(obj["topics"] ?? obj["catalog_topics"])) {
-    const r = item as Record<string, unknown>;
-    if (pick(r, "id") == null || !pick(r, "name")) continue;
-    instance.run(
-      "INSERT INTO catalog_topics (id, subject_id, name, parent_topic_id) VALUES (?, ?, ?, ?)",
-      [
-        Number(pick(r, "id")),
-        asNum(pick(r, "subject_id")),
-        String(pick(r, "name")),
-        asNum(pick(r, "parent_topic_id")),
-      ],
-    );
-  }
-  for (const item of asArr(obj["streams"] ?? obj["catalog_streams"])) {
-    const r = item as Record<string, unknown>;
-    if (pick(r, "id") == null || !pick(r, "name")) continue;
-    instance.run("INSERT INTO catalog_streams (id, name, standard_id) VALUES (?, ?, ?)", [
-      Number(pick(r, "id")),
-      String(pick(r, "name")),
-      asNum(pick(r, "standard_id")),
-    ]);
-  }
-}
-
-function seedCatalogIfEmpty(instance: Database) {
-  const count = queryOne(instance, "SELECT COUNT(*) AS n FROM catalog_standards");
-  if (Number(pick(count ?? {}, "n") ?? 0) > 0) return;
-  const seedPath = path.join(path.dirname(fileURLToPath(import.meta.url)), "../data/catalog-seed.json");
-  const cwdPath = path.join(process.cwd(), "src", "data", "catalog-seed.json");
-  const file = fs.existsSync(seedPath) ? seedPath : cwdPath;
-  if (!fs.existsSync(file)) return;
-  applyCatalog(instance, JSON.parse(fs.readFileSync(file, "utf8")) as unknown);
+  const db = await admin();
+  await db.from("pp_pages").update({ ocr_status: status }).eq("id", pageId);
 }
 
 export async function getCatalog(): Promise<Catalog> {
-  const instance = await getDb();
+  const db = await admin();
+  const [standards, subjects, topics, streams] = await Promise.all([
+    db.from("pp_catalog_standards").select("*").order("display_order", { ascending: true }),
+    db.from("pp_catalog_subjects").select("*").order("name", { ascending: true }),
+    db.from("pp_catalog_topics").select("*").order("name", { ascending: true }),
+    db.from("pp_catalog_streams").select("*").order("name", { ascending: true }),
+  ]);
+  const rows = (result: { data: unknown }) => (result.data ?? []) as Record<string, unknown>[];
   return {
-    standards: queryAll(instance, "SELECT * FROM catalog_standards ORDER BY display_order, name").map(
-      (r) => ({
-        id: Number(pick(r, "id")),
-        name: String(pick(r, "name")),
-        display_order: asNum(pick(r, "display_order")),
-      }),
-    ),
-    subjects: queryAll(instance, "SELECT * FROM catalog_subjects ORDER BY name").map((r) => ({
-      id: Number(pick(r, "id")),
-      name: String(pick(r, "name")),
-      code: asStr(pick(r, "code")),
+    standards: rows(standards).map((r) => ({
+      id: Number(r["id"]),
+      name: String(r["name"]),
+      display_order: num(r["display_order"]),
     })),
-    topics: queryAll(instance, "SELECT * FROM catalog_topics ORDER BY name").map((r) => ({
-      id: Number(pick(r, "id")),
-      subject_id: asNum(pick(r, "subject_id")),
-      name: String(pick(r, "name")),
-      parent_topic_id: asNum(pick(r, "parent_topic_id")),
+    subjects: rows(subjects).map((r) => ({
+      id: Number(r["id"]),
+      name: String(r["name"]),
+      code: str(r["code"]),
     })),
-    streams: queryAll(instance, "SELECT * FROM catalog_streams ORDER BY name").map((r) => ({
-      id: Number(pick(r, "id")),
-      name: String(pick(r, "name")),
-      standard_id: asNum(pick(r, "standard_id")),
+    topics: rows(topics).map((r) => ({
+      id: Number(r["id"]),
+      subject_id: num(r["subject_id"]),
+      name: String(r["name"]),
+      parent_topic_id: num(r["parent_topic_id"]),
+    })),
+    streams: rows(streams).map((r) => ({
+      id: Number(r["id"]),
+      name: String(r["name"]),
+      standard_id: num(r["standard_id"]),
     })),
   };
 }
 
 export async function importCatalogDump(raw: unknown): Promise<Catalog> {
-  return withWrite((instance) => {
-    applyCatalog(instance, raw);
-    return null as unknown as Catalog;
-  }).then(() => getCatalog());
+  const db = await admin();
+  const obj = (raw ?? {}) as Record<string, unknown>;
+  const arr = (...keys: string[]) => {
+    for (const key of keys) {
+      const value = obj[key];
+      if (Array.isArray(value)) return value as Record<string, unknown>[];
+    }
+    return [] as Record<string, unknown>[];
+  };
+
+  await db.from("pp_catalog_streams").delete().gte("id", -2147483648);
+  await db.from("pp_catalog_topics").delete().gte("id", -2147483648);
+  await db.from("pp_catalog_subjects").delete().gte("id", -2147483648);
+  await db.from("pp_catalog_standards").delete().gte("id", -2147483648);
+
+  const standards = arr("standards", "catalog_standards")
+    .filter((r) => r["id"] != null && r["name"])
+    .map((r) => ({
+      id: Number(r["id"]),
+      name: String(r["name"]),
+      display_order: num(r["display_order"]),
+    }));
+  const subjects = arr("subjects", "catalog_subjects")
+    .filter((r) => r["id"] != null && r["name"])
+    .map((r) => ({ id: Number(r["id"]), name: String(r["name"]), code: str(r["code"]) }));
+  const topics = arr("topics", "catalog_topics")
+    .filter((r) => r["id"] != null && r["name"])
+    .map((r) => ({
+      id: Number(r["id"]),
+      subject_id: num(r["subject_id"]),
+      name: String(r["name"]),
+      parent_topic_id: num(r["parent_topic_id"]),
+    }));
+  const streams = arr("streams", "catalog_streams")
+    .filter((r) => r["id"] != null && r["name"])
+    .map((r) => ({ id: Number(r["id"]), name: String(r["name"]), standard_id: num(r["standard_id"]) }));
+
+  if (standards.length) await db.from("pp_catalog_standards").insert(standards);
+  if (subjects.length) await db.from("pp_catalog_subjects").insert(subjects);
+  if (topics.length) await db.from("pp_catalog_topics").insert(topics);
+  if (streams.length) await db.from("pp_catalog_streams").insert(streams);
+
+  return getCatalog();
 }
