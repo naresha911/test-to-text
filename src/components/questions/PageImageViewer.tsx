@@ -85,7 +85,7 @@ export function PageImageViewer({ pages, className }: Props) {
     return (
       <div
         className={cn(
-          "flex h-full min-h-[240px] flex-col items-center justify-center gap-2 px-4 text-center text-sm text-muted-foreground",
+          "flex h-full min-h-0 flex-col items-center justify-center gap-2 px-4 text-center text-sm text-muted-foreground",
           className,
         )}
       >
@@ -95,8 +95,8 @@ export function PageImageViewer({ pages, className }: Props) {
   }
 
   return (
-    <div className={cn("flex h-full min-h-0 flex-col", className)}>
-      <div className="flex flex-wrap items-center gap-1 border-b border-border bg-secondary/40 px-2 py-1.5">
+    <div className={cn("flex h-full min-h-0 min-w-0 flex-col overflow-hidden", className)}>
+      <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border bg-secondary/40 px-2 py-1.5">
         <span className="mr-auto text-xs font-medium text-muted-foreground">Page image</span>
         <Button type="button" size="icon" variant="outline" className="h-8 w-8" onClick={zoomOut} aria-label="Zoom out">
           <ZoomOut className="h-4 w-4" aria-hidden="true" />
@@ -127,7 +127,7 @@ export function PageImageViewer({ pages, className }: Props) {
       <div
         ref={viewportRef}
         className={cn(
-          "min-h-0 flex-1 overflow-auto bg-secondary/20",
+          "min-h-0 min-w-0 flex-1 overflow-auto overscroll-contain bg-secondary/20",
           panMode ? "cursor-grab active:cursor-grabbing" : "cursor-default",
         )}
         onPointerDown={onPointerDown}
@@ -138,7 +138,7 @@ export function PageImageViewer({ pages, className }: Props) {
         role="region"
         aria-label="Scrollable page images"
       >
-        <div className="space-y-4 p-3">
+        <div className="space-y-4 p-3" style={{ width: `${zoom * 100}%` }}>
           {pages.map((page) => (
             <figure key={page.id} className="space-y-1">
               <figcaption className="text-xs text-muted-foreground">Page {page.pageIndex + 1}</figcaption>
@@ -146,8 +146,8 @@ export function PageImageViewer({ pages, className }: Props) {
                 <img
                   src={page.dataUrl}
                   alt={`Original uploaded question paper page ${page.pageIndex + 1}`}
-                  className="block max-w-none rounded border border-border bg-background object-contain select-none"
-                  style={{ width: `${zoom * 100}%` }}
+                  className="block h-auto max-w-none rounded border border-border bg-background object-contain select-none"
+                  style={{ width: "100%" }}
                   draggable={false}
                 />
               ) : (

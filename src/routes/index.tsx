@@ -541,14 +541,14 @@ function HomePage() {
     .join(" · ");
 
   return (
-    <div className="flex h-svh flex-col overflow-hidden">
+    <div className="min-h-screen">
       <AppHeader />
 
-      <main className="mx-auto flex w-full max-w-[1600px] min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-3 lg:overflow-hidden">
+      <main className="mx-auto w-full max-w-[1600px] space-y-4 px-4 py-4">
         <Collapsible
           open={configOpen}
           onOpenChange={setConfigOpen}
-          className="shrink-0 rounded-xl border border-border bg-card shadow-[var(--shadow-paper)]"
+          className="rounded-xl border border-border bg-card shadow-[var(--shadow-paper)]"
         >
           <section aria-label="Paper configuration" className="p-3 sm:p-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
@@ -897,24 +897,24 @@ function HomePage() {
           </CollapsibleContent>
         </Collapsible>
 
-        <div className="grid min-h-0 flex-1 gap-4 overflow-hidden lg:grid-cols-2">
-          <aside className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-[var(--shadow-paper)] max-lg:min-h-[45vh]">
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
+          <aside className="flex h-[112.5vh] min-h-[840px] min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-[var(--shadow-paper)]">
             <PageImageViewer
               pages={pages.map((page) => ({
                 id: page.id,
                 pageIndex: page.page_index,
                 dataUrl: page.dataUrl,
               }))}
-              className="min-h-0 flex-1"
+              className="h-full min-h-0 min-w-0"
             />
           </aside>
 
-          <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-[var(--shadow-paper)] max-lg:min-h-[45vh]">
+          <section className="flex h-[112.5vh] min-h-[840px] min-w-0 flex-col overflow-x-hidden overflow-hidden rounded-xl border border-border bg-card shadow-[var(--shadow-paper)]">
             {questions.length ? (
               <>
                 <div className="shrink-0 space-y-3 border-b border-border p-4">
                   <div className="flex flex-wrap items-center gap-2">
-                    <div className="mr-auto">
+                    <div className="mr-auto min-w-0">
                       <p className="font-display text-2xl leading-none">
                         {questions.length} question{questions.length === 1 ? "" : "s"}
                       </p>
@@ -958,7 +958,7 @@ function HomePage() {
                   </div>
                 </div>
 
-                <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain break-words p-4">
                   <PageReview
                     questions={visible}
                     showImages={false}
@@ -973,7 +973,7 @@ function HomePage() {
             ) : (
               <div
                 className={cn(
-                  "paper-sheet flex min-h-0 flex-1 flex-col items-center justify-center px-6 text-center",
+                  "paper-sheet flex h-full flex-1 flex-col items-center justify-center px-6 text-center",
                 )}
               >
                 <FileJson className="h-8 w-8 text-muted-foreground" aria-hidden="true" />
