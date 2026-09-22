@@ -7,6 +7,16 @@ import { toast } from "sonner";
 
 import { AppHeader } from "@/components/AppHeader";
 import { PageReview } from "@/components/questions/PageReview";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { generateForApprovedQuestion } from "@/lib/hint-solution-client";
@@ -58,8 +68,25 @@ function PaperDetail({ id }: { id: string }) {
   }, [id, runGet]);
 
   function persist(next: Question[]) {
-    void runSave({ data: { id, patch: { questions: next } } });
+    questionsRef.current = next;
+    void runSave({ data: { id, patch: { questions: next } } }).catch(() =>
+      toast.error("Could not autosave locally."),
+    );
   }
+
+  useEffect(() => {
+    const onHide = () => {
+      if (document.visibilityState !== "hidden") return;
+      void runSave({ data: { id, patch: { questions: questionsRef.current } } }).catch(() =>
+        toast.error("Could not autosave locally."),
+      );
+    };
+    document.addEventListener("visibilitychange", onHide);
+    return () => {
+      document.removeEventListener("visibilitychange", onHide);
+      void runSave({ data: { id, patch: { questions: questionsRef.current } } }).catch(() => undefined);
+    };
+  }, [id, runSave]);
 
   function patchQuestion(next: Question) {
     setQuestions((current) => {
@@ -140,6 +167,12 @@ function LibraryPage() {
   const deleteFn = useServerFn(deleteLocalDocument);
   const exportFn = useServerFn(exportLocalDocument);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{
+    id: string;
+    title: string;
+    page_count: number;
+    question_count: number;
+  } | null>(null);
 
   const papers = useQuery({
     queryKey: ["local-documents"],
@@ -148,8 +181,10 @@ function LibraryPage() {
 
   const remove = useMutation({
     mutationFn: async (id: string) => deleteFn({ data: { id } }),
-    onSuccess: () => {
-      toast.success("Deleted from this machine.");
+    onSuccess: (_data, id) => {
+      toast.success("Paper, questions, and images removed from this machine.");
+      setPendingDelete(null);
+      setOpenId((current) => (current === id ? null : current));
       void queryClient.invalidateQueries({ queryKey: ["local-documents"] });
     },
     onError: () => toast.error("Could not delete that paper."),
@@ -231,7 +266,14 @@ function LibraryPage() {
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => remove.mutate(paper.id)}
+                      onClick={() =>
+                        setPendingDelete({
+                          id: paper.id,
+                          title: paper.title,
+                          page_count: paper.page_count,
+                          question_count: paper.question_count,
+                        })
+                      }
                       aria-label={`Delete ${paper.title}`}
                     >
                       <Trash2 className="h-4 w-4 text-destructive" aria-hidden="true" />
@@ -244,6 +286,51 @@ function LibraryPage() {
           </ul>
         )}
       </main>
+
+      <AlertDialog
+        open={pendingDelete != null}
+        onOpenChange={(open) => {
+          if (!open && !remove.isPending) setPendingDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete this paper?</AlertDialogTitle>
+            <AlertDialogDescription>
+              “{pendingDelete?.title ?? "Untitled"}” will be permanently removed from this machine,
+              including{" "}
+              {pendingDelete
+                ? `${pendingDelete.question_count} question${pendingDelete.question_count === 1 ? "" : "s"}`
+                : "its questions"}
+              ,{" "}
+              {pendingDelete
+                ? `${pendingDelete.page_count} page image${pendingDelete.page_count === 1 ? "" : "s"}`
+                : "page images"}
+              , and any cropped figures stored in local SQLite. This cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={remove.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              disabled={remove.isPending || !pendingDelete}
+              onClick={(event) => {
+                event.preventDefault();
+                if (pendingDelete) remove.mutate(pendingDelete.id);
+              }}
+            >
+              {remove.isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  Deleting…
+                </>
+              ) : (
+                "Delete paper and images"
+              )}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

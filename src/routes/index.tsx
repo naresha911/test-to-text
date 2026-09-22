@@ -1,17 +1,18 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { Download, FileJson, ImagePlus, Loader2, Sparkles, Trash2 } from "lucide-react";
+import { ChevronDown, Download, FileJson, ImagePlus, Loader2, Sparkles, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { AppHeader } from "@/components/AppHeader";
+import { PageImageViewer } from "@/components/questions/PageImageViewer";
 import { PageReview } from "@/components/questions/PageReview";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
-import { Textarea } from "@/components/ui/textarea";
 import type { Catalog, DocumentKind, DocumentMeta, PageRecord } from "@/lib/document-types";
 import { extractPage } from "@/lib/extract.functions";
 import { generateForApprovedQuestion } from "@/lib/hint-solution-client";
@@ -113,6 +114,7 @@ function HomePage() {
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [filter, setFilter] = useState<QuestionType | "all">("all");
   const [reader, setReader] = useState(DEFAULT_READER_SETTINGS);
+  const [configOpen, setConfigOpen] = useState(false);
   const [generatingIds, setGeneratingIds] = useState<Set<string>>(() => new Set());
   const [loadingDoc, setLoadingDoc] = useState(!!searchId);
   const questionsRef = useRef(questions);
@@ -120,6 +122,13 @@ function HomePage() {
   const metaRef = useRef(meta);
   metaRef.current = meta;
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingSaveRef = useRef<{
+    id: string;
+    questions?: Question[];
+    meta?: typeof meta;
+  } | null>(null);
+  const inFlightSaveRef = useRef<Promise<void> | null>(null);
+  const flushSaveRef = useRef<() => Promise<void>>(async () => undefined);
 
   useEffect(() => setReader(loadReaderSettings()), []);
 
@@ -156,28 +165,101 @@ function HomePage() {
       .finally(() => setLoadingDoc(false));
   }, [searchId, runGet]);
 
+  const flushSave = useCallback(async () => {
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    if (inFlightSaveRef.current) await inFlightSaveRef.current;
+
+    while (pendingSaveRef.current) {
+      const pending = pendingSaveRef.current;
+      pendingSaveRef.current = null;
+      const m = pending.meta ?? metaRef.current;
+      const nextQuestions = pending.questions ?? questionsRef.current;
+      let failed = false;
+      const write = (async () => {
+        try {
+          await runSave({
+            data: {
+              id: pending.id,
+              patch: {
+                ...m,
+                exam: m.exam || null,
+                notes: m.notes || null,
+                source: m.source || null,
+                description: m.description || null,
+                questions: nextQuestions,
+              },
+            },
+          });
+        } catch {
+          failed = true;
+          // Keep the failed patch queued so a later persist/flush can retry.
+          pendingSaveRef.current = {
+            id: pending.id,
+            questions: pending.questions ?? nextQuestions,
+            meta: pending.meta ?? m,
+          };
+          toast.error("Could not autosave locally.");
+        }
+      })();
+      inFlightSaveRef.current = write;
+      try {
+        await write;
+      } finally {
+        if (inFlightSaveRef.current === write) inFlightSaveRef.current = null;
+      }
+      if (failed) break;
+    }
+  }, [runSave]);
+  flushSaveRef.current = flushSave;
+
   const persist = useCallback(
-    (id: string, nextQuestions?: Question[], nextMeta?: typeof meta) => {
+    (
+      id: string,
+      nextQuestions?: Question[],
+      nextMeta?: typeof meta,
+      options?: { immediate?: boolean },
+    ) => {
+      // Merge into one pending patch so a meta keystroke cannot drop a question edit
+      // (or vice versa) when the debounce timer is reset.
+      const prev = pendingSaveRef.current;
+      if (nextQuestions !== undefined) questionsRef.current = nextQuestions;
+      if (nextMeta !== undefined) metaRef.current = nextMeta;
+      pendingSaveRef.current = {
+        id,
+        questions: nextQuestions !== undefined ? nextQuestions : prev?.questions,
+        meta: nextMeta !== undefined ? nextMeta : prev?.meta,
+      };
+      if (options?.immediate) {
+        void flushSave();
+        return;
+      }
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
-        const m = nextMeta ?? metaRef.current;
-        void runSave({
-          data: {
-            id,
-            patch: {
-              ...m,
-              exam: m.exam || null,
-              notes: m.notes || null,
-              source: m.source || null,
-              description: m.description || null,
-              questions: nextQuestions ?? questionsRef.current,
-            },
-          },
-        }).catch(() => toast.error("Could not autosave locally."));
+        void flushSave();
       }, 400);
     },
-    [runSave],
+    [flushSave],
   );
+
+  // Flush pending writes when the tab hides or this page unmounts so edits are not lost.
+  useEffect(() => {
+    const onHide = () => {
+      if (document.visibilityState === "hidden") void flushSaveRef.current();
+    };
+    const onPageHide = () => {
+      void flushSaveRef.current();
+    };
+    document.addEventListener("visibilitychange", onHide);
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      document.removeEventListener("visibilitychange", onHide);
+      window.removeEventListener("pagehide", onPageHide);
+      void flushSaveRef.current();
+    };
+  }, []);
 
   async function ensureDocument(): Promise<string> {
     if (documentIdRef.current) return documentIdRef.current;
@@ -190,7 +272,7 @@ function HomePage() {
     documentIdRef.current = created.id;
     setDocumentId(created.id);
     void navigate({ to: "/", search: { id: created.id }, replace: true });
-    persist(created.id, questionsRef.current, metaRef.current);
+    persist(created.id, questionsRef.current, metaRef.current, { immediate: true });
     return created.id;
   }
 
@@ -257,7 +339,7 @@ function HomePage() {
       });
       if (result.generatedIds.length) {
         setQuestions(result.questions);
-        if (documentId) persist(documentId, result.questions);
+        if (documentId) persist(documentId, result.questions, undefined, { immediate: true });
         toast.success(force ? "Hint and solution regenerated." : "Hint and solution ready.");
       }
     } catch (error) {
@@ -394,13 +476,13 @@ function HomePage() {
       const sorted = sortQuestions(collected);
       setQuestions(sorted);
       setFigureUrls({ ...urls });
-      persist(id, sorted);
+      persist(id, sorted, undefined, { immediate: true });
     }
 
     setProgress(null);
     const sorted = sortQuestions(collected);
     setQuestions(sorted);
-    persist(id, sorted);
+    persist(id, sorted, undefined, { immediate: true });
     if (sorted.length) {
       const failedNote = failed ? ` — ${failed} page(s) returned nothing` : "";
       toast.success(
@@ -413,8 +495,8 @@ function HomePage() {
 
   async function handleDownload() {
     const id = documentId ?? (await ensureDocument());
-    persist(id, questionsRef.current);
-    await new Promise((r) => setTimeout(r, 500));
+    persist(id, questionsRef.current, undefined, { immediate: true });
+    await flushSave();
     try {
       const payload = await runExport({ data: { id } });
       const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
@@ -441,45 +523,61 @@ function HomePage() {
     );
   }
 
+  const selectClass =
+    "h-9 w-full rounded-md border border-input bg-background px-2 text-sm";
+
+  const standardName = catalog.standards.find((s) => s.id === meta.standard_id)?.name;
+  const streamName = streams.find((s) => s.id === meta.stream_id)?.name;
+  const subjectName = catalog.subjects.find((s) => s.id === meta.subject_id)?.name;
+  const detailSummary = [
+    standardName,
+    streamName,
+    subjectName,
+    meta.exam || null,
+    meta.duration_minutes != null ? `${meta.duration_minutes} min` : null,
+    meta.difficulty,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
   return (
-    <div className="min-h-screen">
+    <div className="flex h-svh flex-col overflow-hidden">
       <AppHeader />
 
-      <main className="mx-auto max-w-6xl px-4 py-10">
-        <section className="max-w-2xl">
-          <h1 className="text-4xl leading-tight sm:text-5xl">
-            Turn question paper photos into <span className="ink-underline">exam JSON</span>
-          </h1>
-          <p className="mt-4 text-muted-foreground">
-            Work is saved on this machine. Upload more images any time. Download JSON keyed to the
-            exam-prep database tables.
-          </p>
-        </section>
-
-        <div className="mt-8 grid gap-6 lg:grid-cols-[minmax(0,360px)_minmax(0,1fr)]">
-          <aside className="space-y-4">
-            <div className="rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-paper)]">
-              <h2 className="text-lg">1. Paper or practice test</h2>
-              <div className="mt-3 space-y-3">
-                <div className="flex gap-2">
-                  {(["past_paper", "practice_test"] as const).map((kind) => (
-                    <Button
-                      key={kind}
-                      type="button"
-                      size="sm"
-                      variant={meta.kind === kind ? "default" : "outline"}
-                      onClick={() => patchMeta({ kind })}
-                    >
-                      {kind === "past_paper" ? "Past paper" : "Practice test"}
-                    </Button>
-                  ))}
+      <main className="mx-auto flex w-full max-w-[1600px] min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-4 py-3 lg:overflow-hidden">
+        <Collapsible
+          open={configOpen}
+          onOpenChange={setConfigOpen}
+          className="shrink-0 rounded-xl border border-border bg-card shadow-[var(--shadow-paper)]"
+        >
+          <section aria-label="Paper configuration" className="p-3 sm:p-4">
+            <div className="flex flex-col gap-3 lg:flex-row lg:items-end">
+              <div className="flex min-w-0 flex-1 flex-col gap-3 sm:flex-row sm:items-end">
+                <div className="shrink-0 space-y-1.5">
+                  <span className="text-xs font-medium text-muted-foreground">Type</span>
+                  <div className="flex rounded-md border border-border p-0.5">
+                    {(["past_paper", "practice_test"] as const).map((kind) => (
+                      <Button
+                        key={kind}
+                        type="button"
+                        size="sm"
+                        variant={meta.kind === kind ? "default" : "ghost"}
+                        className="h-8"
+                        onClick={() => patchMeta({ kind })}
+                      >
+                        {kind === "past_paper" ? "Past paper" : "Practice test"}
+                      </Button>
+                    ))}
+                  </div>
                 </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="title">
+
+                <div className="min-w-0 flex-1 space-y-1.5">
+                  <Label htmlFor="title" className="text-xs font-medium text-muted-foreground">
                     {meta.kind === "practice_test" ? "Practice test name" : "Paper title"}
                   </Label>
                   <Input
                     id="title"
+                    className="h-9"
                     placeholder={
                       meta.kind === "practice_test" ? "Algebra weekly drill" : "Board exam 2024"
                     }
@@ -487,11 +585,15 @@ function HomePage() {
                     onChange={(event) => patchMeta({ title: event.target.value })}
                   />
                 </div>
+
                 {meta.kind === "past_paper" ? (
-                  <div className="space-y-1.5">
-                    <Label htmlFor="year">Year</Label>
+                  <div className="w-full space-y-1.5 sm:w-24 shrink-0">
+                    <Label htmlFor="year" className="text-xs font-medium text-muted-foreground">
+                      Year
+                    </Label>
                     <Input
                       id="year"
+                      className="h-9"
                       type="number"
                       placeholder="2024"
                       value={meta.year ?? ""}
@@ -503,154 +605,288 @@ function HomePage() {
                     />
                   </div>
                 ) : (
-                  <div className="space-y-1.5">
-                    <Label htmlFor="description">Description</Label>
-                    <Textarea
+                  <div className="min-w-0 flex-1 space-y-1.5 sm:max-w-xs">
+                    <Label
+                      htmlFor="description"
+                      className="text-xs font-medium text-muted-foreground"
+                    >
+                      Description
+                    </Label>
+                    <Input
                       id="description"
-                      rows={2}
+                      className="h-9"
                       value={meta.description ?? ""}
                       onChange={(event) => patchMeta({ description: event.target.value })}
                     />
                   </div>
                 )}
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1.5">
-                    <Label htmlFor="standard">Standard</Label>
-                    <select
-                      id="standard"
-                      className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
-                      value={meta.standard_id ?? ""}
-                      onChange={(event) =>
-                        patchMeta({
-                          standard_id: event.target.value === "" ? null : Number(event.target.value),
-                        })
-                      }
-                    >
-                      <option value="">Unset (import catalog)</option>
-                      {catalog.standards.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="stream">Stream</Label>
-                    <select
-                      id="stream"
-                      className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
-                      value={meta.stream_id ?? ""}
-                      onChange={(event) =>
-                        patchMeta({
-                          stream_id: event.target.value === "" ? null : Number(event.target.value),
-                        })
-                      }
-                    >
-                      <option value="">Unset</option>
-                      {streams.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="subject">Subject</Label>
-                    <select
-                      id="subject"
-                      className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
-                      value={meta.subject_id ?? ""}
-                      onChange={(event) =>
-                        patchMeta({
-                          subject_id: event.target.value === "" ? null : Number(event.target.value),
-                        })
-                      }
-                    >
-                      <option value="">Unset</option>
-                      {catalog.subjects.map((s) => (
-                        <option key={s.id} value={s.id}>
-                          {s.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="exam">Exam / source</Label>
-                    <Input
-                      id="exam"
-                      placeholder="CBSE"
-                      value={meta.exam ?? ""}
-                      onChange={(event) =>
-                        patchMeta({ exam: event.target.value, source: event.target.value })
-                      }
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="duration">Duration (min)</Label>
-                    <Input
-                      id="duration"
-                      type="number"
-                      value={meta.duration_minutes ?? ""}
-                      onChange={(event) =>
-                        patchMeta({
-                          duration_minutes:
-                            event.target.value === "" ? null : Number(event.target.value),
-                        })
-                      }
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="difficulty">Paper difficulty</Label>
-                    <select
-                      id="difficulty"
-                      className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
-                      value={meta.difficulty ?? ""}
-                      onChange={(event) =>
-                        patchMeta({
-                          difficulty: (event.target.value || null) as DocumentMeta["difficulty"],
-                        })
-                      }
-                    >
-                      <option value="">Unset</option>
-                      <option value="easy">Easy</option>
-                      <option value="medium">Medium</option>
-                      <option value="hard">Hard</option>
-                    </select>
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="dmarks">Default marks</Label>
-                    <Input
-                      id="dmarks"
-                      type="number"
-                      value={meta.default_marks ?? ""}
-                      onChange={(event) =>
-                        patchMeta({
-                          default_marks:
-                            event.target.value === "" ? null : Number(event.target.value),
-                        })
-                      }
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="dneg">Default negative</Label>
-                    <Input
-                      id="dneg"
-                      type="number"
-                      value={meta.default_negative_marks ?? ""}
-                      onChange={(event) =>
-                        patchMeta({
-                          default_negative_marks:
-                            event.target.value === "" ? null : Number(event.target.value),
-                        })
-                      }
-                    />
-                  </div>
-                </div>
+              </div>
+
+              <div className="flex shrink-0 flex-wrap items-center gap-2 border-t border-border pt-3 lg:border-t-0 lg:border-l lg:pt-0 lg:pl-4">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-9"
+                  onClick={() => fileInput.current?.click()}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    void addFiles(event.dataTransfer.files);
+                  }}
+                >
+                  <ImagePlus className="h-4 w-4" aria-hidden="true" />
+                  Add pages
+                </Button>
+                <input
+                  ref={fileInput}
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  onChange={(event) => {
+                    void addFiles(event.target.files);
+                    event.target.value = "";
+                  }}
+                />
+                <Button
+                  size="sm"
+                  className="h-9"
+                  onClick={() => void handleExtract()}
+                  disabled={!!progress || !pages.length}
+                >
+                  {progress ? (
+                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Sparkles className="h-4 w-4" aria-hidden="true" />
+                  )}
+                  {progress ? `Reading ${progress.done + 1}/${progress.total}` : "Read pages"}
+                </Button>
+              </div>
+            </div>
+
+            {progress ? (
+              <Progress
+                className="mt-3"
+                value={(progress.done / Math.max(1, progress.total)) * 100}
+              />
+            ) : null}
+
+            {pages.length ? (
+              <ul className="mt-3 flex gap-2 overflow-x-auto pb-0.5">
+                {pages.map((page) => (
+                  <li key={page.id} className="relative shrink-0">
+                    {page.dataUrl ? (
+                      <img
+                        src={page.dataUrl}
+                        alt={`Page ${page.page_index + 1}`}
+                        className="h-12 w-9 rounded border border-border object-cover"
+                      />
+                    ) : (
+                      <div className="flex h-12 w-9 items-center justify-center rounded border text-[10px]">
+                        {page.page_index + 1}
+                      </div>
+                    )}
+                    <span className="absolute bottom-0.5 left-0.5 rounded bg-background/80 px-1 text-[10px]">
+                      {page.page_index + 1}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+
+            <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border pt-2">
+              <CollapsibleTrigger asChild>
+                <Button type="button" variant="ghost" size="sm" className="h-8 gap-1 px-2">
+                  <ChevronDown
+                    className={cn(
+                      "h-4 w-4 transition-transform",
+                      configOpen ? "rotate-180" : "rotate-0",
+                    )}
+                    aria-hidden="true"
+                  />
+                  {configOpen ? "Hide details" : "Paper details"}
+                </Button>
+              </CollapsibleTrigger>
+              <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
+                <span className="text-foreground">{READER_LABELS[reader.engine]}</span>
+                {pages.length
+                  ? ` · ${pages.length} page${pages.length === 1 ? "" : "s"}`
+                  : " · No pages yet"}
+                {!configOpen && detailSummary ? ` · ${detailSummary}` : ""}
+              </p>
+            </div>
+          </section>
+
+          <CollapsibleContent>
+            <div className="border-t border-border px-3 pb-4 pt-3 sm:px-4">
+              <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4">
                 <div className="space-y-1.5">
-                  <Label htmlFor="hint">Notes for the reader (optional)</Label>
-                  <Textarea
+                  <Label htmlFor="standard" className="text-xs text-muted-foreground">
+                    Standard
+                  </Label>
+                  <select
+                    id="standard"
+                    className={selectClass}
+                    value={meta.standard_id ?? ""}
+                    onChange={(event) =>
+                      patchMeta({
+                        standard_id: event.target.value === "" ? null : Number(event.target.value),
+                      })
+                    }
+                  >
+                    <option value="">Unset (import catalog)</option>
+                    {catalog.standards.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="stream" className="text-xs text-muted-foreground">
+                    Stream
+                  </Label>
+                  <select
+                    id="stream"
+                    className={selectClass}
+                    value={meta.stream_id ?? ""}
+                    onChange={(event) =>
+                      patchMeta({
+                        stream_id: event.target.value === "" ? null : Number(event.target.value),
+                      })
+                    }
+                  >
+                    <option value="">Unset</option>
+                    {streams.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="subject" className="text-xs text-muted-foreground">
+                    Subject
+                  </Label>
+                  <select
+                    id="subject"
+                    className={selectClass}
+                    value={meta.subject_id ?? ""}
+                    onChange={(event) =>
+                      patchMeta({
+                        subject_id: event.target.value === "" ? null : Number(event.target.value),
+                      })
+                    }
+                  >
+                    <option value="">Unset</option>
+                    {catalog.subjects.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="exam" className="text-xs text-muted-foreground">
+                    Exam / source
+                  </Label>
+                  <Input
+                    id="exam"
+                    className="h-9"
+                    placeholder="CBSE"
+                    value={meta.exam ?? ""}
+                    onChange={(event) =>
+                      patchMeta({ exam: event.target.value, source: event.target.value })
+                    }
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="duration" className="text-xs text-muted-foreground">
+                    Duration (min)
+                  </Label>
+                  <Input
+                    id="duration"
+                    className="h-9"
+                    type="number"
+                    value={meta.duration_minutes ?? ""}
+                    onChange={(event) =>
+                      patchMeta({
+                        duration_minutes:
+                          event.target.value === "" ? null : Number(event.target.value),
+                      })
+                    }
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="difficulty" className="text-xs text-muted-foreground">
+                    Difficulty
+                  </Label>
+                  <select
+                    id="difficulty"
+                    className={selectClass}
+                    value={meta.difficulty ?? ""}
+                    onChange={(event) =>
+                      patchMeta({
+                        difficulty: (event.target.value || null) as DocumentMeta["difficulty"],
+                      })
+                    }
+                  >
+                    <option value="">Unset</option>
+                    <option value="easy">Easy</option>
+                    <option value="medium">Medium</option>
+                    <option value="hard">Hard</option>
+                  </select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="dmarks" className="text-xs text-muted-foreground">
+                    Default marks
+                  </Label>
+                  <Input
+                    id="dmarks"
+                    className="h-9"
+                    type="number"
+                    value={meta.default_marks ?? ""}
+                    onChange={(event) =>
+                      patchMeta({
+                        default_marks:
+                          event.target.value === "" ? null : Number(event.target.value),
+                      })
+                    }
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="dneg" className="text-xs text-muted-foreground">
+                    Default negative
+                  </Label>
+                  <Input
+                    id="dneg"
+                    className="h-9"
+                    type="number"
+                    value={meta.default_negative_marks ?? ""}
+                    onChange={(event) =>
+                      patchMeta({
+                        default_negative_marks:
+                          event.target.value === "" ? null : Number(event.target.value),
+                      })
+                    }
+                  />
+                </div>
+
+                <div className="space-y-1.5 sm:col-span-2 md:col-span-3 xl:col-span-4">
+                  <Label htmlFor="hint" className="text-xs text-muted-foreground">
+                    Notes for the reader
+                  </Label>
+                  <Input
                     id="hint"
-                    rows={3}
+                    className="h-9"
                     placeholder="Answer key is on the last page. Section B is assertion and reason."
                     value={meta.notes ?? ""}
                     onChange={(event) => patchMeta({ notes: event.target.value })}
@@ -658,86 +894,25 @@ function HomePage() {
                 </div>
               </div>
             </div>
+          </CollapsibleContent>
+        </Collapsible>
 
-            <div className="rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-paper)]">
-              <h2 className="text-lg">2. Add pages</h2>
-              <button
-                type="button"
-                onClick={() => fileInput.current?.click()}
-                onDragOver={(event) => event.preventDefault()}
-                onDrop={(event) => {
-                  event.preventDefault();
-                  void addFiles(event.dataTransfer.files);
-                }}
-                className="mt-3 flex w-full flex-col items-center gap-2 rounded-lg border border-dashed border-border bg-secondary/40 px-4 py-8 text-sm text-muted-foreground transition-colors hover:border-primary hover:text-foreground"
-              >
-                <ImagePlus className="h-6 w-6" aria-hidden="true" />
-                Drop images here or click to browse
-              </button>
-              <input
-                ref={fileInput}
-                type="file"
-                accept="image/*"
-                multiple
-                className="hidden"
-                onChange={(event) => {
-                  void addFiles(event.target.files);
-                  event.target.value = "";
-                }}
-              />
-
-              {pages.length ? (
-                <ul className="mt-3 grid grid-cols-3 gap-2">
-                  {pages.map((page) => (
-                    <li key={page.id} className="relative">
-                      {page.dataUrl ? (
-                        <img
-                          src={page.dataUrl}
-                          alt={`Page ${page.page_index + 1}`}
-                          className="h-24 w-full rounded border border-border object-cover"
-                        />
-                      ) : (
-                        <div className="flex h-24 items-center justify-center rounded border text-xs">
-                          Page {page.page_index + 1}
-                        </div>
-                      )}
-                      <span className="absolute bottom-1 left-1 rounded bg-background/80 px-1 text-[10px]">
-                        {page.page_index + 1}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
-
-              <p className="mt-4 flex flex-wrap items-center gap-1 text-xs text-muted-foreground">
-                Reader: <span className="text-foreground">{READER_LABELS[reader.engine]}</span>
-              </p>
-
-              <Button
-                className="mt-2 w-full"
-                onClick={() => void handleExtract()}
-                disabled={!!progress || !pages.length}
-              >
-                {progress ? (
-                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                ) : (
-                  <Sparkles className="h-4 w-4" aria-hidden="true" />
-                )}
-                {progress ? `Reading page ${progress.done + 1} of ${progress.total}` : "Read new pages"}
-              </Button>
-              {progress ? (
-                <Progress
-                  className="mt-3"
-                  value={(progress.done / Math.max(1, progress.total)) * 100}
-                />
-              ) : null}
-            </div>
+        <div className="grid min-h-0 flex-1 gap-4 overflow-hidden lg:grid-cols-2">
+          <aside className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-[var(--shadow-paper)] max-lg:min-h-[45vh]">
+            <PageImageViewer
+              pages={pages.map((page) => ({
+                id: page.id,
+                pageIndex: page.page_index,
+                dataUrl: page.dataUrl,
+              }))}
+              className="min-h-0 flex-1"
+            />
           </aside>
 
-          <section>
+          <section className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-[var(--shadow-paper)] max-lg:min-h-[45vh]">
             {questions.length ? (
               <>
-                <div className="mb-4 rounded-xl border border-border bg-card p-4 shadow-[var(--shadow-paper)]">
+                <div className="shrink-0 space-y-3 border-b border-border p-4">
                   <div className="flex flex-wrap items-center gap-2">
                     <div className="mr-auto">
                       <p className="font-display text-2xl leading-none">
@@ -759,44 +934,46 @@ function HomePage() {
                       size="sm"
                       onClick={() => {
                         setQuestions([]);
-                        if (documentId) persist(documentId, []);
+                        if (documentId) persist(documentId, [], undefined, { immediate: true });
                       }}
                     >
                       <Trash2 className="h-4 w-4" aria-hidden="true" />
-                      Clear questions
+                      Clear
                     </Button>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" onClick={() => setFilter("all")}>
+                      <Badge variant={filter === "all" ? "default" : "outline"}>
+                        All {questions.length}
+                      </Badge>
+                    </button>
+                    {counts.map(([type, count]) => (
+                      <button key={type} type="button" onClick={() => setFilter(type)}>
+                        <Badge variant={filter === type ? "default" : "outline"}>
+                          {QUESTION_TYPE_LABELS[type]} {count}
+                        </Badge>
+                      </button>
+                    ))}
                   </div>
                 </div>
 
-                <div className="mb-4 flex flex-wrap gap-2">
-                  <button type="button" onClick={() => setFilter("all")}>
-                    <Badge variant={filter === "all" ? "default" : "outline"}>
-                      All {questions.length}
-                    </Badge>
-                  </button>
-                  {counts.map(([type, count]) => (
-                    <button key={type} type="button" onClick={() => setFilter(type)}>
-                      <Badge variant={filter === type ? "default" : "outline"}>
-                        {QUESTION_TYPE_LABELS[type]} {count}
-                      </Badge>
-                    </button>
-                  ))}
+                <div className="min-h-0 flex-1 overflow-y-auto p-4">
+                  <PageReview
+                    questions={visible}
+                    showImages={false}
+                    resolveFigure={(path) => figureUrls[path]}
+                    onApprovalChange={setApproved}
+                    onQuestionChange={patchQuestion}
+                    onRegenerate={(questionId) => void runGeneration(questionId, true)}
+                    generatingIds={generatingIds}
+                  />
                 </div>
-
-                <PageReview
-                  questions={visible}
-                  pageUrls={pages.map((page) => page.dataUrl)}
-                  resolveFigure={(path) => figureUrls[path]}
-                  onApprovalChange={setApproved}
-                  onQuestionChange={patchQuestion}
-                  onRegenerate={(questionId) => void runGeneration(questionId, true)}
-                  generatingIds={generatingIds}
-                />
               </>
             ) : (
               <div
                 className={cn(
-                  "paper-sheet flex min-h-[420px] flex-col items-center justify-center rounded-xl border border-border px-6 text-center",
+                  "paper-sheet flex min-h-0 flex-1 flex-col items-center justify-center px-6 text-center",
                 )}
               >
                 <FileJson className="h-8 w-8 text-muted-foreground" aria-hidden="true" />
