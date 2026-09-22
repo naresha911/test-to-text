@@ -348,15 +348,23 @@ export const generateHintSolution = createServerFn({ method: "POST" })
     if (openRouterKey) {
       try {
         text = await viaOpenRouter();
-      } catch (error) {
+      } catch (openRouterError) {
         if (lovableKey) {
           try {
             text = await viaLovable();
-          } catch {
-            throw error;
+          } catch (lovableError) {
+            const openRouterMessage =
+              openRouterError instanceof Error
+                ? openRouterError.message
+                : String(openRouterError);
+            const lovableMessage =
+              lovableError instanceof Error ? lovableError.message : String(lovableError);
+            throw new Error(
+              `OpenRouter failed (${openRouterMessage}). Lovable fallback also failed: ${lovableMessage}`,
+            );
           }
         } else {
-          throw error;
+          throw openRouterError;
         }
       }
     } else {

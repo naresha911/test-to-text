@@ -1,4 +1,4 @@
-export const DOCUMENT_KINDS = ["past_paper", "practice_test"] as const;
+export const DOCUMENT_KINDS = ["past_paper", "practice_test", "ai_mock"] as const;
 export type DocumentKind = (typeof DOCUMENT_KINDS)[number];
 
 export const DIFFICULTIES = ["easy", "medium", "hard"] as const;
@@ -9,6 +9,25 @@ export type Catalog = {
   subjects: { id: number; name: string; code: string | null }[];
   topics: { id: number; subject_id: number | null; name: string; parent_topic_id: number | null }[];
   streams: { id: number; name: string; standard_id: number | null }[];
+};
+
+export type MockGenerationMode = "from_source" | "from_instructions";
+export type MockGenerationStatus = "pending" | "in_progress" | "completed" | "failed";
+
+export type MockGenerationPair = {
+  source_question_id: string | null;
+  mock_question_id: string;
+};
+
+export type MockGenerationState = {
+  mode: MockGenerationMode;
+  status: MockGenerationStatus;
+  instructions: string | null;
+  planned_count: number | null;
+  source_question_ids: string[];
+  cursor: number;
+  last_error: string | null;
+  pairs: MockGenerationPair[];
 };
 
 export type DocumentMeta = {
@@ -32,6 +51,10 @@ export type DocumentMeta = {
   max_attempts: number;
   default_marks: number | null;
   default_negative_marks: number | null;
+  /** Source paper id when this document is an AI mock generated from a library paper. */
+  source_document_id: string | null;
+  /** Resumable AI mock generation job state. */
+  generation: MockGenerationState | null;
   created_at: string;
   updated_at: string;
 };
@@ -45,3 +68,106 @@ export type PageRecord = {
   ocr_status: string;
   dataUrl?: string;
 };
+
+export function documentKindLabel(kind: DocumentKind): string {
+  switch (kind) {
+    case "practice_test":
+      return "Practice test";
+    case "ai_mock":
+      return "AI mock";
+    default:
+      return "Past paper";
+  }
+}
+
+export function documentKindBadge(kind: DocumentKind): string {
+  switch (kind) {
+    case "practice_test":
+      return "Test";
+    case "ai_mock":
+      return "AI Mock";
+    default:
+      return "Paper";
+  }
+}
+
+export function emptyMockGeneration(
+  partial: Partial<MockGenerationState> & Pick<MockGenerationState, "mode">,
+): MockGenerationState {
+  return {
+    status: "pending",
+    instructions: null,
+    planned_count: null,
+    source_question_ids: [],
+    cursor: 0,
+    last_error: null,
+    pairs: [],
+    ...partial,
+  };
+}
+
+export function parseMockGeneration(raw: unknown): MockGenerationState | null {
+  if (raw == null || raw === "") return null;
+  let value: unknown = raw;
+  if (typeof raw === "string") {
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!value || typeof value !== "object") return null;
+  const obj = value as Record<string, unknown>;
+  const mode = obj["mode"];
+  if (mode !== "from_source" && mode !== "from_instructions") return null;
+  const status = obj["status"];
+  const statusOk =
+    status === "pending" ||
+    status === "in_progress" ||
+    status === "completed" ||
+    status === "failed";
+  const pairs = Array.isArray(obj["pairs"])
+    ? obj["pairs"]
+        .map((pair) => {
+          if (!pair || typeof pair !== "object") return null;
+          const p = pair as Record<string, unknown>;
+          const mockId = typeof p["mock_question_id"] === "string" ? p["mock_question_id"] : null;
+          if (!mockId) return null;
+          return {
+            source_question_id:
+              typeof p["source_question_id"] === "string" ? p["source_question_id"] : null,
+            mock_question_id: mockId,
+          };
+        })
+        .filter((p): p is MockGenerationPair => p != null)
+    : [];
+  const sourceIds = Array.isArray(obj["source_question_ids"])
+    ? obj["source_question_ids"].filter((id): id is string => typeof id === "string")
+    : [];
+  return {
+    mode,
+    status: statusOk ? status : "pending",
+    instructions: typeof obj["instructions"] === "string" ? obj["instructions"] : null,
+    planned_count:
+      typeof obj["planned_count"] === "number" && Number.isFinite(obj["planned_count"])
+        ? obj["planned_count"]
+        : null,
+    source_question_ids: sourceIds,
+    cursor: typeof obj["cursor"] === "number" && Number.isFinite(obj["cursor"]) ? obj["cursor"] : 0,
+    last_error: typeof obj["last_error"] === "string" ? obj["last_error"] : null,
+    pairs,
+  };
+}
+
+export function mockGenerationTotal(generation: MockGenerationState | null | undefined): number {
+  if (!generation) return 0;
+  if (generation.mode === "from_source") return generation.source_question_ids.length;
+  return generation.planned_count ?? 0;
+}
+
+export function isMockGenerationIncomplete(
+  generation: MockGenerationState | null | undefined,
+): boolean {
+  if (!generation) return false;
+  return generation.status !== "completed";
+}

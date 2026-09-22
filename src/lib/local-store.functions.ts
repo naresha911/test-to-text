@@ -1,7 +1,12 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 
-import type { DocumentKind } from "@/lib/document-types";
+import {
+  DOCUMENT_KINDS,
+  emptyMockGeneration,
+  type DocumentKind,
+  type MockGenerationState,
+} from "@/lib/document-types";
 import { buildExamPrepExport } from "@/lib/exam-prep-export";
 import {
   appendPage,
@@ -19,6 +24,24 @@ import {
 } from "@/lib/local-db";
 import type { Question } from "@/lib/question-schema";
 
+const KindSchema = z.enum(DOCUMENT_KINDS);
+
+const GenerationPairSchema = z.object({
+  source_question_id: z.string().nullable(),
+  mock_question_id: z.string(),
+});
+
+const GenerationSchema = z.object({
+  mode: z.enum(["from_source", "from_instructions"]),
+  status: z.enum(["pending", "in_progress", "completed", "failed"]),
+  instructions: z.string().max(8000).nullable(),
+  planned_count: z.number().int().nullable(),
+  source_question_ids: z.array(z.string()),
+  cursor: z.number().int().min(0),
+  last_error: z.string().max(2000).nullable(),
+  pairs: z.array(GenerationPairSchema),
+});
+
 export const listLocalDocuments = createServerFn({ method: "GET" }).handler(async () =>
   listDocuments(),
 );
@@ -31,15 +54,23 @@ export const createLocalDocument = createServerFn({ method: "POST" })
   .validator((input: unknown) =>
     z
       .object({
-        kind: z.enum(["past_paper", "practice_test"]),
+        kind: KindSchema,
         title: z.string().max(200).optional(),
+        source_document_id: z.string().uuid().nullable().optional(),
+        generation: GenerationSchema.nullable().optional(),
       })
       .parse(input),
   )
-  .handler(async ({ data }) => createDocument(data.kind as DocumentKind, data.title));
+  .handler(async ({ data }) =>
+    createDocument(data.kind as DocumentKind, {
+      ...(data.title !== undefined ? { title: data.title } : {}),
+      source_document_id: data.source_document_id ?? null,
+      generation: (data.generation as MockGenerationState | null | undefined) ?? null,
+    }),
+  );
 
 const MetaPatch = z.object({
-  kind: z.enum(["past_paper", "practice_test"]).optional(),
+  kind: KindSchema.optional(),
   title: z.string().max(300).optional(),
   year: z.number().int().nullable().optional(),
   standard_id: z.number().int().nullable().optional(),
@@ -58,6 +89,8 @@ const MetaPatch = z.object({
   max_attempts: z.number().int().optional(),
   default_marks: z.number().nullable().optional(),
   default_negative_marks: z.number().nullable().optional(),
+  source_document_id: z.string().uuid().nullable().optional(),
+  generation: GenerationSchema.nullable().optional(),
   questions: z.array(z.unknown()).optional(),
 });
 
@@ -89,6 +122,8 @@ export const saveLocalDocument = createServerFn({ method: "POST" })
     if (src.default_negative_marks !== undefined) {
       patch.default_negative_marks = src.default_negative_marks;
     }
+    if (src.source_document_id !== undefined) patch.source_document_id = src.source_document_id;
+    if (src.generation !== undefined) patch.generation = src.generation as MockGenerationState;
     if (src.questions !== undefined) patch.questions = src.questions as Question[];
     return updateDocument(data.id, patch);
   });
@@ -152,4 +187,108 @@ export const exportLocalDocument = createServerFn({ method: "POST" })
     const loaded = await getDocument(data.id);
     if (!loaded) throw new Error("Document not found");
     return buildExamPrepExport(loaded.document, loaded.questions);
+  });
+
+/** Create an AI mock draft from an existing library paper. */
+export const createAiMockFromSource = createServerFn({ method: "POST" })
+  .validator((input: unknown) => z.object({ sourceId: z.string().uuid() }).parse(input))
+  .handler(async ({ data }) => {
+    const loaded = await getDocument(data.sourceId);
+    if (!loaded) throw new Error("Source paper not found");
+    if (loaded.document.kind === "ai_mock") {
+      throw new Error("Cannot generate a mock from another AI mock. Choose a scanned paper.");
+    }
+    if (!loaded.questions.length) {
+      throw new Error("That paper has no questions yet. Extract questions first.");
+    }
+
+    const sourceIds = loaded.questions.map((q) => q.id);
+    const generation = emptyMockGeneration({
+      mode: "from_source",
+      status: "pending",
+      source_question_ids: sourceIds,
+      cursor: 0,
+    });
+
+    const created = await createDocument("ai_mock", {
+      title: `Mock — ${loaded.document.title}`,
+      source_document_id: loaded.document.id,
+      generation,
+    });
+
+    await updateDocument(created.id, {
+      year: loaded.document.year,
+      standard_id: loaded.document.standard_id,
+      stream_id: loaded.document.stream_id,
+      subject_id: loaded.document.subject_id,
+      duration_minutes: loaded.document.duration_minutes,
+      total_marks: loaded.document.total_marks,
+      difficulty: loaded.document.difficulty,
+      exam: loaded.document.exam,
+      notes: loaded.document.notes,
+      source: `ai_mock_from:${loaded.document.id}`,
+      description: loaded.document.description,
+      section_timing: loaded.document.section_timing,
+      negative_marking: loaded.document.negative_marking,
+      allow_pause: loaded.document.allow_pause,
+      max_attempts: loaded.document.max_attempts,
+      default_marks: loaded.document.default_marks,
+      default_negative_marks: loaded.document.default_negative_marks,
+      questions: [],
+    });
+
+    const next = await getDocument(created.id);
+    if (!next) throw new Error("Could not load the new AI mock document");
+    return next;
+  });
+
+/** Create an AI mock draft from free-text instructions (no source paper). */
+export const createAiMockFromInstructions = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        title: z.string().min(1).max(300),
+        instructions: z.string().min(10).max(8000),
+        planned_count: z.number().int().min(1).max(80),
+        standard_id: z.number().int().nullable().optional(),
+        stream_id: z.number().int().nullable().optional(),
+        subject_id: z.number().int().nullable().optional(),
+        difficulty: z.enum(["easy", "medium", "hard"]).nullable().optional(),
+        exam: z.string().max(200).nullable().optional(),
+        duration_minutes: z.number().int().nullable().optional(),
+        default_marks: z.number().nullable().optional(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const generation = emptyMockGeneration({
+      mode: "from_instructions",
+      status: "pending",
+      instructions: data.instructions.trim(),
+      planned_count: data.planned_count,
+      cursor: 0,
+    });
+
+    const created = await createDocument("ai_mock", {
+      title: data.title.trim(),
+      source_document_id: null,
+      generation,
+    });
+
+    await updateDocument(created.id, {
+      standard_id: data.standard_id ?? null,
+      stream_id: data.stream_id ?? null,
+      subject_id: data.subject_id ?? null,
+      difficulty: data.difficulty ?? null,
+      exam: data.exam ?? null,
+      duration_minutes: data.duration_minutes ?? null,
+      default_marks: data.default_marks ?? null,
+      source: "ai_mock_from_instructions",
+      description: data.instructions.trim().slice(0, 2000),
+      questions: [],
+    });
+
+    const next = await getDocument(created.id);
+    if (!next) throw new Error("Could not load the new AI mock document");
+    return next;
   });

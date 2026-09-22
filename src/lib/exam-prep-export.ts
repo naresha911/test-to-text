@@ -149,7 +149,8 @@ export function buildExamPrepExport(document: DocumentMeta, questions: Question[
   }
 
   const sectionIds = new Map<string, string>();
-  if (document.kind === "practice_test") {
+  const isTestKind = document.kind === "practice_test" || document.kind === "ai_mock";
+  if (isTestKind) {
     sectionNames.forEach((name, i) => {
       const id = crypto.randomUUID();
       sectionIds.set(name, id);
@@ -170,7 +171,7 @@ export function buildExamPrepExport(document: DocumentMeta, questions: Question[
       description: document.description ?? document.notes,
       standard_id: document.standard_id,
       stream_id: document.stream_id,
-      creation_mode: "manual",
+      creation_mode: document.kind === "ai_mock" ? "ai" : "manual",
       total_marks: document.total_marks,
       duration_minutes: document.duration_minutes,
       section_timing: document.section_timing,
@@ -327,7 +328,7 @@ export function buildExamPrepExport(document: DocumentMeta, questions: Question[
       });
     }
 
-    if (document.kind === "practice_test") {
+    if (isTestKind) {
       tables.test_questions.push({
         test_id: containerId,
         question_id: q.id,
@@ -356,7 +357,7 @@ export function buildExamPrepExport(document: DocumentMeta, questions: Question[
     if (document.kind === "past_paper" && tables.papers[0]) {
       (tables.papers[0] as { total_marks: number }).total_marks = sum;
     }
-    if (document.kind === "practice_test" && tables.tests[0]) {
+    if (isTestKind && tables.tests[0]) {
       (tables.tests[0] as { total_marks: number }).total_marks = sum;
     }
   }

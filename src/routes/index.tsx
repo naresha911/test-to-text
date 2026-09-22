@@ -81,6 +81,8 @@ const emptyMeta = (
   max_attempts: 1,
   default_marks: 1,
   default_negative_marks: 0,
+  source_document_id: null,
+  generation: null,
 });
 
 function HomePage() {
@@ -227,10 +229,12 @@ function HomePage() {
       const prev = pendingSaveRef.current;
       if (nextQuestions !== undefined) questionsRef.current = nextQuestions;
       if (nextMeta !== undefined) metaRef.current = nextMeta;
+      const questions = nextQuestions !== undefined ? nextQuestions : prev?.questions;
+      const nextPendingMeta = nextMeta !== undefined ? nextMeta : prev?.meta;
       pendingSaveRef.current = {
         id,
-        questions: nextQuestions !== undefined ? nextQuestions : prev?.questions,
-        meta: nextMeta !== undefined ? nextMeta : prev?.meta,
+        ...(questions !== undefined ? { questions } : {}),
+        ...(nextPendingMeta !== undefined ? { meta: nextPendingMeta } : {}),
       };
       if (options?.immediate) {
         void flushSave();

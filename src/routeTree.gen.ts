@@ -12,7 +12,9 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthRouteImport } from './routes/auth'
 import { Route as LibraryRouteImport } from './routes/library'
+import { Route as MockNewRouteImport } from './routes/mock-new'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as CompareMockIdRouteImport } from './routes/compare.$mockId'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
@@ -29,9 +31,19 @@ const LibraryRoute = LibraryRouteImport.update({
   path: '/library',
   getParentRoute: () => rootRouteImport,
 } as any)
+const MockNewRoute = MockNewRouteImport.update({
+  id: '/mock-new',
+  path: '/mock-new',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CompareMockIdRoute = CompareMockIdRouteImport.update({
+  id: '/compare/$mockId',
+  path: '/compare/$mockId',
   getParentRoute: () => rootRouteImport,
 } as any)
 
@@ -39,34 +51,51 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/library': typeof LibraryRoute
+  '/mock-new': typeof MockNewRoute
   '/settings': typeof SettingsRoute
+  '/compare/$mockId': typeof CompareMockIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/library': typeof LibraryRoute
+  '/mock-new': typeof MockNewRoute
   '/settings': typeof SettingsRoute
+  '/compare/$mockId': typeof CompareMockIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
   '/library': typeof LibraryRoute
+  '/mock-new': typeof MockNewRoute
   '/settings': typeof SettingsRoute
+  '/compare/$mockId': typeof CompareMockIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/auth' | '/library' | '/settings'
+  fullPaths:
+    '/' | '/auth' | '/library' | '/mock-new' | '/settings' | '/compare/$mockId'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/auth' | '/library' | '/settings'
-  id: '__root__' | '/' | '/auth' | '/library' | '/settings'
+  to:
+    '/' | '/auth' | '/library' | '/mock-new' | '/settings' | '/compare/$mockId'
+  id:
+    | '__root__'
+    | '/'
+    | '/auth'
+    | '/library'
+    | '/mock-new'
+    | '/settings'
+    | '/compare/$mockId'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthRoute: typeof AuthRoute
   LibraryRoute: typeof LibraryRoute
+  MockNewRoute: typeof MockNewRoute
   SettingsRoute: typeof SettingsRoute
+  CompareMockIdRoute: typeof CompareMockIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -92,11 +121,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LibraryRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/mock-new': {
+      id: '/mock-new'
+      path: '/mock-new'
+      fullPath: '/mock-new'
+      preLoaderRoute: typeof MockNewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/settings': {
       id: '/settings'
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/compare/$mockId': {
+      id: '/compare/$mockId'
+      path: '/compare/$mockId'
+      fullPath: '/compare/$mockId'
+      preLoaderRoute: typeof CompareMockIdRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
@@ -106,7 +149,9 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthRoute: AuthRoute,
   LibraryRoute: LibraryRoute,
+  MockNewRoute: MockNewRoute,
   SettingsRoute: SettingsRoute,
+  CompareMockIdRoute: CompareMockIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

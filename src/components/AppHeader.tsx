@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { Library, ScanText, Settings } from "lucide-react";
+import { Library, ScanText, Settings, Sparkles } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 
@@ -12,6 +12,12 @@ export function AppHeader() {
           <span className="font-display text-xl">PaperParse</span>
         </Link>
         <nav className="ml-auto flex items-center gap-2">
+          <Button variant="ghost" size="sm" asChild>
+            <Link to="/mock-new">
+              <Sparkles className="h-4 w-4" aria-hidden="true" />
+              AI Mock
+            </Link>
+          </Button>
           <Button variant="ghost" size="sm" asChild>
             <Link to="/library">
               <Library className="h-4 w-4" aria-hidden="true" />

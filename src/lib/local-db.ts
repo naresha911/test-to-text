@@ -3,7 +3,14 @@
  * Server-only — keep Node imports inside async helpers so *.functions.ts
  * can still be analyzed for the client bundle.
  */
-import type { Catalog, DocumentKind, DocumentMeta, PageRecord } from "@/lib/document-types";
+import type {
+  Catalog,
+  DocumentKind,
+  DocumentMeta,
+  MockGenerationState,
+  PageRecord,
+} from "@/lib/document-types";
+import { parseMockGeneration } from "@/lib/document-types";
 import type { Question } from "@/lib/question-schema";
 
 type SqlJsDatabase = import("sql.js").Database;
@@ -147,6 +154,7 @@ async function openDatabase(): Promise<SqlJsDatabase> {
   }
   db.run("PRAGMA foreign_keys = ON;");
   db.exec(schemaSql());
+  ensureDocumentColumns(db);
   await persist(db);
   return db;
 }
@@ -209,6 +217,8 @@ function rowToMeta(row: Record<string, unknown>): DocumentMeta {
     max_attempts: num(row["max_attempts"]) ?? 1,
     default_marks: num(row["default_marks"]),
     default_negative_marks: num(row["default_negative_marks"]),
+    source_document_id: str(row["source_document_id"]),
+    generation: parseMockGeneration(row["generation_json"]),
     created_at: String(row["created_at"]),
     updated_at: String(row["updated_at"]),
   };
@@ -255,6 +265,17 @@ function queryOne(
   bind: SqlValue[] = [],
 ): Record<string, unknown> | null {
   return queryAll(db, sql, bind)[0] ?? null;
+}
+
+function ensureDocumentColumns(db: SqlJsDatabase): void {
+  const cols = queryAll(db, "PRAGMA table_info(pp_documents)");
+  const names = new Set(cols.map((col) => String(col["name"])));
+  if (!names.has("source_document_id")) {
+    db.run("ALTER TABLE pp_documents ADD COLUMN source_document_id TEXT");
+  }
+  if (!names.has("generation_json")) {
+    db.run("ALTER TABLE pp_documents ADD COLUMN generation_json TEXT");
+  }
 }
 
 function dataUrlToBytes(dataUrl: string): { bytes: Uint8Array; contentType: string } {
@@ -398,14 +419,40 @@ export type DocumentPatch = Partial<Omit<DocumentMeta, "id" | "created_at" | "up
   questions?: Question[];
 };
 
-export async function createDocument(kind: DocumentKind, title?: string): Promise<DocumentMeta> {
+export type CreateDocumentOptions = {
+  title?: string;
+  source_document_id?: string | null;
+  generation?: MockGenerationState | null;
+};
+
+export async function createDocument(
+  kind: DocumentKind,
+  titleOrOptions?: string | CreateDocumentOptions,
+): Promise<DocumentMeta> {
+  const options: CreateDocumentOptions =
+    typeof titleOrOptions === "string"
+      ? { title: titleOrOptions }
+      : titleOrOptions == null
+        ? {}
+        : titleOrOptions;
+
   return withWrite((db) => {
     const id = uuid();
     const created = nowIso();
+    const generationJson = options.generation ? JSON.stringify(options.generation) : null;
     db.run(
-      `INSERT INTO pp_documents (id, kind, title, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?)`,
-      [id, kind, title?.trim() || "Untitled", created, created],
+      `INSERT INTO pp_documents (
+        id, kind, title, source_document_id, generation_json, created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      params(
+        id,
+        kind,
+        options.title?.trim() || "Untitled",
+        options.source_document_id ?? null,
+        generationJson,
+        created,
+        created,
+      ),
     );
     const row = queryOne(db, "SELECT * FROM pp_documents WHERE id = ?", [id]);
     if (!row) throw new Error("Could not create the document");
@@ -426,6 +473,8 @@ export async function updateDocument(
       if (value === undefined) continue;
       if (key === "questions") {
         next["questions"] = JSON.stringify(value);
+      } else if (key === "generation") {
+        next["generation_json"] = value == null ? null : JSON.stringify(value);
       } else if (
         key === "section_timing" ||
         key === "negative_marking" ||
@@ -444,7 +493,7 @@ export async function updateDocument(
         duration_minutes = ?, total_marks = ?, difficulty = ?, exam = ?, notes = ?,
         source = ?, description = ?, section_timing = ?, negative_marking = ?,
         allow_pause = ?, max_attempts = ?, default_marks = ?, default_negative_marks = ?,
-        questions = ?, updated_at = ?
+        source_document_id = ?, generation_json = ?, questions = ?, updated_at = ?
        WHERE id = ?`,
       params(
         next["kind"],
@@ -466,6 +515,8 @@ export async function updateDocument(
         next["max_attempts"],
         next["default_marks"],
         next["default_negative_marks"],
+        next["source_document_id"] ?? null,
+        next["generation_json"] ?? null,
         typeof next["questions"] === "string"
           ? next["questions"]
           : JSON.stringify(next["questions"] ?? []),

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { Download, Loader2, Trash2 } from "lucide-react";
+import { Columns2, Download, Loader2, Sparkles, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -19,15 +19,25 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  documentKindBadge,
+  documentKindLabel,
+  isMockGenerationIncomplete,
+  mockGenerationTotal,
+} from "@/lib/document-types";
 import { generateForApprovedQuestion } from "@/lib/hint-solution-client";
 import { generateHintSolution } from "@/lib/hint-solution.functions";
 import {
+  createAiMockFromSource,
   deleteLocalDocument,
   exportLocalDocument,
+  getLocalCatalog,
   getLocalDocument,
   listLocalDocuments,
   saveLocalDocument,
 } from "@/lib/local-store.functions";
+import { resumeMockPaperGeneration } from "@/lib/mock-paper-client";
+import { generateMockQuestion } from "@/lib/mock-paper.functions";
 import { updateQuestionById, type Question } from "@/lib/question-schema";
 
 export const Route = createFileRoute("/library")({
@@ -162,11 +172,19 @@ function PaperDetail({ id }: { id: string }) {
 }
 
 function LibraryPage() {
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const listFn = useServerFn(listLocalDocuments);
   const deleteFn = useServerFn(deleteLocalDocument);
   const exportFn = useServerFn(exportLocalDocument);
+  const createMockFn = useServerFn(createAiMockFromSource);
+  const getFn = useServerFn(getLocalDocument);
+  const saveFn = useServerFn(saveLocalDocument);
+  const generateFn = useServerFn(generateMockQuestion);
+  const catalogFn = useServerFn(getLocalCatalog);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [creatingMockFor, setCreatingMockFor] = useState<string | null>(null);
+  const [resumingMockId, setResumingMockId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<{
     id: string;
     title: string;
@@ -205,15 +223,86 @@ function LibraryPage() {
     }
   }
 
+  async function startMockFromSource(sourceId: string) {
+    setCreatingMockFor(sourceId);
+    try {
+      const created = await createMockFn({ data: { sourceId } });
+      void queryClient.invalidateQueries({ queryKey: ["local-documents"] });
+      toast.success("AI mock draft created — generating on the comparison screen.");
+      void navigate({ to: "/compare/$mockId", params: { mockId: created.document.id } });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not start AI mock generation.");
+    } finally {
+      setCreatingMockFor(null);
+    }
+  }
+
+  async function resumeInstructionMock(mockId: string) {
+    setResumingMockId(mockId);
+    try {
+      const loaded = await getFn({ data: { id: mockId } });
+      if (!loaded?.document.generation) {
+        throw new Error("No generation state found for this mock.");
+      }
+      const catalog = await catalogFn();
+      const subjectName =
+        catalog.subjects.find((s) => s.id === loaded.document.subject_id)?.name ?? null;
+      const standardName =
+        catalog.standards.find((s) => s.id === loaded.document.standard_id)?.name ?? null;
+      const streamName =
+        catalog.streams.find((s) => s.id === loaded.document.stream_id)?.name ?? null;
+      const topicsById: Record<number, string> = {};
+      for (const topic of catalog.topics) {
+        topicsById[topic.id] = topic.name;
+      }
+
+      const result = await resumeMockPaperGeneration({
+        mockId,
+        document: loaded.document,
+        questions: loaded.questions,
+        catalogNames: {
+          subject: subjectName,
+          standard: standardName,
+          stream: streamName,
+          topicsById,
+        },
+        runGenerate: generateFn,
+        runSave: saveFn,
+      });
+      void queryClient.invalidateQueries({ queryKey: ["local-documents"] });
+      if (result.completed) {
+        toast.success(`AI mock complete — ${result.questions.length} questions.`);
+      } else {
+        toast.message("Generation paused again. You can resume later.");
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not resume generation.");
+      void queryClient.invalidateQueries({ queryKey: ["local-documents"] });
+    } finally {
+      setResumingMockId(null);
+    }
+  }
+
   return (
     <div className="min-h-screen">
       <AppHeader />
 
       <main className="mx-auto max-w-5xl px-4 py-10">
-        <h1 className="text-4xl">Your library</h1>
-        <p className="mt-2 text-muted-foreground">
-          Papers stored in local SQLite on this computer. Open one to keep adding pages.
-        </p>
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="mr-auto">
+            <h1 className="text-4xl">Your library</h1>
+            <p className="mt-2 text-muted-foreground">
+              Papers stored in local SQLite on this computer. Open one to keep adding pages, or generate an
+              AI mock.
+            </p>
+          </div>
+          <Button asChild>
+            <Link to="/mock-new">
+              <Sparkles className="h-4 w-4" aria-hidden="true" />
+              New AI Mock Paper
+            </Link>
+          </Button>
+        </div>
 
         {papers.isLoading ? (
           <div className="mt-10 flex justify-center">
@@ -222,14 +311,24 @@ function LibraryPage() {
         ) : !papers.data?.length ? (
           <div className="mt-8 rounded-xl border border-dashed border-border p-10 text-center">
             <p className="text-muted-foreground">Nothing saved yet. Convert a paper on the home page.</p>
-            <Button className="mt-4" asChild>
-              <Link to="/" search={{ id: undefined }}>Convert a paper</Link>
-            </Button>
+            <div className="mt-4 flex flex-wrap justify-center gap-2">
+              <Button asChild>
+                <Link to="/" search={{ id: undefined }}>
+                  Convert a paper
+                </Link>
+              </Button>
+              <Button variant="outline" asChild>
+                <Link to="/mock-new">New AI Mock Paper</Link>
+              </Button>
+            </div>
           </div>
         ) : (
           <ul className="mt-8 space-y-4">
             {papers.data.map((paper) => {
               const open = openId === paper.id;
+              const incompleteMock =
+                paper.kind === "ai_mock" && isMockGenerationIncomplete(paper.generation);
+              const genTotal = mockGenerationTotal(paper.generation);
               return (
                 <li
                   key={paper.id}
@@ -240,22 +339,86 @@ function LibraryPage() {
                       <h2 className="truncate text-2xl">{paper.title}</h2>
                       <p className="mt-1 text-xs text-muted-foreground">
                         {[
-                          paper.kind === "practice_test" ? "Practice test" : "Past paper",
+                          documentKindLabel(paper.kind),
                           paper.year,
                           `${paper.question_count} question${paper.question_count === 1 ? "" : "s"}`,
-                          `${paper.page_count} page${paper.page_count === 1 ? "" : "s"}`,
+                          paper.kind === "ai_mock" && genTotal
+                            ? `gen ${paper.generation?.cursor ?? 0}/${genTotal}`
+                            : null,
+                          paper.kind !== "ai_mock"
+                            ? `${paper.page_count} page${paper.page_count === 1 ? "" : "s"}`
+                            : null,
                           new Date(paper.updated_at).toLocaleDateString(),
                         ]
                           .filter(Boolean)
                           .join(" · ")}
                       </p>
+                      {paper.kind === "ai_mock" && paper.generation?.status === "failed" ? (
+                        <p className="mt-1 text-xs text-destructive">
+                          Generation paused: {paper.generation.last_error ?? "unknown error"}
+                        </p>
+                      ) : null}
                     </div>
-                    <Badge variant="outline">{paper.kind === "practice_test" ? "Test" : "Paper"}</Badge>
-                    <Button variant="outline" size="sm" asChild>
-                      <Link to="/" search={{ id: paper.id }}>
-                        Continue
-                      </Link>
-                    </Button>
+                    <Badge variant="outline">{documentKindBadge(paper.kind)}</Badge>
+
+                    {paper.kind === "ai_mock" ? (
+                      <>
+                        {paper.source_document_id ? (
+                          <Button variant="outline" size="sm" asChild>
+                            <Link to="/compare/$mockId" params={{ mockId: paper.id }}>
+                              <Columns2 className="h-4 w-4" aria-hidden="true" />
+                              {incompleteMock ? "Resume / Compare" : "Compare"}
+                            </Link>
+                          </Button>
+                        ) : incompleteMock ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            disabled={resumingMockId === paper.id}
+                            onClick={() => void resumeInstructionMock(paper.id)}
+                          >
+                            {resumingMockId === paper.id ? (
+                              <>
+                                <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                                Resuming…
+                              </>
+                            ) : (
+                              <>
+                                <Sparkles className="h-4 w-4" aria-hidden="true" />
+                                Resume generation
+                              </>
+                            )}
+                          </Button>
+                        ) : null}
+                      </>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        disabled={creatingMockFor === paper.id || paper.question_count === 0}
+                        onClick={() => void startMockFromSource(paper.id)}
+                      >
+                        {creatingMockFor === paper.id ? (
+                          <>
+                            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                            Starting…
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="h-4 w-4" aria-hidden="true" />
+                            Generate AI Mock
+                          </>
+                        )}
+                      </Button>
+                    )}
+
+                    {paper.kind !== "ai_mock" ? (
+                      <Button variant="outline" size="sm" asChild>
+                        <Link to="/" search={{ id: paper.id }}>
+                          Continue
+                        </Link>
+                      </Button>
+                    ) : null}
                     <Button variant="outline" size="sm" onClick={() => void download(paper.id, paper.title)}>
                       <Download className="h-4 w-4" aria-hidden="true" />
                       JSON
