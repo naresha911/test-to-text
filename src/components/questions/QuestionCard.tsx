@@ -631,7 +631,9 @@ export function QuestionCard({
           <FieldLabel>Stem</FieldLabel>
           <Textarea
             value={question.stem}
-            rows={4}
+            rows={8}
+            className="min-h-48"
+            aria-label="Recognised question text"
             onChange={(event) => onChange({ ...question, stem: event.target.value })}
           />
         </div>
