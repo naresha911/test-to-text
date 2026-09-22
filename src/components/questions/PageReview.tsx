@@ -23,22 +23,30 @@ export function PageReview({
   onRegenerate,
   generatingIds,
 }: Props) {
-  const pageNumbers = [...new Set(questions.map((question) => question.page ?? 0))].sort(
-    (a, b) => a - b,
+  const pageNumbers = [...new Set(questions.map((question) => question.page ?? null))].sort(
+    (a, b) => {
+      if (a == null) return 1;
+      if (b == null) return -1;
+      return a - b;
+    },
   );
 
   return (
     <div className="space-y-8">
       {pageNumbers.map((pageNumber) => {
-        const pageQuestions = questions.filter((question) => (question.page ?? 0) === pageNumber);
+        const pageQuestions = questions.filter(
+          (question) => (question.page ?? null) === pageNumber,
+        );
         const approved = pageQuestions.filter((question) => question.approved === true).length;
-        const sourceUrl = pageUrls[pageNumber];
+        const sourceUrl = pageNumber == null ? undefined : pageUrls[pageNumber];
+        const pageLabel = pageNumber == null ? "Source image removed" : `Page ${pageNumber + 1}`;
+        const headingId = pageNumber == null ? "page-removed" : `page-${pageNumber + 1}`;
 
         return (
-          <section key={pageNumber} className="space-y-4" aria-labelledby={`page-${pageNumber + 1}`}>
+          <section key={headingId} className="space-y-4" aria-labelledby={headingId}>
             <div className="flex items-center gap-2 border-b border-border pb-2">
-              <h2 id={`page-${pageNumber + 1}`} className="text-2xl">
-                Page {pageNumber + 1}
+              <h2 id={headingId} className="text-2xl">
+                {pageLabel}
               </h2>
               <Badge variant="outline" className="ml-auto gap-1">
                 <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
@@ -46,7 +54,7 @@ export function PageReview({
               </Badge>
             </div>
 
-            {sourceUrl ? (
+            {pageNumber != null && sourceUrl ? (
               <figure className="overflow-hidden rounded-lg border border-border bg-secondary/30 p-3">
                 <img
                   src={sourceUrl}

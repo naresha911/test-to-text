@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { Download, FileJson, ImagePlus, Loader2, Sparkles, Trash2 } from "lucide-react";
+import { Download, FileJson, ImagePlus, Loader2, Sparkles, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -24,6 +24,7 @@ import {
   getLocalCatalog,
   getLocalDocument,
   markLocalPageOcr,
+  removeLocalPage,
   saveLocalDocument,
   saveLocalFigure,
 } from "@/lib/local-store.functions";
@@ -91,6 +92,7 @@ function HomePage() {
   const runGet = useServerFn(getLocalDocument);
   const runSave = useServerFn(saveLocalDocument);
   const runAppendPage = useServerFn(appendLocalPage);
+  const runRemovePage = useServerFn(removeLocalPage);
   const runSaveFigure = useServerFn(saveLocalFigure);
   const runMarkOcr = useServerFn(markLocalPageOcr);
   const runCatalog = useServerFn(getLocalCatalog);
@@ -307,6 +309,29 @@ function HomePage() {
       toast.error(error instanceof Error ? error.message : "Could not read those images.");
     }
   }, [runAppendPage]);
+
+  async function removeUploadedPage(page: PageRecord) {
+    if (progress) return;
+    try {
+      await runRemovePage({ data: { pageId: page.id } });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not remove that page.");
+      return;
+    }
+    const removedIndex = page.page_index;
+    setPages((current) =>
+      current
+        .filter((item) => item.id !== page.id)
+        .sort((a, b) => a.page_index - b.page_index)
+        .map((item, index) => ({ ...item, page_index: index })),
+    );
+    setQuestions((current) => {
+      const next = reindexQuestionsAfterPageRemoval(current, removedIndex);
+      if (documentId) persist(documentId, next);
+      return next;
+    });
+    toast.success(`Removed page ${removedIndex + 1}.`);
+  }
 
   async function handleExtract() {
     if (!pages.length) {
@@ -704,6 +729,15 @@ function HomePage() {
                       <span className="absolute bottom-1 left-1 rounded bg-background/80 px-1 text-[10px]">
                         {page.page_index + 1}
                       </span>
+                      <button
+                        type="button"
+                        aria-label={`Remove page ${page.page_index + 1}`}
+                        disabled={!!progress}
+                        onClick={() => void removeUploadedPage(page)}
+                        className="absolute -top-1.5 -right-1.5 z-10 rounded-full bg-destructive p-0.5 text-destructive-foreground disabled:opacity-50"
+                      >
+                        <X className="h-3 w-3" aria-hidden="true" />
+                      </button>
                     </li>
                   ))}
                 </ul>
@@ -812,6 +846,24 @@ function HomePage() {
       </main>
     </div>
   );
+}
+
+function reindexQuestionsAfterPageRemoval(questions: Question[], removedIndex: number): Question[] {
+  const shift = (page: number | null | undefined): number | null => {
+    if (page == null || page < removedIndex) return page ?? null;
+    if (page === removedIndex) return null;
+    return page - 1;
+  };
+
+  return questions.map((question) => ({
+    ...question,
+    page: shift(question.page),
+    figures: question.figures.map((figure) => ({
+      ...figure,
+      page: shift(figure.page),
+    })),
+    sub_questions: reindexQuestionsAfterPageRemoval(question.sub_questions, removedIndex),
+  }));
 }
 
 function blobToDataUrl(blob: Blob): Promise<string> {
