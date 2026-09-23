@@ -6,23 +6,23 @@ export type ReaderSettings = {
   apiKeys?: Partial<Record<ReaderEngine, string>>;
 };
 
-export const READER_KEY_ENGINES = ["openrouter", "vision", "optiic"] as const satisfies readonly ReaderEngine[];
+export const READER_KEY_ENGINES = ["openrouter", "optiic", "ocrspace"] as const satisfies readonly ReaderEngine[];
 
 export const READER_LABELS: Record<ReaderEngine, string> = {
   lovable: "Built-in AI reader",
   openrouter: "OpenRouter (your key)",
-  vision: "Google Cloud Vision (your key)",
   optiic: "Optiic (your key)",
+  ocrspace: "OCR.space (free key)",
 };
 
 export const READER_NOTES: Record<ReaderEngine, string> = {
   lovable: "Uses this workspace's included AI credits. Reads maths and diagrams directly from the page.",
   openrouter:
     "Most accurate for maths, diagrams and puzzle figures. Uses your own OpenRouter key and its free or paid models.",
-  vision:
-    "Very strong plain-text accuracy, but it cannot see figures, so diagram questions come back as text only.",
   optiic:
-    "Plain-text OCR with a generous free tier. Figures are not returned, so diagram questions come back as text only.",
+    "Plain-text OCR with a generous free tier. Figures are not returned, so diagram questions come back as text only. A language model then splits questions, options, and comprehension passages.",
+  ocrspace:
+    "Free OCR.space key. Plain text only, 1 MB per page, 25,000 requests a month. Figures are not returned, so diagram questions come back as text only. A language model then splits questions, options, and comprehension passages.",
 };
 
 const STORAGE_KEY = "paperparse.reader";
@@ -32,7 +32,7 @@ export const DEFAULT_READER_SETTINGS: ReaderSettings = {
   model: DEFAULT_OPENROUTER_MODEL,
 };
 
-const VALID_ENGINES: ReaderEngine[] = ["lovable", "openrouter", "vision", "optiic"];
+const VALID_ENGINES: ReaderEngine[] = ["lovable", "openrouter", "optiic", "ocrspace"];
 
 export function loadReaderSettings(): ReaderSettings {
   if (typeof window === "undefined") return DEFAULT_READER_SETTINGS;

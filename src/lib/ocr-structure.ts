@@ -1,5 +1,5 @@
 /**
- * Offline fallback structuring for plain-text OCR engines (Optiic, Google Cloud Vision).
+ * Offline fallback structuring for plain-text OCR engines (OCR.space, Optiic).
  *
  * When no language model is available to organise the OCR text (no key, or no credits),
  * this splits the page text into questions using the printed numbering and option letters.
@@ -15,8 +15,8 @@ type Draft = {
   lines: string[];
 };
 
-const NUMBER_ONLY = /^\(?(\d{1,3})[.)]?$/;
-const NUMBER_START = /^\(?(\d{1,3})[.)]\s+(.*)$/;
+const NUMBER_ONLY = /^\(?(\d{1,3})\s*[.)]?$/;
+const NUMBER_START = /^\(?(\d{1,3})\s*[.)]\s+(.*)$/;
 const SECTION = /^section\s+([A-Z0-9]+)\b/i;
 const OPTION_SPLIT = /\(([A-Ha-h])\)\s*/g;
 
@@ -56,10 +56,17 @@ function classify(stem: string, options: { key: string; text: string }[]): Quest
   return "short_answer";
 }
 
+/** Put a line break before a question number that OCR left mid-line, as in a two-column page. */
+function separateQuestionNumbers(pageText: string): string {
+  return pageText
+    .replace(/\r\n/g, "\n")
+    .replace(/([^\n])[ \t]+(\d{1,3})\s*[.)]\s+(?=[A-Za-z"'(])/g, "$1\n$2. ");
+}
+
 /** Group raw OCR text into questions without using a language model. */
 export function structureOcrText(pageText: string, page: number): Question[] {
-  const rawLines = pageText
-    .split(/\r?\n/)
+  const rawLines = separateQuestionNumbers(pageText)
+    .split("\n")
     .map((l) => l.trim())
     .filter(Boolean);
 

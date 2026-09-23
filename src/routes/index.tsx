@@ -17,7 +17,7 @@ import type { Catalog, DocumentKind, DocumentMeta, PageRecord } from "@/lib/docu
 import { extractPage } from "@/lib/extract.functions";
 import { generateForApprovedQuestion } from "@/lib/hint-solution-client";
 import { generateHintSolution } from "@/lib/hint-solution.functions";
-import { cropFigure, preparePageImage } from "@/lib/image-utils";
+import { cropFigure, OCR_SPACE_MAX_BYTES, preparePageImage, shrinkJpegUnderBytes } from "@/lib/image-utils";
 import {
   appendLocalPage,
   createLocalDocument,
@@ -134,7 +134,9 @@ function HomePage() {
   const inFlightSaveRef = useRef<Promise<void> | null>(null);
   const flushSaveRef = useRef<() => Promise<void>>(async () => undefined);
 
-  useEffect(() => setReader(loadReaderSettings()), []);
+  useEffect(() => {
+    setReader(loadReaderSettings());
+  }, []);
 
   useEffect(() => {
     void runCatalog().then(setCatalog).catch(() => undefined);
@@ -439,15 +441,20 @@ function HomePage() {
 
     for (let i = 0; i < toRead.length; i += 1) {
       const page = toRead[i]!;
-      if (page.ocr_status === "done") {
+      const pageAlreadyHasQuestions = questionsRef.current.some((question) => question.page === page.page_index);
+      if (page.ocr_status === "done" && pageAlreadyHasQuestions) {
         setProgress({ done: i + 1, total: toRead.length });
         continue;
       }
       try {
         const apiKey = reader.apiKeys?.[reader.engine]?.trim();
+        const imageDataUrl =
+          reader.engine === "ocrspace"
+            ? await shrinkJpegUnderBytes(page.dataUrl!, OCR_SPACE_MAX_BYTES)
+            : page.dataUrl!;
         const result = await runExtract({
           data: {
-            imageDataUrl: page.dataUrl!,
+            imageDataUrl,
             page: page.page_index,
             engine: reader.engine,
             model: reader.model,
@@ -483,11 +490,21 @@ function HomePage() {
           }
           collected.push(question);
         }
-        if (!result.questions.length) failed += 1;
-        setPages((current) =>
-          current.map((p) => (p.id === page.id ? { ...p, ocr_status: "done" } : p)),
-        );
-        void runMarkOcr({ data: { pageId: page.id, status: "done" } });
+        if (!result.questions.length) {
+          failed += 1;
+          toast.error(
+            `Page ${page.page_index + 1} was read, but no questions could be built from the text.`,
+          );
+          setPages((current) =>
+            current.map((p) => (p.id === page.id ? { ...p, ocr_status: "pending" } : p)),
+          );
+          void runMarkOcr({ data: { pageId: page.id, status: "pending" } });
+        } else {
+          setPages((current) =>
+            current.map((p) => (p.id === page.id ? { ...p, ocr_status: "done" } : p)),
+          );
+          void runMarkOcr({ data: { pageId: page.id, status: "done" } });
+        }
       } catch (error) {
         failed += 1;
         const raw = error instanceof Error ? error.message : "";
@@ -518,7 +535,7 @@ function HomePage() {
         `Now ${sorted.length} question${sorted.length === 1 ? "" : "s"} in sequence${failedNote}.`,
       );
     } else {
-      toast.error("No questions were found. Try a sharper or more zoomed-in photo.");
+      toast.error("No questions were found.");
     }
   }
 

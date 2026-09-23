@@ -20,14 +20,16 @@ function readAsDataUrl(file: File | Blob): Promise<string> {
   });
 }
 
-/** Downscale to a sane edge length and re-encode as JPEG for the AI request. */
-export async function preparePageImage(file: File): Promise<{ dataUrl: string; blob: Blob }> {
-  const original = await readAsDataUrl(file);
-  const img = await loadImage(original);
-  const scale = Math.min(1, MAX_EDGE / Math.max(img.width, img.height));
-  const width = Math.max(1, Math.round(img.width * scale));
-  const height = Math.max(1, Math.round(img.height * scale));
+/** OCR.space free tier rejects a page larger than 1 MB. */
+export const OCR_SPACE_MAX_BYTES = 1_000_000;
 
+function jpegByteLength(dataUrl: string): number {
+  const base64 = dataUrl.includes(",") ? dataUrl.split(",")[1]! : dataUrl;
+  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
+  return Math.max(0, Math.floor((base64.length * 3) / 4) - padding);
+}
+
+function drawScaled(img: CanvasImageSource, width: number, height: number): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
@@ -36,8 +38,40 @@ export async function preparePageImage(file: File): Promise<{ dataUrl: string; b
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, width, height);
   ctx.drawImage(img, 0, 0, width, height);
+  return canvas;
+}
 
-  const dataUrl = canvas.toDataURL("image/jpeg", 0.9);
+/** Re-encode a page JPEG until it fits a byte limit. Used for the OCR.space free tier. */
+export async function shrinkJpegUnderBytes(dataUrl: string, maxBytes: number): Promise<string> {
+  if (jpegByteLength(dataUrl) <= maxBytes) return dataUrl;
+  const img = await loadImage(dataUrl);
+  let width = img.width;
+  let height = img.height;
+  const qualities = [0.85, 0.7, 0.55, 0.4, 0.3];
+
+  for (let attempt = 0; attempt < 12; attempt += 1) {
+    const canvas = drawScaled(img, width, height);
+    for (const quality of qualities) {
+      const next = canvas.toDataURL("image/jpeg", quality);
+      if (jpegByteLength(next) <= maxBytes) return next;
+    }
+    width = Math.max(1, Math.round(width * 0.8));
+    height = Math.max(1, Math.round(height * 0.8));
+    if (width < 400 && height < 400) break;
+  }
+
+  throw new Error("This page is still over the OCR.space free limit of 1 MB after shrinking.");
+}
+
+/** Downscale to a sane edge length and re-encode as JPEG for the AI request. */
+export async function preparePageImage(file: File): Promise<{ dataUrl: string; blob: Blob }> {
+  const original = await readAsDataUrl(file);
+  const img = await loadImage(original);
+  const scale = Math.min(1, MAX_EDGE / Math.max(img.width, img.height));
+  const width = Math.max(1, Math.round(img.width * scale));
+  const height = Math.max(1, Math.round(img.height * scale));
+
+  const dataUrl = drawScaled(img, width, height).toDataURL("image/jpeg", 0.9);
   const blob = await (await fetch(dataUrl)).blob();
   return { dataUrl, blob };
 }

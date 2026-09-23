@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { Columns2, Download, Loader2, Sparkles, Trash2 } from "lucide-react";
+import { Columns2, Download, Loader2, Sparkles, Trash2, Upload } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -32,6 +32,7 @@ import {
   deleteLocalDocument,
   exportLocalDocument,
   getLocalCatalog,
+  pushLocalDocument,
   getLocalDocument,
   listLocalDocuments,
   saveLocalDocument,
@@ -177,6 +178,7 @@ function LibraryPage() {
   const listFn = useServerFn(listLocalDocuments);
   const deleteFn = useServerFn(deleteLocalDocument);
   const exportFn = useServerFn(exportLocalDocument);
+  const pushFn = useServerFn(pushLocalDocument);
   const createMockFn = useServerFn(createAiMockFromSource);
   const getFn = useServerFn(getLocalDocument);
   const saveFn = useServerFn(saveLocalDocument);
@@ -185,6 +187,7 @@ function LibraryPage() {
   const [openId, setOpenId] = useState<string | null>(null);
   const [creatingMockFor, setCreatingMockFor] = useState<string | null>(null);
   const [resumingMockId, setResumingMockId] = useState<string | null>(null);
+  const [pushingId, setPushingId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<{
     id: string;
     title: string;
@@ -207,6 +210,18 @@ function LibraryPage() {
     },
     onError: () => toast.error("Could not delete that paper."),
   });
+
+  async function pushPaper(id: string, title: string) {
+    setPushingId(id);
+    try {
+      const result = await pushFn({ data: { id } });
+      toast.success(`Pushed "${result.title || title}" to exam-prep.`);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not push that paper.");
+    } finally {
+      setPushingId(null);
+    }
+  }
 
   async function download(id: string, title: string) {
     try {
@@ -422,6 +437,24 @@ function LibraryPage() {
                     <Button variant="outline" size="sm" onClick={() => void download(paper.id, paper.title)}>
                       <Download className="h-4 w-4" aria-hidden="true" />
                       JSON
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={pushingId === paper.id || paper.question_count === 0}
+                      onClick={() => void pushPaper(paper.id, paper.title)}
+                    >
+                      {pushingId === paper.id ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                          Pushing…
+                        </>
+                      ) : (
+                        <>
+                          <Upload className="h-4 w-4" aria-hidden="true" />
+                          Push
+                        </>
+                      )}
                     </Button>
                     <Button size="sm" variant="secondary" onClick={() => setOpenId(open ? null : paper.id)}>
                       {open ? "Hide" : "Review"}

@@ -171,7 +171,7 @@ export function buildExamPrepExport(document: DocumentMeta, questions: Question[
       description: document.description ?? document.notes,
       standard_id: document.standard_id,
       stream_id: document.stream_id,
-      creation_mode: document.kind === "ai_mock" ? "ai" : "manual",
+      creation_mode: "manual",
       total_marks: document.total_marks,
       duration_minutes: document.duration_minutes,
       section_timing: document.section_timing,

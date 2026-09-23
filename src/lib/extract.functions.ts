@@ -1,10 +1,10 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 
-import { structureOcrText } from "@/lib/ocr-structure";
+import { structureOcrText as structureOcrTextOffline } from "@/lib/ocr-structure";
 import { normalizeQuestion, type Question } from "@/lib/question-schema";
 
-export const READER_ENGINES = ["lovable", "openrouter", "vision", "optiic"] as const;
+export const READER_ENGINES = ["lovable", "openrouter", "optiic", "ocrspace"] as const;
 export type ReaderEngine = (typeof READER_ENGINES)[number];
 
 export const DEFAULT_OPENROUTER_MODEL = "google/gemini-2.5-flash";
@@ -22,6 +22,14 @@ const InputSchema = z.object({
   apiKey: z.string().max(1000).optional(),
   /** Model id, only used by the OpenRouter engine. */
   model: z.string().min(2).max(120).optional(),
+});
+
+const StructureInputSchema = z.object({
+  text: z.string().min(1).max(1_000_000),
+  page: z.number().int().min(0),
+  hint: z.string().max(600).optional(),
+  model: z.string().min(2).max(120).optional(),
+  apiKey: z.string().max(1000).optional(),
 });
 
 const SYSTEM_PROMPT = `You are an exam-paper digitiser. You read a scanned or photographed page of a question paper, practice test or intelligence test and return it as structured JSON.
@@ -64,6 +72,86 @@ function extractJson(text: string): unknown {
     }
     return null;
   }
+}
+
+function questionsFromText(text: string, page: number): Question[] {
+  const parsed = extractJson(text) as { questions?: unknown[] } | null;
+  const list = Array.isArray(parsed?.questions) ? parsed.questions : [];
+  return list.map((q) => normalizeQuestion(q, page));
+}
+
+/** Prefer model JSON, then the numbered-question splitter on the original OCR text. */
+function resolvedQuestions(
+  structured: { text: string } | { questions: Question[] },
+  pageText: string,
+  page: number,
+): { questions: Question[]; raw: string } {
+  if (!("questions" in structured)) {
+    const parsed = questionsFromText(structured.text, page);
+    if (parsed.length) return { questions: parsed, raw: "" };
+  } else if (structured.questions.length) {
+    return { questions: structured.questions, raw: "" };
+  }
+
+  const offline = structureOcrTextOffline(pageText, page);
+  return { questions: offline, raw: offline.length ? "" : pageText.slice(0, 2000) };
+}
+
+/** Structure plain-text OCR output, with the same model fallback used by the image readers. */
+async function structurePlainText(
+  pageText: string,
+  options: {
+    page: number;
+    hint?: string | undefined;
+    openRouterKey?: string | undefined;
+    lovableKey?: string | undefined;
+    model?: string | undefined;
+  },
+): Promise<{ text: string } | { questions: Question[] }> {
+  const messages = structureTextMessages(pageText, options.hint);
+  try {
+    if (options.openRouterKey) {
+      return {
+        text: await callChat({
+          url: "https://openrouter.ai/api/v1/chat/completions",
+          headers: { Authorization: `Bearer ${options.openRouterKey}` },
+          model: options.model?.trim() || DEFAULT_OPENROUTER_MODEL,
+          messages,
+          label: "OpenRouter",
+          maxTokens: 12000,
+        }),
+      };
+    }
+    if (options.lovableKey) {
+      return {
+        text: await callChat({
+          url: "https://ai.gateway.lovable.dev/v1/chat/completions",
+          headers: { "Lovable-API-Key": options.lovableKey, "X-Lovable-AIG-SDK": "fetch" },
+          model: "google/gemini-3.8-flash",
+          messages,
+          label: "The built-in AI reader",
+        }),
+      };
+    }
+  } catch (error) {
+    if (options.lovableKey && options.openRouterKey) {
+      try {
+        return {
+          text: await callChat({
+            url: "https://ai.gateway.lovable.dev/v1/chat/completions",
+            headers: { "Lovable-API-Key": options.lovableKey, "X-Lovable-AIG-SDK": "fetch" },
+            model: "google/gemini-3.8-flash",
+            messages,
+            label: "The built-in AI reader",
+          }),
+        };
+      } catch {
+        /* fall through to offline structuring */
+      }
+    }
+    if (!(error instanceof Error)) throw error;
+  }
+  return { questions: structureOcrTextOffline(pageText, options.page) };
 }
 
 type ChatMessage = {
@@ -162,50 +250,109 @@ function visionMessages(imageDataUrl: string, hint?: string): ChatMessage[] {
   ];
 }
 
-/** Shared prompt used after a plain-text OCR engine (Vision / Optiic) returns raw text. */
+/** Shared prompt used after a plain-text OCR engine (OCR.space / Optiic) returns raw text. */
 function structureTextMessages(pageText: string, hint?: string): ChatMessage[] {
   return [
     { role: "system", content: SYSTEM_PROMPT },
     {
       role: "user",
-      content: `Below is the raw OCR text of one page, in reading order. Structure it using the rules above. It contains no figures, so leave "figures" empty unless the text clearly refers to a printed figure.${hint ? `\nContext from the user: ${hint}` : ""
+      content: `Below is the raw OCR text of one page, in reading order. Structure it using the rules above. It contains no figures, so leave "figures" empty unless the text clearly refers to a printed figure. If several numbered questions share one passage, case, or directions, return one comprehension question: put the shared text in "passage" and each numbered item in "sub_questions" with its own options. Do not copy the passage into every stem, and do not invent a separate question for the passage itself.${hint ? `\nContext from the user: ${hint}` : ""
         }\n\n---\n${pageText}`,
     },
   ];
 }
 
-/** Google Cloud Vision only returns text, so its output is structured by a language model afterwards. */
-async function googleVisionText(apiKey: string, imageDataUrl: string): Promise<string> {
-  const base64 = imageDataUrl.includes(",") ? imageDataUrl.split(",")[1]! : imageDataUrl;
-  const response = await fetch(
-    `https://vision.googleapis.com/v1/images:annotate?key=${encodeURIComponent(apiKey)}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        requests: [
-          {
-            image: { content: base64 },
-            features: [{ type: "DOCUMENT_TEXT_DETECTION" }],
-            imageContext: { languageHints: ["en"] },
-          },
-        ],
-      }),
-    },
-  );
+/** OCR.space free tier: one image, at most 1 MB, plain text only. */
+const OCR_SPACE_MAX_BYTES = 1_000_000;
 
-  const payload = (await response.json().catch(() => null)) as {
-    error?: { message?: string };
-    responses?: { error?: { message?: string }; fullTextAnnotation?: { text?: string } }[];
-  } | null;
+function ocrMessage(value: string | string[] | null | undefined): string {
+  if (Array.isArray(value)) return value.filter(Boolean).join(" ").trim();
+  return (value ?? "").trim();
+}
 
-  const errorMessage = payload?.error?.message ?? payload?.responses?.[0]?.error?.message;
-  if (!response.ok || errorMessage) {
-    throw new Error(errorMessage || `Google Cloud Vision failed (${response.status}).`);
+/** OCR.space returns plain text. A language model structures questions afterwards. */
+async function ocrSpaceText(apiKey: string, imageDataUrl: string): Promise<string> {
+  const blob = dataUrlToBlob(imageDataUrl);
+  if (blob.size > OCR_SPACE_MAX_BYTES) {
+    throw new Error("This page is over the OCR.space free limit of 1 MB.");
   }
 
-  const text = payload?.responses?.[0]?.fullTextAnnotation?.text ?? "";
-  if (!text.trim()) throw new Error("Google Cloud Vision found no text on this page.");
+  const formData = new FormData();
+  formData.append("file", blob, "page.jpg");
+  formData.append("language", "eng");
+  formData.append("OCREngine", "2");
+  formData.append("detectOrientation", "true");
+  formData.append("isOverlayRequired", "false");
+  formData.append("scale", "true");
+
+  const response = await fetch("https://api.ocr.space/parse/image", {
+    method: "POST",
+    headers: { apikey: apiKey },
+    body: formData,
+  });
+
+  const body = await response.text();
+  type OcrSpaceResult = {
+    ParsedText?: string;
+    ErrorMessage?: string | string[];
+  };
+  type OcrSpacePayload = {
+    ParsedResults?: OcrSpaceResult[];
+    IsErroredOnProcessing?: boolean;
+    ErrorMessage?: string | string[] | null;
+    ErrorDetails?: string | null;
+    OCRExitCode?: number;
+  };
+
+  let payload: OcrSpacePayload | null = null;
+  try {
+    payload = JSON.parse(body) as OcrSpacePayload;
+  } catch {
+    /* plain-text response */
+  }
+
+  const detail = (
+    ocrMessage(payload?.ErrorMessage) ||
+    ocrMessage(payload?.ParsedResults?.[0]?.ErrorMessage) ||
+    (payload?.ErrorDetails ?? "") ||
+    body
+  )
+    .trim()
+    .slice(0, 300);
+  const lower = detail.toLowerCase();
+
+  if (!response.ok) {
+    if (response.status === 429 || lower.includes("limit") || lower.includes("quota")) {
+      throw new Error(
+        detail || "OCR.space has hit its free usage limit for now. Wait and try again, or switch reader in Settings.",
+      );
+    }
+    if (response.status === 401 || response.status === 403 || lower.includes("api key")) {
+      throw new Error("OCR.space rejected the saved API key. Check the free key in Settings.");
+    }
+    if (lower.includes("file size") || lower.includes("too large")) {
+      throw new Error("This page is over the OCR.space free limit of 1 MB.");
+    }
+    throw new Error(detail || `OCR.space failed (${response.status}).`);
+  }
+
+  if (payload?.IsErroredOnProcessing || payload?.OCRExitCode === 3 || payload?.OCRExitCode === 4) {
+    if (lower.includes("file size") || lower.includes("too large") || lower.includes("1 mb")) {
+      throw new Error("This page is over the OCR.space free limit of 1 MB.");
+    }
+    if (lower.includes("api key") || lower.includes("apikey")) {
+      throw new Error("OCR.space rejected the saved API key. Check the free key in Settings.");
+    }
+    if (lower.includes("limit") || lower.includes("quota")) {
+      throw new Error(
+        detail || "OCR.space has hit its free usage limit for now. Wait and try again, or switch reader in Settings.",
+      );
+    }
+    throw new Error(detail || "OCR.space could not read this page.");
+  }
+
+  const text = (payload?.ParsedResults ?? []).map((result) => result.ParsedText ?? "").join("\n").trim();
+  if (!text) throw new Error("OCR.space found no text on this page.");
   return text;
 }
 
@@ -262,18 +409,18 @@ export const extractPage = createServerFn({ method: "POST" })
   .handler(async ({ data }): Promise<{ questions: Question[]; raw: string }> => {
     const lovableKey = process.env["LOVABLE_API_KEY"];
     const openRouterKey = process.env["OPENROUTER_API_KEY"];
-    const visionKey = process.env["GOOGLE_CLOUD_VISION_API_KEY"];
     const optiicKey = process.env["OPTIIC_API_KEY"];
+    const ocrSpaceKey = process.env["OCR_SPACE_API_KEY"];
     const suppliedApiKey = data.apiKey?.trim();
 
     // A browser-supplied key is scoped to the selected engine. Environment keys remain
     // the default for deployments that configure readers server-side.
     const effectiveOpenRouterKey =
       data.engine === "openrouter" ? (suppliedApiKey || openRouterKey) : openRouterKey;
-    const effectiveVisionKey =
-      data.engine === "vision" ? (suppliedApiKey || visionKey) : visionKey;
     const effectiveOptiicKey =
       data.engine === "optiic" ? (suppliedApiKey || optiicKey) : optiicKey;
+    const effectiveOcrSpaceKey =
+      data.engine === "ocrspace" ? (suppliedApiKey || ocrSpaceKey) : ocrSpaceKey;
 
     const openRouter = (messages: ChatMessage[]) =>
       callChat({
@@ -294,29 +441,6 @@ export const extractPage = createServerFn({ method: "POST" })
         label: "The built-in AI reader",
       });
 
-    /**
-     * Plain-text OCR engines need a language model to organise their text. When no model is
-     * reachable (missing key or no credits) we fall back to offline structuring so the page
-     * still comes back as reviewable questions.
-     */
-    async function structurePlainText(pageText: string): Promise<{ text: string } | { questions: Question[] }> {
-      const messages = structureTextMessages(pageText, data.hint);
-      try {
-        if (effectiveOpenRouterKey) return { text: await openRouter(messages) };
-        if (lovableKey) return { text: await lovable(messages) };
-      } catch (error) {
-        if (lovableKey && effectiveOpenRouterKey) {
-          try {
-            return { text: await lovable(messages) };
-          } catch {
-            /* fall through to offline structuring */
-          }
-        }
-        if (!(error instanceof Error)) throw error;
-      }
-      return { questions: structureOcrText(pageText, data.page) };
-    }
-
     let text: string;
 
     if (data.engine === "openrouter") {
@@ -324,16 +448,16 @@ export const extractPage = createServerFn({ method: "POST" })
         throw new Error("No OpenRouter API key is saved yet. Add it in Settings, then try again.");
       }
       text = await openRouter(visionMessages(data.imageDataUrl, data.hint));
-    } else if (data.engine === "vision" || data.engine === "optiic") {
+    } else if (data.engine === "optiic" || data.engine === "ocrspace") {
       const pageText =
-        data.engine === "vision"
+        data.engine === "ocrspace"
           ? await (async () => {
-            if (!effectiveVisionKey) {
+            if (!effectiveOcrSpaceKey) {
               throw new Error(
-                "No Google Cloud Vision API key is saved yet. Add it in Settings, then try again.",
+                "No OCR.space API key is saved yet. Add a free key in Settings, then try again.",
               );
             }
-            return googleVisionText(effectiveVisionKey, data.imageDataUrl);
+            return ocrSpaceText(effectiveOcrSpaceKey, data.imageDataUrl);
           })()
           : await (async () => {
             if (!effectiveOptiicKey) {
@@ -342,29 +466,55 @@ export const extractPage = createServerFn({ method: "POST" })
             return optiicText(effectiveOptiicKey, data.imageDataUrl);
           })();
 
-      const structured = await structurePlainText(pageText);
-      if ("questions" in structured) return { questions: structured.questions, raw: "" };
-      text = structured.text;
+      const structured = await structurePlainText(pageText, {
+        page: data.page,
+        hint: data.hint,
+        openRouterKey: effectiveOpenRouterKey,
+        lovableKey,
+        model: data.model,
+      });
+      return resolvedQuestions(structured, pageText, data.page);
     } else {
       if (!lovableKey) throw new Error("AI is not configured for this project.");
       text = await lovable(visionMessages(data.imageDataUrl, data.hint));
     }
 
-    const parsed = extractJson(text) as { questions?: unknown[] } | null;
-    const list = Array.isArray(parsed?.questions) ? parsed.questions : [];
+    const questions = questionsFromText(text, data.page);
 
     return {
-      questions: list.map((q) => normalizeQuestion(q, data.page)),
-      raw: list.length ? "" : text.slice(0, 2000),
+      questions,
+      raw: questions.length ? "" : text.slice(0, 2000),
     };
+  });
+
+export const structureOcrText = createServerFn({ method: "POST" })
+  .validator((input: unknown) => StructureInputSchema.parse(input))
+  .handler(async ({ data }): Promise<{ questions: Question[]; raw: string }> => {
+    const lovableKey = process.env["LOVABLE_API_KEY"];
+    const openRouterKey = process.env["OPENROUTER_API_KEY"];
+    const suppliedApiKey = data.apiKey?.trim();
+    const structured = await structurePlainText(data.text, {
+      page: data.page,
+      hint: data.hint,
+      openRouterKey: suppliedApiKey || openRouterKey,
+      lovableKey,
+      model: data.model,
+    });
+
+    return resolvedQuestions(structured, data.text, data.page);
   });
 
 /** Reports which reader keys are configured, without ever revealing their values. */
 export const getReaderStatus = createServerFn({ method: "GET" }).handler(
-  async (): Promise<{ lovable: boolean; openrouter: boolean; vision: boolean; optiic: boolean }> => ({
+  async (): Promise<{
+    lovable: boolean;
+    openrouter: boolean;
+    optiic: boolean;
+    ocrspace: boolean;
+  }> => ({
     lovable: !!process.env["LOVABLE_API_KEY"],
     openrouter: !!process.env["OPENROUTER_API_KEY"],
-    vision: !!process.env["GOOGLE_CLOUD_VISION_API_KEY"],
     optiic: !!process.env["OPTIIC_API_KEY"],
+    ocrspace: !!process.env["OCR_SPACE_API_KEY"],
   }),
 );

@@ -95,8 +95,8 @@ function SettingsPage() {
   const configured: Record<ReaderEngine, boolean> = {
     lovable: Boolean(status.data?.lovable),
     openrouter: Boolean(status.data?.openrouter || settings.apiKeys?.openrouter?.trim()),
-    vision: Boolean(status.data?.vision || settings.apiKeys?.vision?.trim()),
     optiic: Boolean(status.data?.optiic || settings.apiKeys?.optiic?.trim()),
+    ocrspace: Boolean(status.data?.ocrspace || settings.apiKeys?.ocrspace?.trim()),
   };
 
   function saveApiKey(engine: ReaderEngine, value: string) {
@@ -193,6 +193,37 @@ function SettingsPage() {
             </li>
           ))}
         </ul>
+
+        {READER_KEY_ENGINES.includes(settings.engine as (typeof READER_KEY_ENGINES)[number]) ? (
+          <div className="mt-6 rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-paper)]">
+            <Label htmlFor="reader-key">{READER_LABELS[settings.engine]} API key</Label>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Input
+                id="reader-key"
+                type="password"
+                autoComplete="off"
+                className="max-w-sm"
+                value={apiKeyDrafts[settings.engine] ?? ""}
+                onChange={(event) =>
+                  setApiKeyDrafts({ ...apiKeyDrafts, [settings.engine]: event.target.value })
+                }
+                placeholder="Paste your API key"
+              />
+              <Button
+                variant="outline"
+                type="button"
+                onClick={() => saveApiKey(settings.engine, apiKeyDrafts[settings.engine] ?? "")}
+              >
+                Save key
+              </Button>
+            </div>
+            <p className="mt-2 text-sm text-muted-foreground">
+              {settings.engine === "ocrspace"
+                ? "Register a free key at ocr.space. The free plan allows 25,000 requests a month and files up to 1 MB. Saved in this browser."
+                : "Saved in this browser. A server environment key is used when this field is empty."}
+            </p>
+          </div>
+        ) : null}
 
         <div className="mt-6 rounded-xl border border-border bg-card p-5 shadow-[var(--shadow-paper)]">
           <Label htmlFor="model">OpenRouter model</Label>
