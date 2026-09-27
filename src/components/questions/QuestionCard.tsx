@@ -81,6 +81,56 @@ function nextOptionKey(options: Option[]): string {
   return String(number);
 }
 
+function optionKeyToken(value: string): string {
+  return value.replace(/[^a-z0-9]/gi, "").toUpperCase();
+}
+
+/** Option crops live on the option, or on a matching answer figure when the link was not copied across. */
+function optionImage(
+  question: Question,
+  option: Option,
+): { path: string; description: string } | null {
+  if (option.image_path) {
+    return {
+      path: option.image_path,
+      description: option.image_description || `Option ${option.key}`,
+    };
+  }
+  const token = optionKeyToken(option.key);
+  if (!token) return null;
+  const figure = question.figures.find((item) => {
+    if (item.role !== "option_figure" || !item.image_path) return false;
+    return optionKeyToken(item.caption ?? "") === token;
+  });
+  if (!figure?.image_path) return null;
+  return {
+    path: figure.image_path,
+    description: figure.description || option.image_description || `Option ${option.key}`,
+  };
+}
+
+function OptionImage({
+  question,
+  option,
+  resolve,
+}: {
+  question: Question;
+  option: Option;
+  resolve?: Resolver | undefined;
+}) {
+  const image = optionImage(question, option);
+  if (!image) return null;
+  const url = resolve?.(image.path);
+  if (!url) return null;
+  return (
+    <img
+      src={url}
+      alt={image.description}
+      className="max-h-28 w-auto max-w-full rounded border border-border bg-paper object-contain"
+    />
+  );
+}
+
 function OptionList({
   question,
   editing,
@@ -120,18 +170,25 @@ function OptionList({
                   onChange({ ...question, options, answer_keys });
                 }}
               />
-              <Textarea
-                value={option.text}
-                rows={2}
-                className="min-h-[2.5rem] flex-1"
-                aria-label={`Option ${option.key} text`}
-                onChange={(event) => {
-                  const options = question.options.map((item, i) =>
-                    i === index ? { ...item, text: event.target.value } : item,
-                  );
-                  onChange({ ...question, options });
-                }}
-              />
+              <div className="flex min-w-0 flex-1 flex-col gap-2">
+                <OptionImage
+                  question={question}
+                  option={option}
+                  {...(resolve ? { resolve } : {})}
+                />
+                <Textarea
+                  value={option.text}
+                  rows={2}
+                  className="min-h-[2.5rem] w-full"
+                  aria-label={`Option ${option.key} text`}
+                  onChange={(event) => {
+                    const options = question.options.map((item, i) =>
+                      i === index ? { ...item, text: event.target.value } : item,
+                    );
+                    onChange({ ...question, options });
+                  }}
+                />
+              </div>
               <label className="flex items-center gap-1 pt-2 text-xs text-muted-foreground">
                 <Checkbox
                   checked={option.is_correct === true || correct.has(option.key)}
@@ -215,14 +272,8 @@ function OptionList({
             >
               {option.key}
             </span>
-            <div className="min-w-0">
-              {option.image_path && resolve?.(option.image_path) ? (
-                <img
-                  src={resolve(option.image_path)}
-                  alt={option.image_description || `Option ${option.key}`}
-                  className="mb-1 max-h-28 rounded border border-border bg-paper object-contain"
-                />
-              ) : null}
+            <div className="min-w-0 space-y-1">
+              <OptionImage question={question} option={option} {...(resolve ? { resolve } : {})} />
               {option.text ? <MathText value={option.text} className="min-w-0" /> : null}
             </div>
           </li>
