@@ -86,7 +86,7 @@ export function buildLevelingGuidance(options: {
     );
   } else {
     lines.push(
-      "- Infer difficulty from the source (steps required, abstraction, calculation load) and set output \"difficulty\" to easy|medium|hard.",
+      '- Infer difficulty from the source (steps required, abstraction, calculation load) and set output "difficulty" to easy|medium|hard.',
     );
   }
 
@@ -131,6 +131,8 @@ export function stripQuestionForPrompt(question: Question): Question {
       key: option.key,
       text: option.text,
       is_correct: null,
+      image_path: null,
+      image_description: option.image_description ?? null,
     })),
     sub_questions: question.sub_questions.map(stripQuestionForPrompt),
     figures: question.figures.map((figure) => ({
@@ -149,7 +151,9 @@ function appendSubQuestionPattern(lines: string[], question: Question, depth = 0
   if (!question.sub_questions.length) return;
   const indent = depth === 0 ? "" : "  ".repeat(depth);
   lines.push("");
-  lines.push(`${indent}Sub-questions (${question.sub_questions.length}) — invent new ones of similar skill:`);
+  lines.push(
+    `${indent}Sub-questions (${question.sub_questions.length}) — invent new ones of similar skill:`,
+  );
   question.sub_questions.forEach((sub, index) => {
     const bits = [`type=${sub.type}`, `marks=${sub.marks ?? "?"}`];
     if (sub.difficulty) bits.push(`difficulty=${sub.difficulty}`);
@@ -188,12 +192,12 @@ export function buildFromSourceUserPrompt(options: {
     options.sourceQuestion.sub_questions.length > 0
       ? [
           "COMPREHENSION / PASSAGE SET (required):",
-          "- type must be \"comprehension\".",
-          "- You MUST invent a completely NEW shared passage in the \"passage\" field (several sentences).",
+          '- type must be "comprehension".',
+          '- You MUST invent a completely NEW shared passage in the "passage" field (several sentences).',
           "- Do NOT leave passage null/empty. Do NOT copy the source passage — rewrite the theme with new facts/names/numbers.",
-          "- Put related items in \"sub_questions\" that can be answered from YOUR new passage.",
+          '- Put related items in "sub_questions" that can be answered from YOUR new passage.',
           "- Sub-question count may differ from the source. Each sub needs answers + hint + explanation.",
-          "- Parent stem may be a short instruction (e.g. \"Read the passage and answer\") or empty; the passage carries the content.",
+          '- Parent stem may be a short instruction (e.g. "Read the passage and answer") or empty; the passage carries the content.',
           "- Keep passage reading level aligned with the student standard / leveling rules above.",
         ]
       : [];
@@ -269,6 +273,8 @@ export function finalizeMockQuestion(
   options: {
     number: string;
     sourceQuestionId?: string | null;
+    generationJobId?: string | null;
+    skillType?: string | null;
     sourceType?: Question["type"] | null;
     sourceDifficulty?: Question["difficulty"] | null;
     catalog?: {
@@ -281,10 +287,14 @@ export function finalizeMockQuestion(
 ): Question {
   const question = normalizeQuestion(raw, 0);
   question.number = options.number;
-  question.approved = true;
+  question.approved = false;
+  question.approval_status = "generated";
   question.page = null;
   question.confidence = null;
   question.source = options.sourceQuestionId ?? "ai_mock";
+  question.source_question_id = options.sourceQuestionId ?? null;
+  if (options.generationJobId) question.generation_job_id = options.generationJobId;
+  if (options.skillType) question.skill_type = options.skillType;
 
   // If the source was a comprehension set (or model returned subs), keep type as comprehension.
   if (
@@ -308,7 +318,8 @@ export function finalizeMockQuestion(
   // Nested subs should also be approved and without page refs.
   question.sub_questions = question.sub_questions.map((sub, index) => ({
     ...sub,
-    approved: true,
+    approved: false,
+    approval_status: "generated" as const,
     page: null,
     number: sub.number ?? `${options.number}.${index + 1}`,
     source: options.sourceQuestionId ?? "ai_mock",
@@ -332,8 +343,7 @@ export function assertMockQuestionComplete(
   question: Question,
   sourceType?: Question["type"] | null,
 ): void {
-  const expectsComprehension =
-    sourceType === "comprehension" || question.type === "comprehension";
+  const expectsComprehension = sourceType === "comprehension" || question.type === "comprehension";
   if (!expectsComprehension) return;
 
   if (!question.passage?.trim()) {

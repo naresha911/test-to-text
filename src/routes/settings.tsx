@@ -94,6 +94,7 @@ function SettingsPage() {
   }
 
   const configured: Record<ReaderEngine, boolean> = {
+    openocr: Boolean(status.data?.openocr),
     lovable: Boolean(status.data?.lovable),
     openrouter: Boolean(status.data?.openrouter || settings.apiKeys?.openrouter?.trim()),
     optiic: Boolean(status.data?.optiic || settings.apiKeys?.optiic?.trim()),
@@ -150,9 +151,9 @@ function SettingsPage() {
             <code className="font-mono text-xs">streams</code> (same columns as exam-prep).
           </p>
           <p className="mt-2 text-xs text-muted-foreground">
-            Loaded: {catalog.data?.standards.length ?? 0} standards · {catalog.data?.subjects.length ?? 0}{" "}
-            subjects · {catalog.data?.topics.length ?? 0} topics · {catalog.data?.streams.length ?? 0}{" "}
-            streams
+            Loaded: {catalog.data?.standards.length ?? 0} standards ·{" "}
+            {catalog.data?.subjects.length ?? 0} subjects · {catalog.data?.topics.length ?? 0}{" "}
+            topics · {catalog.data?.streams.length ?? 0} streams
           </p>
           <Button
             className="mt-3"
@@ -196,12 +197,12 @@ function SettingsPage() {
                   ) : configured[engine] ? (
                     <Badge variant="outline" className="gap-1">
                       <CheckCircle2 className="h-3.5 w-3.5" aria-hidden="true" />
-                      Key saved
+                      {engine === "openocr" ? "Service ready" : "Key saved"}
                     </Badge>
                   ) : (
                     <Badge variant="outline" className="gap-1 text-muted-foreground">
                       <CircleAlert className="h-3.5 w-3.5" aria-hidden="true" />
-                      Key missing
+                      {engine === "openocr" ? "Not running" : "Key missing"}
                     </Badge>
                   )}
                 </div>

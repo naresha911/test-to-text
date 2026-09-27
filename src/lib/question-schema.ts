@@ -35,16 +35,42 @@ export const QUESTION_TYPE_LABELS: Record<QuestionType, string> = {
   unknown: "Unclassified",
 };
 
+export const APPROVAL_STATUSES = [
+  "draft",
+  "generated",
+  "reviewed",
+  "rejected",
+  "published",
+] as const;
+
+export type ApprovalStatus = (typeof APPROVAL_STATUSES)[number];
+
 export type Option = {
   key: string;
   text: string;
   is_correct?: boolean | null;
+  /** Local compatibility path. Production identity is the asset id, not this path. */
+  image_path?: string | null;
+  image_description?: string | null;
 };
 
 export type MatchPair = {
   left: string;
   right: string;
 };
+
+export const FIGURE_ROLES = [
+  "question_figure",
+  "option_figure",
+  "source_figure",
+  "answer_figure",
+] as const;
+
+export type FigureRole = (typeof FIGURE_ROLES)[number];
+
+export const GENERATION_METHODS = ["cropped", "svg", "canvas", "image_model", "uploaded"] as const;
+
+export type GenerationMethod = (typeof GENERATION_METHODS)[number];
 
 export type Figure = {
   /** Plain-language description of the figure, written by the AI reader. */
@@ -57,12 +83,33 @@ export type Figure = {
   page?: number | null;
   /** Storage path of the cropped figure image, once uploaded. */
   image_path?: string | null;
+  id?: string | null;
+  role?: FigureRole | null;
+  generation_method?: GenerationMethod | null;
+  asset_id?: string | null;
+};
+
+export type JsonValue =
+  string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+
+export type ValidationCheckSummary = {
+  name: string;
+  status: "passed" | "failed" | "skipped" | "needs_review";
+  details?: string | null;
+};
+
+export type ValidationSummary = {
+  status: "passed" | "failed" | "needs_review";
+  checks: ValidationCheckSummary[];
+  errors?: string[];
 };
 
 export type Question = {
   id: string;
   number: string | null;
   type: QuestionType;
+  /** Educational skill, separate from the render type. Absent on older papers. */
+  skill_type?: string | null;
   /** Question text. Math is inline LaTeX between $...$ or display LaTeX between $$...$$. */
   stem: string;
   instructions?: string | null;
@@ -92,8 +139,19 @@ export type Question = {
   page?: number | null;
   /** AI confidence in the reading of this question, 0..1. */
   confidence?: number | null;
-  /** Set after a reviewer compares this extraction with the source page. */
+  /**
+   * Extraction review flag. For a generated question this is derived from
+   * approval_status: true only when the status is reviewed or published.
+   */
   approved: boolean;
+  /** Set on generated questions. Extraction papers leave this empty. */
+  approval_status?: ApprovalStatus | null;
+  /** Compatibility copies. The generation job is authoritative. */
+  math_spec?: { [key: string]: JsonValue } | null;
+  visual_spec?: { [key: string]: JsonValue } | null;
+  source_question_id?: string | null;
+  generation_job_id?: string | null;
+  validation?: ValidationSummary | null;
   subject_id?: number | null;
   topic_id?: number | null;
   standard_id?: number | null;
@@ -101,6 +159,9 @@ export type Question = {
   negative_marks?: number | null;
   year?: number | null;
   source?: string | null;
+  /** Reader that produced this extraction. Absent on older papers. */
+  reader_id?: string | null;
+  reader_version?: string | null;
 };
 
 export type PaperMeta = {
@@ -139,6 +200,69 @@ export function emptyQuestion(partial: Partial<Question> = {}): Question {
     year: null,
     source: null,
     ...partial,
+  };
+}
+
+function localAssetPath(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || /^https?:/i.test(trimmed) || trimmed.startsWith("data:")) return null;
+  return trimmed;
+}
+
+function specRecord(value: unknown): { [key: string]: JsonValue } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (typeof record["kind"] !== "string") return null;
+  return record as { [key: string]: JsonValue };
+}
+
+function parseApprovalStatus(value: unknown): ApprovalStatus | null {
+  return APPROVAL_STATUSES.includes(value as ApprovalStatus) ? (value as ApprovalStatus) : null;
+}
+
+function parseValidationSummary(value: unknown): ValidationSummary | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const status = record["status"];
+  if (status !== "passed" && status !== "failed" && status !== "needs_review") return null;
+  const checks = Array.isArray(record["checks"])
+    ? record["checks"].flatMap((check) => {
+        if (!check || typeof check !== "object") return [];
+        const row = check as Record<string, unknown>;
+        const name = typeof row["name"] === "string" ? row["name"] : "";
+        const checkStatus = row["status"];
+        if (!name) return [];
+        if (
+          checkStatus === "passed" ||
+          checkStatus === "failed" ||
+          checkStatus === "skipped" ||
+          checkStatus === "needs_review"
+        ) {
+          const summary: ValidationCheckSummary = {
+            name,
+            status: checkStatus,
+            details: typeof row["details"] === "string" ? row["details"] : null,
+          };
+          return [summary];
+        }
+        return [];
+      })
+    : [];
+  return { status, checks };
+}
+
+/** True when a generated question may enter the learner-facing exam-prep export. */
+export function isLearnerFacingQuestion(question: Question): boolean {
+  if (!question.approval_status) return true;
+  return question.approval_status === "reviewed" || question.approval_status === "published";
+}
+
+export function withGeneratedStatus(question: Question, status: ApprovalStatus): Question {
+  return {
+    ...question,
+    approval_status: status,
+    approved: status === "reviewed" || status === "published",
   };
 }
 
@@ -210,6 +334,21 @@ export function withQuestionType(question: Question, type: QuestionType): Questi
   return next;
 }
 
+/** A blank question the reviewer typed in, ready to edit and sorted by `number`. */
+export function createManualQuestion(
+  input: { number: string; type: QuestionType } & Partial<Omit<Question, "id" | "number" | "type">>,
+): Question {
+  const { number, type, ...rest } = input;
+  return withQuestionType(
+    emptyQuestion({
+      ...rest,
+      number: number.trim(),
+      source: rest.source ?? "manual",
+    }),
+    type,
+  );
+}
+
 /** Coerce loosely-shaped AI output into the canonical Question shape. */
 export function normalizeQuestion(raw: unknown, page: number): Question {
   const r = (raw ?? {}) as Record<string, unknown>;
@@ -225,6 +364,8 @@ export function normalizeQuestion(raw: unknown, page: number): Question {
       key: str(oo["key"]) ?? String.fromCharCode(65 + i),
       text: str(oo["text"]) ?? "",
       is_correct: typeof oo["is_correct"] === "boolean" ? (oo["is_correct"] as boolean) : null,
+      image_path: localAssetPath(oo["image_path"]),
+      image_description: str(oo["image_description"]),
     };
   });
 
@@ -234,10 +375,13 @@ export function normalizeQuestion(raw: unknown, page: number): Question {
     return nums.some(Number.isNaN) ? null : (nums as [number, number, number, number]);
   };
 
+  const approvalStatus = parseApprovalStatus(r["approval_status"]);
+
   return {
     id: crypto.randomUUID(),
     number: str(r["number"]),
     type,
+    skill_type: str(r["skill_type"]),
     stem: str(r["stem"]) ?? "",
     instructions: str(r["instructions"]),
     passage: str(r["passage"]),
@@ -264,24 +408,47 @@ export function normalizeQuestion(raw: unknown, page: number): Question {
     tags: arr(r["tags"]).filter((t): t is string => typeof t === "string"),
     figures: arr(r["figures"]).map((f) => {
       const ff = (f ?? {}) as Record<string, unknown>;
+      const role = FIGURE_ROLES.includes(ff["role"] as FigureRole)
+        ? (ff["role"] as FigureRole)
+        : null;
+      const generationMethod = GENERATION_METHODS.includes(
+        ff["generation_method"] as GenerationMethod,
+      )
+        ? (ff["generation_method"] as GenerationMethod)
+        : null;
       return {
         description: str(ff["description"]) ?? "",
         caption: str(ff["caption"]),
         bbox: bbox(ff["bbox"]) ?? null,
-        page,
-        image_path: null,
+        page: typeof ff["page"] === "number" ? (ff["page"] as number) : page,
+        image_path: localAssetPath(ff["image_path"]),
+        id: str(ff["id"]),
+        role,
+        generation_method: generationMethod,
+        asset_id: str(ff["asset_id"]),
       };
     }),
     page,
     confidence: typeof r["confidence"] === "number" ? (r["confidence"] as number) : null,
-    approved: r["approved"] === true,
+    approved: approvalStatus
+      ? approvalStatus === "reviewed" || approvalStatus === "published"
+      : r["approved"] === true,
+    approval_status: approvalStatus,
+    math_spec: specRecord(r["math_spec"]),
+    visual_spec: specRecord(r["visual_spec"]),
+    source_question_id: str(r["source_question_id"]),
+    generation_job_id: str(r["generation_job_id"]),
+    validation: parseValidationSummary(r["validation"]),
     subject_id: typeof r["subject_id"] === "number" ? (r["subject_id"] as number) : null,
     topic_id: typeof r["topic_id"] === "number" ? (r["topic_id"] as number) : null,
     standard_id: typeof r["standard_id"] === "number" ? (r["standard_id"] as number) : null,
     stream_id: typeof r["stream_id"] === "number" ? (r["stream_id"] as number) : null,
-    negative_marks: typeof r["negative_marks"] === "number" ? (r["negative_marks"] as number) : null,
+    negative_marks:
+      typeof r["negative_marks"] === "number" ? (r["negative_marks"] as number) : null,
     year: typeof r["year"] === "number" ? (r["year"] as number) : null,
     source: str(r["source"]),
+    reader_id: str(r["reader_id"]),
+    reader_version: str(r["reader_version"]),
   };
 }
 

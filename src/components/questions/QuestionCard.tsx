@@ -10,7 +10,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { MathText } from "@/components/MathText";
 import { Badge } from "@/components/ui/badge";
@@ -81,13 +81,65 @@ function nextOptionKey(options: Option[]): string {
   return String(number);
 }
 
+function optionKeyToken(value: string): string {
+  return value.replace(/[^a-z0-9]/gi, "").toUpperCase();
+}
+
+/** Option crops live on the option, or on a matching answer figure when the link was not copied across. */
+function optionImage(
+  question: Question,
+  option: Option,
+): { path: string; description: string } | null {
+  if (option.image_path) {
+    return {
+      path: option.image_path,
+      description: option.image_description || `Option ${option.key}`,
+    };
+  }
+  const token = optionKeyToken(option.key);
+  if (!token) return null;
+  const figure = question.figures.find((item) => {
+    if (item.role !== "option_figure" || !item.image_path) return false;
+    return optionKeyToken(item.caption ?? "") === token;
+  });
+  if (!figure?.image_path) return null;
+  return {
+    path: figure.image_path,
+    description: figure.description || option.image_description || `Option ${option.key}`,
+  };
+}
+
+function OptionImage({
+  question,
+  option,
+  resolve,
+}: {
+  question: Question;
+  option: Option;
+  resolve?: Resolver | undefined;
+}) {
+  const image = optionImage(question, option);
+  if (!image) return null;
+  const url = resolve?.(image.path);
+  if (!url) return null;
+  return (
+    <img
+      src={url}
+      alt={image.description}
+      className="max-h-28 w-auto max-w-full rounded border border-border bg-paper object-contain"
+    />
+  );
+}
+
 function OptionList({
   question,
   editing,
+  resolve,
   onChange,
 }: {
   question: Question;
   editing: boolean;
+  resolve?: Resolver | undefined;
   onChange?: ((next: Question) => void) | undefined;
 }) {
   if (!question.options.length && !editing) return null;
@@ -118,18 +170,25 @@ function OptionList({
                   onChange({ ...question, options, answer_keys });
                 }}
               />
-              <Textarea
-                value={option.text}
-                rows={2}
-                className="min-h-[2.5rem] flex-1"
-                aria-label={`Option ${option.key} text`}
-                onChange={(event) => {
-                  const options = question.options.map((item, i) =>
-                    i === index ? { ...item, text: event.target.value } : item,
-                  );
-                  onChange({ ...question, options });
-                }}
-              />
+              <div className="flex min-w-0 flex-1 flex-col gap-2">
+                <OptionImage
+                  question={question}
+                  option={option}
+                  {...(resolve ? { resolve } : {})}
+                />
+                <Textarea
+                  value={option.text}
+                  rows={2}
+                  className="min-h-[2.5rem] w-full"
+                  aria-label={`Option ${option.key} text`}
+                  onChange={(event) => {
+                    const options = question.options.map((item, i) =>
+                      i === index ? { ...item, text: event.target.value } : item,
+                    );
+                    onChange({ ...question, options });
+                  }}
+                />
+              </div>
               <label className="flex items-center gap-1 pt-2 text-xs text-muted-foreground">
                 <Checkbox
                   checked={option.is_correct === true || correct.has(option.key)}
@@ -213,7 +272,10 @@ function OptionList({
             >
               {option.key}
             </span>
-            <MathText value={option.text} className="min-w-0" />
+            <div className="min-w-0 space-y-1">
+              <OptionImage question={question} option={option} {...(resolve ? { resolve } : {})} />
+              {option.text ? <MathText value={option.text} className="min-w-0" /> : null}
+            </div>
           </li>
         );
       })}
@@ -266,7 +328,12 @@ function TypeBody({
               <MathText value={question.reason ?? null} />
             )}
           </div>
-          <OptionList question={question} editing={editing} {...(onChange ? { onChange } : {})} />
+          <OptionList
+            question={question}
+            editing={editing}
+            {...(resolve ? { resolve } : {})}
+            {...(onChange ? { onChange } : {})}
+          />
         </div>
       );
 
@@ -329,7 +396,12 @@ function TypeBody({
               ))}
             </ol>
           ) : null}
-          <OptionList question={question} editing={editing} {...(onChange ? { onChange } : {})} />
+          <OptionList
+            question={question}
+            editing={editing}
+            {...(resolve ? { resolve } : {})}
+            {...(onChange ? { onChange } : {})}
+          />
         </div>
       );
 
@@ -461,7 +533,14 @@ function TypeBody({
       );
 
     default:
-      return <OptionList question={question} editing={editing} {...(onChange ? { onChange } : {})} />;
+      return (
+        <OptionList
+          question={question}
+          editing={editing}
+          {...(resolve ? { resolve } : {})}
+          {...(onChange ? { onChange } : {})}
+        />
+      );
   }
 }
 
@@ -549,33 +628,93 @@ function HintSolutionBlock({
   );
 }
 
+function EditableNumber({
+  question,
+  index,
+  onChange,
+}: {
+  question: Question;
+  index: number;
+  onChange: (next: Question) => void;
+}) {
+  const [draft, setDraft] = useState(question.number ?? "");
+  const focused = useRef(false);
+
+  useEffect(() => {
+    if (!focused.current) setDraft(question.number ?? "");
+  }, [question.number]);
+
+  function commit(field: HTMLInputElement) {
+    focused.current = false;
+    const next = draft.trim();
+    const current = (question.number ?? "").trim();
+    if (next === current) return;
+    onChange({ ...question, number: next || null });
+    requestAnimationFrame(() => {
+      field.closest("article")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+  }
+
+  return (
+    <Input
+      value={draft}
+      className="h-7 w-24"
+      placeholder={`Q${index + 1}`}
+      aria-label="Question number"
+      onFocus={() => {
+        focused.current = true;
+      }}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={(event) => commit(event.currentTarget)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+      }}
+    />
+  );
+}
+
 export function QuestionCard({
   question,
   index,
   nested = false,
+  startEditing = false,
   resolve,
   onApprovalChange,
   onChange,
   onRegenerate,
   onDelete,
+  onReviewGenerated,
+  onRegenerateGenerated,
+  onRegenerateFigure,
   generatingIds,
 }: {
   question: Question;
   index: number;
   nested?: boolean;
+  startEditing?: boolean;
   resolve?: Resolver | undefined;
   onApprovalChange?: ((approved: boolean) => void) | undefined;
   onChange?: ((next: Question) => void) | undefined;
   onRegenerate?: ((questionId: string) => void) | undefined;
   onDelete?: ((questionId: string) => void) | undefined;
+  onReviewGenerated?: ((questionId: string, status: "reviewed" | "rejected") => void) | undefined;
+  onRegenerateGenerated?: ((questionId: string) => void) | undefined;
+  onRegenerateFigure?: ((questionId: string) => void) | undefined;
   generatingIds?: Set<string> | undefined;
 }) {
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(startEditing);
+  const articleRef = useRef<HTMLElement>(null);
   const generating = generatingIds?.has(question.id) === true;
   const canEdit = !!onChange;
 
+  useEffect(() => {
+    if (!startEditing) return;
+    articleRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [startEditing]);
+
   return (
     <article
+      ref={articleRef}
       className={cn(
         "text-card-foreground",
         nested
@@ -586,13 +725,7 @@ export function QuestionCard({
     >
       <header className="flex flex-wrap items-center gap-2">
         {editing && onChange ? (
-          <Input
-            value={question.number ?? ""}
-            className="h-7 w-20"
-            placeholder={`Q${index + 1}`}
-            aria-label="Question number"
-            onChange={(event) => onChange({ ...question, number: event.target.value || null })}
-          />
+          <EditableNumber question={question} index={index} onChange={onChange} />
         ) : (
           <span className="rounded-md bg-primary px-2 py-0.5 text-xs font-semibold text-primary-foreground">
             {question.number ?? `Q${index + 1}`}
@@ -635,6 +768,21 @@ export function QuestionCard({
             {question.difficulty}
           </Badge>
         ) : null}
+        {question.skill_type ? (
+          <Badge variant="outline" className="capitalize">
+            {question.skill_type.replaceAll("_", " ")}
+          </Badge>
+        ) : null}
+        {question.approval_status ? (
+          <Badge variant="outline" className="capitalize">
+            {question.approval_status}
+          </Badge>
+        ) : null}
+        {question.validation ? (
+          <Badge variant="outline" className="capitalize">
+            Check {question.validation.status.replaceAll("_", " ")}
+          </Badge>
+        ) : null}
         {question.page != null ? (
           <span className="text-xs text-muted-foreground">Page {question.page + 1}</span>
         ) : null}
@@ -675,7 +823,52 @@ export function QuestionCard({
             </Button>
           ) : null}
 
-          {!nested && onApprovalChange ? (
+          {!nested && question.approval_status && onReviewGenerated ? (
+            <>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={
+                  question.approval_status === "reviewed" ||
+                  question.approval_status === "published"
+                }
+                onClick={() => onReviewGenerated(question.id, "reviewed")}
+              >
+                Review
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled={question.approval_status === "rejected"}
+                onClick={() => onReviewGenerated(question.id, "rejected")}
+              >
+                Reject
+              </Button>
+              {onRegenerateGenerated ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => onRegenerateGenerated(question.id)}
+                >
+                  <RefreshCw className="h-3 w-3" aria-hidden="true" />
+                  Regenerate question
+                </Button>
+              ) : null}
+              {onRegenerateFigure && question.skill_type === "mirror_image" ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => onRegenerateFigure(question.id)}
+                >
+                  Regenerate figure
+                </Button>
+              ) : null}
+            </>
+          ) : !nested && onApprovalChange && !question.approval_status ? (
             <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-foreground">
               <Checkbox
                 checked={question.approved === true}
@@ -692,6 +885,26 @@ export function QuestionCard({
           ) : null}
         </div>
       </header>
+
+      {question.validation?.checks.length ? (
+        <div className="mt-3 rounded-md border border-border bg-secondary/30 px-3 py-2 text-sm">
+          <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+            Validation
+          </p>
+          <ul className="mt-1 space-y-1">
+            {question.validation.checks.map((check) => (
+              <li key={check.name}>
+                <span className="font-medium capitalize">{check.name}</span>
+                {": "}
+                <span className="capitalize">{check.status.replaceAll("_", " ")}</span>
+                {check.details ? (
+                  <span className="text-muted-foreground"> — {check.details}</span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       {question.instructions || editing ? (
         editing && onChange ? (
@@ -730,9 +943,7 @@ export function QuestionCard({
             <FieldLabel>Section</FieldLabel>
             <Input
               value={question.section ?? ""}
-              onChange={(event) =>
-                onChange({ ...question, section: event.target.value || null })
-              }
+              onChange={(event) => onChange({ ...question, section: event.target.value || null })}
             />
           </div>
           <div>
@@ -756,8 +967,7 @@ export function QuestionCard({
               onChange={(event) =>
                 onChange({
                   ...question,
-                  negative_marks:
-                    event.target.value === "" ? null : Number(event.target.value),
+                  negative_marks: event.target.value === "" ? null : Number(event.target.value),
                 })
               }
             />
@@ -824,11 +1034,13 @@ export function QuestionCard({
         </div>
       ) : null}
 
-      {question.figures.length ? (
+      {question.figures.some((figure) => figure.role !== "option_figure") ? (
         <div className="mt-3 space-y-2">
-          {question.figures.map((figure, i) => (
-            <FigureBlock key={i} figure={figure} {...(resolve ? { resolve } : {})} />
-          ))}
+          {question.figures
+            .filter((figure) => figure.role !== "option_figure")
+            .map((figure, i) => (
+              <FigureBlock key={i} figure={figure} {...(resolve ? { resolve } : {})} />
+            ))}
         </div>
       ) : null}
 
@@ -848,7 +1060,7 @@ export function QuestionCard({
           editing={editing}
           {...(generating ? { generating: true } : {})}
           {...(onChange ? { onChange } : {})}
-          {...(onRegenerate
+          {...(onRegenerate && !question.approval_status
             ? { onRegenerate: () => onRegenerate(question.id) }
             : {})}
         />

@@ -3,8 +3,11 @@ import { z } from "zod";
 
 import { structureOcrText as structureOcrTextOffline } from "@/lib/ocr-structure";
 import { normalizeQuestion, type Question } from "@/lib/question-schema";
+import { readOpenOcrPage, openOcrHealthy } from "@/lib/reader/openocr";
+import { attachFigures, type TextLineBox } from "@/lib/reader/parse-blocks";
+import type { RawReaderResult } from "@/lib/reader/types";
 
-export const READER_ENGINES = ["lovable", "openrouter", "optiic", "ocrspace"] as const;
+export const READER_ENGINES = ["openocr", "lovable", "openrouter", "optiic", "ocrspace"] as const;
 export type ReaderEngine = (typeof READER_ENGINES)[number];
 
 export const DEFAULT_OPENROUTER_MODEL = "google/gemini-2.5-flash";
@@ -17,7 +20,7 @@ const InputSchema = z.object({
   /** Optional user hint, e.g. "CBSE class 10 maths, answers are printed at the end". */
   hint: z.string().max(600).optional(),
   /** Which reading engine to use. */
-  engine: z.enum(READER_ENGINES).default("lovable"),
+  engine: z.enum(READER_ENGINES).default("openocr"),
   /** Optional reader key supplied by the browser for self-hosted/local use. */
   apiKey: z.string().max(1000).optional(),
   /** Model id, only used by the OpenRouter engine. */
@@ -190,7 +193,9 @@ async function callChat(options: {
       /* keep raw body */
     }
     if (response.status === 429) {
-      throw new Error(`${options.label} is busy or rate limited right now. Wait a moment and try this page again.`);
+      throw new Error(
+        `${options.label} is busy or rate limited right now. Wait a moment and try this page again.`,
+      );
     }
     if (response.status === 401) {
       throw new Error(`${options.label} rejected the saved API key. Check the key in Settings.`);
@@ -209,7 +214,7 @@ async function callChat(options: {
   let buffer = "";
   let text = "";
 
-  for (; ;) {
+  for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
@@ -256,8 +261,9 @@ function structureTextMessages(pageText: string, hint?: string): ChatMessage[] {
     { role: "system", content: SYSTEM_PROMPT },
     {
       role: "user",
-      content: `Below is the raw OCR text of one page, in reading order. Structure it using the rules above. It contains no figures, so leave "figures" empty unless the text clearly refers to a printed figure. If several numbered questions share one passage, case, or directions, return one comprehension question: put the shared text in "passage" and each numbered item in "sub_questions" with its own options. Do not copy the passage into every stem, and do not invent a separate question for the passage itself.${hint ? `\nContext from the user: ${hint}` : ""
-        }\n\n---\n${pageText}`,
+      content: `Below is the raw OCR text of one page, in reading order. Structure it using the rules above. Leave "figures" empty. Do not estimate coordinates, and do not describe how a figure should be drawn. If several numbered questions share one passage, case, or directions, return one comprehension question: put the shared text in "passage" and each numbered item in "sub_questions" with its own options. Do not copy the passage into every stem, and do not invent a separate question for the passage itself.${
+        hint ? `\nContext from the user: ${hint}` : ""
+      }\n\n---\n${pageText}`,
     },
   ];
 }
@@ -270,8 +276,12 @@ function ocrMessage(value: string | string[] | null | undefined): string {
   return (value ?? "").trim();
 }
 
-/** OCR.space returns plain text. A language model structures questions afterwards. */
-async function ocrSpaceText(apiKey: string, imageDataUrl: string): Promise<string> {
+/** OCR.space returns plain text. Pass image size to also collect line boxes for figure placement. */
+async function ocrSpaceText(
+  apiKey: string,
+  imageDataUrl: string,
+  size?: { width: number; height: number },
+): Promise<{ text: string; lines: TextLineBox[] }> {
   const blob = dataUrlToBlob(imageDataUrl);
   if (blob.size > OCR_SPACE_MAX_BYTES) {
     throw new Error("This page is over the OCR.space free limit of 1 MB.");
@@ -282,8 +292,8 @@ async function ocrSpaceText(apiKey: string, imageDataUrl: string): Promise<strin
   formData.append("language", "eng");
   formData.append("OCREngine", "2");
   formData.append("detectOrientation", "true");
-  formData.append("isOverlayRequired", "false");
-  formData.append("scale", "true");
+  formData.append("isOverlayRequired", size ? "true" : "false");
+  formData.append("scale", size ? "false" : "true");
 
   const response = await fetch("https://api.ocr.space/parse/image", {
     method: "POST",
@@ -292,9 +302,12 @@ async function ocrSpaceText(apiKey: string, imageDataUrl: string): Promise<strin
   });
 
   const body = await response.text();
+  type OcrSpaceWord = { Left?: number; Top?: number; Width?: number; Height?: number };
+  type OcrSpaceLine = { LineText?: string; Words?: OcrSpaceWord[] };
   type OcrSpaceResult = {
     ParsedText?: string;
     ErrorMessage?: string | string[];
+    TextOverlay?: { Lines?: OcrSpaceLine[] };
   };
   type OcrSpacePayload = {
     ParsedResults?: OcrSpaceResult[];
@@ -324,7 +337,8 @@ async function ocrSpaceText(apiKey: string, imageDataUrl: string): Promise<strin
   if (!response.ok) {
     if (response.status === 429 || lower.includes("limit") || lower.includes("quota")) {
       throw new Error(
-        detail || "OCR.space has hit its free usage limit for now. Wait and try again, or switch reader in Settings.",
+        detail ||
+          "OCR.space has hit its free usage limit for now. Wait and try again, or switch reader in Settings.",
       );
     }
     if (response.status === 401 || response.status === 403 || lower.includes("api key")) {
@@ -345,15 +359,38 @@ async function ocrSpaceText(apiKey: string, imageDataUrl: string): Promise<strin
     }
     if (lower.includes("limit") || lower.includes("quota")) {
       throw new Error(
-        detail || "OCR.space has hit its free usage limit for now. Wait and try again, or switch reader in Settings.",
+        detail ||
+          "OCR.space has hit its free usage limit for now. Wait and try again, or switch reader in Settings.",
       );
     }
     throw new Error(detail || "OCR.space could not read this page.");
   }
 
-  const text = (payload?.ParsedResults ?? []).map((result) => result.ParsedText ?? "").join("\n").trim();
+  const text = (payload?.ParsedResults ?? [])
+    .map((result) => result.ParsedText ?? "")
+    .join("\n")
+    .trim();
   if (!text) throw new Error("OCR.space found no text on this page.");
-  return text;
+  const width = size?.width ?? 0;
+  const height = size?.height ?? 0;
+  const lines: TextLineBox[] = [];
+  if (width > 0 && height > 0) {
+    for (const result of payload?.ParsedResults ?? []) {
+      for (const line of result.TextOverlay?.Lines ?? []) {
+        const words = line.Words ?? [];
+        if (!words.length) continue;
+        const left = Math.min(...words.map((word) => word.Left ?? 0));
+        const top = Math.min(...words.map((word) => word.Top ?? 0));
+        const right = Math.max(...words.map((word) => (word.Left ?? 0) + (word.Width ?? 0)));
+        const bottom = Math.max(...words.map((word) => (word.Top ?? 0) + (word.Height ?? 0)));
+        lines.push({
+          text: line.LineText ?? "",
+          bbox: [left / width, top / height, (right - left) / width, (bottom - top) / height],
+        });
+      }
+    }
+  }
+  return { text, lines };
 }
 
 function dataUrlToBlob(dataUrl: string): Blob {
@@ -390,7 +427,8 @@ async function optiicText(apiKey: string, imageDataUrl: string): Promise<string>
     const detail = (payload?.error?.message ?? payload?.message ?? body).trim().slice(0, 300);
     if (response.status === 429) {
       throw new Error(
-        detail || "Optiic has hit its usage limit for now. Wait and try again, or switch reader in Settings.",
+        detail ||
+          "Optiic has hit its usage limit for now. Wait and try again, or switch reader in Settings.",
       );
     }
     if (response.status === 401 || response.status === 403) {
@@ -402,6 +440,121 @@ async function optiicText(apiKey: string, imageDataUrl: string): Promise<string>
   const text = payload?.text ?? "";
   if (!text.trim()) throw new Error("Optiic found no text on this page.");
   return text;
+}
+
+const FIGURE_PLAN =
+  /we'?ll add a figure|we need bbox|need to define bbox|coordinate system|let's (?:try to )?approximate|x\s*=\s*0 is (?:the )?left edge/i;
+
+function usableStems(questions: Question[]): Question[] {
+  return questions.filter(
+    (question) => question.stem.trim().length >= 8 && !FIGURE_PLAN.test(question.stem),
+  );
+}
+
+function withoutModelFigures(questions: Question[]): Question[] {
+  return questions.map((question) => ({
+    ...question,
+    figures: [],
+    sub_questions: withoutModelFigures(question.sub_questions),
+  }));
+}
+
+async function readOpenOcrExtraction(options: {
+  imageDataUrl: string;
+  page: number;
+  hint?: string;
+  lovableKey?: string;
+  openRouterKey?: string;
+  ocrSpaceKey?: string;
+  optiicKey?: string;
+  model?: string;
+}): Promise<{ questions: Question[]; raw: string }> {
+  let layout: RawReaderResult | null = null;
+  let layoutError: Error | null = null;
+  try {
+    layout = await readOpenOcrPage(options.imageDataUrl);
+  } catch (error) {
+    layoutError = error instanceof Error ? error : new Error(String(error));
+  }
+
+  const image =
+    layout?.page_jpeg_base64 != null
+      ? `data:image/jpeg;base64,${layout.page_jpeg_base64}`
+      : options.imageDataUrl;
+  const width = layout?.jpeg_width || layout?.page_width || 0;
+  const height = layout?.jpeg_height || layout?.page_height || 0;
+  const size = width > 0 && height > 0 ? { width, height } : undefined;
+
+  let pageText = "";
+  let lines: TextLineBox[] = [];
+  let textSource = "local";
+  let textError: Error | null = null;
+
+  if (options.ocrSpaceKey) {
+    try {
+      const reading = await ocrSpaceText(options.ocrSpaceKey, image, size);
+      pageText = reading.text;
+      lines = reading.lines;
+      textSource = "ocrspace";
+    } catch (error) {
+      textError = error instanceof Error ? error : new Error(String(error));
+    }
+  }
+  if (!pageText.trim() && options.optiicKey) {
+    try {
+      pageText = await optiicText(options.optiicKey, image);
+      textSource = "optiic";
+    } catch (error) {
+      textError = textError ?? (error instanceof Error ? error : new Error(String(error)));
+    }
+  }
+  if (!pageText.trim() && layout) {
+    pageText = layout.blocks
+      .filter((block) => block.type === "text" || block.type === "formula")
+      .map((block) => block.text?.trim() || block.latex?.trim() || "")
+      .filter(Boolean)
+      .join("\n");
+    textSource = "local";
+  }
+  if (!pageText.trim()) {
+    throw new Error(
+      textError?.message ??
+        layoutError?.message ??
+        "No printed text could be read. Keep an OCR.space or Optiic key in Settings, and start the local service with npm run ocr so diagram boxes can be cropped.",
+    );
+  }
+
+  let questions = structureOcrTextOffline(pageText, options.page);
+  if (!usableStems(questions).length && (options.openRouterKey || options.lovableKey)) {
+    try {
+      const structured = await structurePlainText(pageText, {
+        page: options.page,
+        ...(options.hint ? { hint: options.hint } : {}),
+        ...(options.openRouterKey ? { openRouterKey: options.openRouterKey } : {}),
+        ...(options.lovableKey ? { lovableKey: options.lovableKey } : {}),
+        ...(options.model ? { model: options.model } : {}),
+      });
+      const resolved = usableStems(resolvedQuestions(structured, pageText, options.page).questions);
+      if (resolved.length) questions = resolved;
+    } catch {
+      /* The printed OCR text is still split locally. */
+    }
+  }
+
+  const reader = {
+    reader_id: "openocr",
+    reader_version: layout ? `${layout.reader_version}+${textSource}` : textSource,
+  };
+  const plain = withoutModelFigures(questions);
+  questions = layout
+    ? attachFigures(plain, layout.blocks, reader, lines)
+    : plain.map((question) => ({ ...question, ...reader }));
+  if (!usableStems(questions).length) {
+    throw new Error(
+      "The page was read, but the text could not be split into questions. Try the page again.",
+    );
+  }
+  return { questions, raw: "" };
 }
 
 export const extractPage = createServerFn({ method: "POST" })
@@ -416,11 +569,10 @@ export const extractPage = createServerFn({ method: "POST" })
     // A browser-supplied key is scoped to the selected engine. Environment keys remain
     // the default for deployments that configure readers server-side.
     const effectiveOpenRouterKey =
-      data.engine === "openrouter" ? (suppliedApiKey || openRouterKey) : openRouterKey;
-    const effectiveOptiicKey =
-      data.engine === "optiic" ? (suppliedApiKey || optiicKey) : optiicKey;
+      data.engine === "openrouter" ? suppliedApiKey || openRouterKey : openRouterKey;
+    const effectiveOptiicKey = data.engine === "optiic" ? suppliedApiKey || optiicKey : optiicKey;
     const effectiveOcrSpaceKey =
-      data.engine === "ocrspace" ? (suppliedApiKey || ocrSpaceKey) : ocrSpaceKey;
+      data.engine === "ocrspace" ? suppliedApiKey || ocrSpaceKey : ocrSpaceKey;
 
     const openRouter = (messages: ChatMessage[]) =>
       callChat({
@@ -441,6 +593,19 @@ export const extractPage = createServerFn({ method: "POST" })
         label: "The built-in AI reader",
       });
 
+    if (data.engine === "openocr") {
+      return readOpenOcrExtraction({
+        imageDataUrl: data.imageDataUrl,
+        page: data.page,
+        ...(data.hint ? { hint: data.hint } : {}),
+        ...(lovableKey ? { lovableKey } : {}),
+        ...(effectiveOpenRouterKey ? { openRouterKey: effectiveOpenRouterKey } : {}),
+        ...(ocrSpaceKey ? { ocrSpaceKey } : {}),
+        ...(optiicKey ? { optiicKey } : {}),
+        ...(data.model ? { model: data.model } : {}),
+      });
+    }
+
     let text: string;
 
     if (data.engine === "openrouter") {
@@ -452,19 +617,21 @@ export const extractPage = createServerFn({ method: "POST" })
       const pageText =
         data.engine === "ocrspace"
           ? await (async () => {
-            if (!effectiveOcrSpaceKey) {
-              throw new Error(
-                "No OCR.space API key is saved yet. Add a free key in Settings, then try again.",
-              );
-            }
-            return ocrSpaceText(effectiveOcrSpaceKey, data.imageDataUrl);
-          })()
+              if (!effectiveOcrSpaceKey) {
+                throw new Error(
+                  "No OCR.space API key is saved yet. Add a free key in Settings, then try again.",
+                );
+              }
+              return (await ocrSpaceText(effectiveOcrSpaceKey, data.imageDataUrl)).text;
+            })()
           : await (async () => {
-            if (!effectiveOptiicKey) {
-              throw new Error("No Optiic API key is saved yet. Add it in Settings, then try again.");
-            }
-            return optiicText(effectiveOptiicKey, data.imageDataUrl);
-          })();
+              if (!effectiveOptiicKey) {
+                throw new Error(
+                  "No Optiic API key is saved yet. Add it in Settings, then try again.",
+                );
+              }
+              return optiicText(effectiveOptiicKey, data.imageDataUrl);
+            })();
 
       const structured = await structurePlainText(pageText, {
         page: data.page,
@@ -507,11 +674,13 @@ export const structureOcrText = createServerFn({ method: "POST" })
 /** Reports which reader keys are configured, without ever revealing their values. */
 export const getReaderStatus = createServerFn({ method: "GET" }).handler(
   async (): Promise<{
+    openocr: boolean;
     lovable: boolean;
     openrouter: boolean;
     optiic: boolean;
     ocrspace: boolean;
   }> => ({
+    openocr: await openOcrHealthy(),
     lovable: !!process.env["LOVABLE_API_KEY"],
     openrouter: !!process.env["OPENROUTER_API_KEY"],
     optiic: !!process.env["OPTIIC_API_KEY"],

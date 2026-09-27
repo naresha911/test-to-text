@@ -6,9 +6,14 @@ export type ReaderSettings = {
   apiKeys?: Partial<Record<ReaderEngine, string>>;
 };
 
-export const READER_KEY_ENGINES = ["openrouter", "optiic", "ocrspace"] as const satisfies readonly ReaderEngine[];
+export const READER_KEY_ENGINES = [
+  "openrouter",
+  "optiic",
+  "ocrspace",
+] as const satisfies readonly ReaderEngine[];
 
 export const READER_LABELS: Record<ReaderEngine, string> = {
+  openocr: "OpenOCR (local)",
   lovable: "Built-in AI reader",
   openrouter: "OpenRouter (your key)",
   optiic: "Optiic (your key)",
@@ -16,7 +21,10 @@ export const READER_LABELS: Record<ReaderEngine, string> = {
 };
 
 export const READER_NOTES: Record<ReaderEngine, string> = {
-  lovable: "Uses this workspace's included AI credits. Reads maths and diagrams directly from the page.",
+  openocr:
+    "Default reader. OCR.space or Optiic reads the printed words. A local service finds the diagram boxes and the app crops them onto the question and its options. Start it with npm run ocr.",
+  lovable:
+    "Uses this workspace's included AI credits. Reads maths and diagrams directly from the page.",
   openrouter:
     "Most accurate for maths, diagrams and puzzle figures. Uses your own OpenRouter key and its free or paid models.",
   optiic:
@@ -28,11 +36,11 @@ export const READER_NOTES: Record<ReaderEngine, string> = {
 const STORAGE_KEY = "paperparse.reader";
 
 export const DEFAULT_READER_SETTINGS: ReaderSettings = {
-  engine: "lovable",
+  engine: "openocr",
   model: DEFAULT_OPENROUTER_MODEL,
 };
 
-const VALID_ENGINES: ReaderEngine[] = ["lovable", "openrouter", "optiic", "ocrspace"];
+const VALID_ENGINES: ReaderEngine[] = ["openocr", "lovable", "openrouter", "optiic", "ocrspace"];
 
 export function loadReaderSettings(): ReaderSettings {
   if (typeof window === "undefined") return DEFAULT_READER_SETTINGS;
@@ -45,7 +53,10 @@ export function loadReaderSettings(): ReaderSettings {
       engine: VALID_ENGINES.includes(parsed.engine as ReaderEngine)
         ? (parsed.engine as ReaderEngine)
         : "lovable",
-      model: typeof parsed.model === "string" && parsed.model.trim() ? parsed.model : DEFAULT_OPENROUTER_MODEL,
+      model:
+        typeof parsed.model === "string" && parsed.model.trim()
+          ? parsed.model
+          : DEFAULT_OPENROUTER_MODEL,
       apiKeys: Object.fromEntries(
         READER_KEY_ENGINES.filter((engine) => typeof apiKeys[engine] === "string").map((engine) => [
           engine,

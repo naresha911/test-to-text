@@ -1,6 +1,15 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { ChevronDown, Download, FileJson, ImagePlus, Loader2, Sparkles, Trash2, X } from "lucide-react";
+import {
+  ChevronDown,
+  Download,
+  FileJson,
+  ImagePlus,
+  Loader2,
+  Sparkles,
+  Trash2,
+  X,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -17,7 +26,12 @@ import type { Catalog, DocumentKind, DocumentMeta, PageRecord } from "@/lib/docu
 import { extractPage } from "@/lib/extract.functions";
 import { generateForApprovedQuestion } from "@/lib/hint-solution-client";
 import { generateHintSolution } from "@/lib/hint-solution.functions";
-import { cropFigure, OCR_SPACE_MAX_BYTES, preparePageImage, shrinkJpegUnderBytes } from "@/lib/image-utils";
+import {
+  cropFigure,
+  OCR_SPACE_MAX_BYTES,
+  preparePageImage,
+  shrinkJpegUnderBytes,
+} from "@/lib/image-utils";
 import {
   appendLocalPage,
   createLocalDocument,
@@ -32,16 +46,14 @@ import {
 import { sortQuestions } from "@/lib/question-order";
 import {
   QUESTION_TYPE_LABELS,
+  createManualQuestion,
+  findQuestionById,
   removeQuestionById,
   updateQuestionById,
   type Question,
   type QuestionType,
 } from "@/lib/question-schema";
-import {
-  DEFAULT_READER_SETTINGS,
-  READER_LABELS,
-  loadReaderSettings,
-} from "@/lib/reader-settings";
+import { DEFAULT_READER_SETTINGS, READER_LABELS, loadReaderSettings } from "@/lib/reader-settings";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({
@@ -140,7 +152,9 @@ function HomePage() {
   }, []);
 
   useEffect(() => {
-    void runCatalog().then(setCatalog).catch(() => undefined);
+    void runCatalog()
+      .then(setCatalog)
+      .catch(() => undefined);
   }, [runCatalog]);
 
   useEffect(() => {
@@ -165,7 +179,9 @@ function HomePage() {
           description: rest.description ?? "",
         });
         setPages(loaded.pages);
-        setQuestions(loaded.questions);
+        const sorted = sortQuestions(loaded.questions);
+        questionsRef.current = sorted;
+        setQuestions(sorted);
         setFigureUrls(loaded.figureUrls);
       })
       .catch(() => toast.error("Could not open the saved paper."))
@@ -323,16 +339,47 @@ function HomePage() {
   function deleteQuestion(questionId: string) {
     setQuestions((current) => {
       const updated = removeQuestionById(current, questionId);
-      if (documentId) persist(documentId, updated, undefined, { immediate: true });
+      questionsRef.current = updated;
+      const savedId = documentIdRef.current;
+      if (savedId) persist(savedId, updated, undefined, { immediate: true });
       return updated;
     });
     toast.success("Question deleted.");
   }
 
+  function addQuestion(input: { number: string; type: QuestionType }): string {
+    const created = createManualQuestion({
+      number: input.number,
+      type: input.type,
+      marks: metaRef.current.default_marks,
+      negative_marks: metaRef.current.default_negative_marks,
+      difficulty: metaRef.current.difficulty,
+      subject_id: metaRef.current.subject_id,
+      standard_id: metaRef.current.standard_id,
+      stream_id: metaRef.current.stream_id,
+      year: metaRef.current.year,
+    });
+    const updated = sortQuestions([...questionsRef.current, created]);
+    questionsRef.current = updated;
+    setQuestions(updated);
+    setFilter("all");
+    const savedId = documentIdRef.current;
+    if (savedId) persist(savedId, updated, undefined, { immediate: true });
+    else void ensureDocument();
+    toast.success(`Question ${created.number} added.`);
+    return created.id;
+  }
+
   function patchQuestion(next: Question) {
     setQuestions((current) => {
-      const updated = updateQuestionById(current, next.id, () => next);
-      if (documentId) persist(documentId, updated);
+      const previous = findQuestionById(current, next.id);
+      const updated = sortQuestions(updateQuestionById(current, next.id, () => next));
+      questionsRef.current = updated;
+      const savedId = documentIdRef.current;
+      const numberChanged = (previous?.number ?? null) !== (next.number ?? null);
+      if (savedId) {
+        persist(savedId, updated, undefined, numberChanged ? { immediate: true } : undefined);
+      }
       return updated;
     });
   }
@@ -361,9 +408,7 @@ function HomePage() {
         toast.success(force ? "Hint and solution regenerated." : "Hint and solution ready.");
       }
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Could not generate hint and solution.",
-      );
+      toast.error(error instanceof Error ? error.message : "Could not generate hint and solution.");
     } finally {
       if (requested.length) {
         setGeneratingIds((current) => {
@@ -387,26 +432,29 @@ function HomePage() {
     if (approved) void runGeneration(questionId, false);
   }
 
-  const addFiles = useCallback(async (list: FileList | null) => {
-    if (!list?.length) return;
-    const images = [...list].filter((file) => file.type.startsWith("image/"));
-    if (!images.length) {
-      toast.error("Please choose image files (JPG, PNG, HEIC exports or screenshots).");
-      return;
-    }
-    try {
-      const id = await ensureDocument();
-      for (const file of images) {
-        const prepared = await preparePageImage(file);
-        const page = await runAppendPage({
-          data: { documentId: id, dataUrl: prepared.dataUrl, originalName: file.name },
-        });
-        setPages((current) => [...current, page]);
+  const addFiles = useCallback(
+    async (list: FileList | null) => {
+      if (!list?.length) return;
+      const images = [...list].filter((file) => file.type.startsWith("image/"));
+      if (!images.length) {
+        toast.error("Please choose image files (JPG, PNG, HEIC exports or screenshots).");
+        return;
       }
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not read those images.");
-    }
-  }, [runAppendPage]);
+      try {
+        const id = await ensureDocument();
+        for (const file of images) {
+          const prepared = await preparePageImage(file);
+          const page = await runAppendPage({
+            data: { documentId: id, dataUrl: prepared.dataUrl, originalName: file.name },
+          });
+          setPages((current) => [...current, page]);
+        }
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Could not read those images.");
+      }
+    },
+    [runAppendPage],
+  );
 
   async function removeUploadedPage(page: PageRecord) {
     if (progress) return;
@@ -451,7 +499,9 @@ function HomePage() {
 
     for (let i = 0; i < toRead.length; i += 1) {
       const page = toRead[i]!;
-      const pageAlreadyHasQuestions = questionsRef.current.some((question) => question.page === page.page_index);
+      const pageAlreadyHasQuestions = questionsRef.current.some(
+        (question) => question.page === page.page_index,
+      );
       if (page.ocr_status === "done" && pageAlreadyHasQuestions) {
         setProgress({ done: i + 1, total: toRead.length });
         continue;
@@ -480,7 +530,8 @@ function HomePage() {
           question.year = meta.year;
           question.source = meta.source || meta.exam || null;
           if (question.marks == null) question.marks = meta.default_marks;
-          if (question.negative_marks == null) question.negative_marks = meta.default_negative_marks;
+          if (question.negative_marks == null)
+            question.negative_marks = meta.default_negative_marks;
           if (!question.difficulty) question.difficulty = meta.difficulty;
 
           for (const [figureIndex, figure] of question.figures.entries()) {
@@ -496,7 +547,12 @@ function HomePage() {
               },
             });
             figure.image_path = saved.path;
+            figure.generation_method = "cropped";
             urls[saved.path] = dataUrl;
+            if (figure.role === "option_figure" && figure.caption) {
+              const option = question.options.find((item) => item.key === figure.caption);
+              if (option) option.image_path = saved.path;
+            }
           }
           collected.push(question);
         }
@@ -521,7 +577,7 @@ function HomePage() {
         if (raw.includes("AI_CREDITS")) {
           toast.error(
             raw.replace(/^.*AI_CREDITS:\s*/, "") ||
-            "The AI reading credits for this workspace are used up.",
+              "The AI reading credits for this workspace are used up.",
           );
           break;
         }
@@ -579,8 +635,7 @@ function HomePage() {
     );
   }
 
-  const selectClass =
-    "h-9 w-full rounded-md border border-input bg-background px-2 text-sm";
+  const selectClass = "h-9 w-full rounded-md border border-input bg-background px-2 text-sm";
 
   const standardName = catalog.standards.find((s) => s.id === meta.standard_id)?.name;
   const streamName = streams.find((s) => s.id === meta.stream_id)?.name;
@@ -976,8 +1031,7 @@ function HomePage() {
 
           <section className="flex h-[112.5vh] min-h-[840px] min-w-0 flex-col overflow-x-hidden overflow-hidden rounded-xl border border-border bg-card shadow-[var(--shadow-paper)]">
             {questions.length ? (
-              <>
-                <div className="shrink-0 space-y-3 border-b border-border p-4">
+              <div className="shrink-0 space-y-3 border-b border-border p-4">
                   <div className="flex flex-wrap items-center gap-2">
                     <div className="mr-auto min-w-0">
                       <p className="font-display text-2xl leading-none">
@@ -1022,34 +1076,32 @@ function HomePage() {
                     ))}
                   </div>
                 </div>
-
-                <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain break-words p-4">
-                  <PageReview
-                    questions={visible}
-                    showImages={false}
-                    resolveFigure={(path) => figureUrls[path]}
-                    onApprovalChange={setApproved}
-                    onQuestionChange={patchQuestion}
-                    onDelete={deleteQuestion}
-                    onRegenerate={(questionId) => void runGeneration(questionId, true)}
-                    generatingIds={generatingIds}
-                  />
-                </div>
-              </>
             ) : (
-              <div
-                className={cn(
-                  "paper-sheet flex h-full flex-1 flex-col items-center justify-center px-6 text-center",
-                )}
-              >
-                <FileJson className="h-8 w-8 text-muted-foreground" aria-hidden="true" />
+              <div className="shrink-0 border-b border-border px-6 py-8 text-center">
+                <FileJson className="mx-auto h-8 w-8 text-muted-foreground" aria-hidden="true" />
                 <h2 className="mt-4 text-2xl">Your parsed paper appears here</h2>
-                <p className="mt-2 max-w-md text-sm text-muted-foreground">
-                  Create a past paper or practice test, add images, then read pages. Work stays in
-                  local SQLite until you download exam-prep JSON.
+                <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
+                  Create a past paper or practice test, add images, then read pages. Or add a
+                  question yourself — cards line up by question number. Work stays in local SQLite
+                  until you download exam-prep JSON.
                 </p>
               </div>
             )}
+
+            <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain break-words p-4">
+              <PageReview
+                questions={visible}
+                numberingQuestions={questions}
+                showImages={false}
+                resolveFigure={(path) => figureUrls[path]}
+                onApprovalChange={setApproved}
+                onQuestionChange={patchQuestion}
+                onDelete={deleteQuestion}
+                onAddQuestion={addQuestion}
+                onRegenerate={(questionId) => void runGeneration(questionId, true)}
+                generatingIds={generatingIds}
+              />
+            </div>
           </section>
         </div>
       </main>

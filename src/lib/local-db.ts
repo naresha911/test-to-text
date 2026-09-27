@@ -155,6 +155,7 @@ async function openDatabase(): Promise<SqlJsDatabase> {
   db.run("PRAGMA foreign_keys = ON;");
   db.exec(schemaSql());
   ensureDocumentColumns(db);
+  ensureDefaultStandards(db);
   await persist(db);
   return db;
 }
@@ -248,7 +249,11 @@ function rowToPage(row: Record<string, unknown>): PageRecord {
   };
 }
 
-function queryAll(db: SqlJsDatabase, sql: string, bind: SqlValue[] = []): Record<string, unknown>[] {
+function queryAll(
+  db: SqlJsDatabase,
+  sql: string,
+  bind: SqlValue[] = [],
+): Record<string, unknown>[] {
   const stmt = db.prepare(sql);
   stmt.bind(bind);
   const rows: Record<string, unknown>[] = [];
@@ -275,6 +280,21 @@ function ensureDocumentColumns(db: SqlJsDatabase): void {
   }
   if (!names.has("generation_json")) {
     db.run("ALTER TABLE pp_documents ADD COLUMN generation_json TEXT");
+  }
+}
+
+/** AISSEE Class 6 / Class 9. Ids match exam-prep's standards lookup (5 and 8). */
+const DEFAULT_STANDARDS = [
+  { id: 5, name: "5th", display_order: 5 },
+  { id: 8, name: "8th", display_order: 8 },
+] as const;
+
+function ensureDefaultStandards(db: SqlJsDatabase): void {
+  for (const row of DEFAULT_STANDARDS) {
+    db.run(
+      "INSERT OR IGNORE INTO pp_catalog_standards (id, name, display_order) VALUES (?, ?, ?)",
+      [row.id, row.name, row.display_order],
+    );
   }
 }
 
@@ -315,15 +335,21 @@ async function readImageDataUrl(relativePath: string): Promise<string | undefine
   try {
     const buf = await fs.readFile(await absoluteImagePath(relativePath));
     const lower = relativePath.toLowerCase();
-    const contentType = lower.endsWith(".png")
-      ? "image/png"
-      : lower.endsWith(".webp")
-        ? "image/webp"
-        : "image/jpeg";
+    const contentType = lower.endsWith(".svg")
+      ? "image/svg+xml"
+      : lower.endsWith(".png")
+        ? "image/png"
+        : lower.endsWith(".webp")
+          ? "image/webp"
+          : "image/jpeg";
     return bytesToDataUrl(new Uint8Array(buf), contentType);
   } catch {
     return undefined;
   }
+}
+
+export async function readLocalImageDataUrl(relativePath: string): Promise<string | undefined> {
+  return readImageDataUrl(relativePath);
 }
 
 async function removeImage(relativePath: string): Promise<void> {
@@ -349,14 +375,30 @@ async function listFigurePaths(documentId: string): Promise<string[]> {
   const fs = await nodeFs();
   const path = await nodePath();
   const dir = path.join(await imagesRoot(), documentId);
-  try {
-    const entries = await fs.readdir(dir);
-    return entries
-      .filter((name) => name.includes("fig-"))
-      .map((name) => `${documentId}/${name}`);
-  } catch {
-    return [];
+  const found: string[] = [];
+
+  async function walk(current: string, prefix: string): Promise<void> {
+    let entries;
+    try {
+      entries = await fs.readdir(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const rel = `${prefix}/${entry.name}`;
+      if (entry.isDirectory()) {
+        await walk(path.join(current, entry.name), rel);
+        continue;
+      }
+      const image = /\.(jpe?g|png|webp|svg)$/i.test(entry.name);
+      const sourceCrop = entry.name.includes("fig-");
+      const generated = rel.includes("/generated/") && entry.name !== "_manifest.json";
+      if (image && (sourceCrop || generated)) found.push(rel);
+    }
   }
+
+  await walk(dir, documentId);
+  return found;
 }
 
 export async function listDocuments(): Promise<
@@ -475,11 +517,7 @@ export async function updateDocument(
         next["questions"] = JSON.stringify(value);
       } else if (key === "generation") {
         next["generation_json"] = value == null ? null : JSON.stringify(value);
-      } else if (
-        key === "section_timing" ||
-        key === "negative_marking" ||
-        key === "allow_pause"
-      ) {
+      } else if (key === "section_timing" || key === "negative_marking" || key === "allow_pause") {
         next[key] = value ? 1 : 0;
       } else {
         next[key] = value;
@@ -543,11 +581,9 @@ export async function appendPage(input: {
   originalName: string;
 }): Promise<PageRecord> {
   const page = await withWrite(async (db) => {
-    const countRow = queryOne(
-      db,
-      "SELECT COUNT(*) AS c FROM pp_pages WHERE document_id = ?",
-      [input.documentId],
-    );
+    const countRow = queryOne(db, "SELECT COUNT(*) AS c FROM pp_pages WHERE document_id = ?", [
+      input.documentId,
+    ]);
     const page_index = Number(countRow?.["c"] ?? 0);
     const file_path = `${input.documentId}/page-${page_index + 1}.jpg`;
     await writeImage(file_path, input.dataUrl);
@@ -596,10 +632,7 @@ export async function removePage(pageId: string): Promise<void> {
       db.run("UPDATE pp_pages SET page_index = ? WHERE id = ?", [index, String(p["id"])]);
       index += 1;
     }
-    db.run("UPDATE pp_documents SET updated_at = ? WHERE id = ?", [
-      nowIso(),
-      page.document_id,
-    ]);
+    db.run("UPDATE pp_documents SET updated_at = ? WHERE id = ?", [nowIso(), page.document_id]);
   });
 }
 
@@ -673,12 +706,7 @@ export async function importCatalogDump(raw: unknown): Promise<Catalog> {
       if (r["id"] == null || !r["name"]) continue;
       db.run(
         "INSERT INTO pp_catalog_topics (id, subject_id, name, parent_topic_id) VALUES (?, ?, ?, ?)",
-        params(
-          Number(r["id"]),
-          num(r["subject_id"]),
-          String(r["name"]),
-          num(r["parent_topic_id"]),
-        ),
+        params(Number(r["id"]), num(r["subject_id"]), String(r["name"]), num(r["parent_topic_id"])),
       );
     }
     for (const r of arr("streams", "catalog_streams")) {
@@ -688,6 +716,7 @@ export async function importCatalogDump(raw: unknown): Promise<Catalog> {
         params(Number(r["id"]), String(r["name"]), num(r["standard_id"])),
       );
     }
+    ensureDefaultStandards(db);
   });
   return getCatalog();
 }
