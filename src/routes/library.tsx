@@ -64,11 +64,16 @@ function PaperDetail({ id }: { id: string }) {
   const [generatingIds, setGeneratingIds] = useState<Set<string>>(() => new Set());
   const [ready, setReady] = useState(false);
   const questionsRef = useRef(questions);
+  const loadedRef = useRef(false);
   questionsRef.current = questions;
 
   useEffect(() => {
+    let cancelled = false;
+    loadedRef.current = false;
     void runGet({ data: { id } }).then((loaded) => {
-      if (!loaded) return;
+      if (cancelled || !loaded) return;
+      questionsRef.current = loaded.questions;
+      loadedRef.current = true;
       setQuestions(loaded.questions);
       const urls: Array<string | undefined> = [];
       for (const page of loaded.pages) urls[page.page_index] = page.dataUrl;
@@ -76,6 +81,9 @@ function PaperDetail({ id }: { id: string }) {
       setFigureUrls(loaded.figureUrls);
       setReady(true);
     });
+    return () => {
+      cancelled = true;
+    };
   }, [id, runGet]);
 
   function persist(next: Question[]) {
@@ -87,7 +95,7 @@ function PaperDetail({ id }: { id: string }) {
 
   useEffect(() => {
     const onHide = () => {
-      if (document.visibilityState !== "hidden") return;
+      if (!loadedRef.current || document.visibilityState !== "hidden") return;
       void runSave({ data: { id, patch: { questions: questionsRef.current } } }).catch(() =>
         toast.error("Could not autosave locally."),
       );
@@ -95,6 +103,7 @@ function PaperDetail({ id }: { id: string }) {
     document.addEventListener("visibilitychange", onHide);
     return () => {
       document.removeEventListener("visibilitychange", onHide);
+      if (!loadedRef.current) return;
       void runSave({ data: { id, patch: { questions: questionsRef.current } } }).catch(() => undefined);
     };
   }, [id, runSave]);

@@ -5,6 +5,7 @@ import {
   ListChecks,
   Loader2,
   Pencil,
+  Plus,
   RefreshCw,
   Trash2,
   X,
@@ -23,6 +24,7 @@ import {
   QUESTION_TYPES,
   withQuestionType,
   type Figure,
+  type Option,
   type Question,
 } from "@/lib/question-schema";
 import { cn } from "@/lib/utils";
@@ -68,6 +70,17 @@ function FieldLabel({ children }: { children: ReactNode }) {
   );
 }
 
+function nextOptionKey(options: Option[]): string {
+  const used = new Set(options.map((option) => option.key));
+  for (let index = 0; index < 26; index += 1) {
+    const key = String.fromCharCode(65 + index);
+    if (!used.has(key)) return key;
+  }
+  let number = 1;
+  while (used.has(String(number))) number += 1;
+  return String(number);
+}
+
 function OptionList({
   question,
   editing,
@@ -80,54 +93,100 @@ function OptionList({
   if (!question.options.length && !editing) return null;
   const correct = new Set(question.answer_keys);
   const multi = question.type === "multi_select";
+  const canEditChoices = question.type === "mcq" || question.type === "multi_select";
 
   if (editing && onChange) {
     return (
-      <ul className="mt-3 grid gap-2">
-        {question.options.map((option, index) => (
-          <li key={`${option.key}-${index}`} className="flex items-start gap-2">
-            <Input
-              value={option.key}
-              className="h-9 w-14 shrink-0"
-              aria-label={`Option ${index + 1} key`}
-              onChange={(event) => {
-                const options = question.options.map((item, i) =>
-                  i === index ? { ...item, key: event.target.value } : item,
-                );
-                onChange({ ...question, options });
-              }}
-            />
-            <Textarea
-              value={option.text}
-              rows={2}
-              className="min-h-[2.5rem] flex-1"
-              aria-label={`Option ${option.key} text`}
-              onChange={(event) => {
-                const options = question.options.map((item, i) =>
-                  i === index ? { ...item, text: event.target.value } : item,
-                );
-                onChange({ ...question, options });
-              }}
-            />
-            <label className="flex items-center gap-1 pt-2 text-xs text-muted-foreground">
-              <Checkbox
-                checked={option.is_correct === true || correct.has(option.key)}
-                onCheckedChange={(checked) => {
-                  const isCorrect = checked === true;
+      <div className="mt-3">
+        <ul className="grid gap-2">
+          {question.options.map((option, index) => (
+            <li key={`${option.key}-${index}`} className="flex items-start gap-2">
+              <Input
+                value={option.key}
+                className="h-9 w-14 shrink-0"
+                aria-label={`Option ${index + 1} key`}
+                onChange={(event) => {
+                  const nextKey = event.target.value;
+                  const previousKey = option.key;
                   const options = question.options.map((item, i) =>
-                    i === index ? { ...item, is_correct: isCorrect } : item,
+                    i === index ? { ...item, key: nextKey } : item,
                   );
-                  const answer_keys = isCorrect
-                    ? [...new Set([...question.answer_keys, option.key])]
-                    : question.answer_keys.filter((key) => key !== option.key);
+                  const answer_keys =
+                    nextKey === previousKey
+                      ? question.answer_keys
+                      : question.answer_keys.map((key) => (key === previousKey ? nextKey : key));
                   onChange({ ...question, options, answer_keys });
                 }}
               />
-              Correct
-            </label>
-          </li>
-        ))}
-      </ul>
+              <Textarea
+                value={option.text}
+                rows={2}
+                className="min-h-[2.5rem] flex-1"
+                aria-label={`Option ${option.key} text`}
+                onChange={(event) => {
+                  const options = question.options.map((item, i) =>
+                    i === index ? { ...item, text: event.target.value } : item,
+                  );
+                  onChange({ ...question, options });
+                }}
+              />
+              <label className="flex items-center gap-1 pt-2 text-xs text-muted-foreground">
+                <Checkbox
+                  checked={option.is_correct === true || correct.has(option.key)}
+                  onCheckedChange={(checked) => {
+                    const isCorrect = checked === true;
+                    const options = question.options.map((item, i) =>
+                      i === index ? { ...item, is_correct: isCorrect } : item,
+                    );
+                    const answer_keys = isCorrect
+                      ? [...new Set([...question.answer_keys, option.key])]
+                      : question.answer_keys.filter((key) => key !== option.key);
+                    onChange({ ...question, options, answer_keys });
+                  }}
+                />
+                Correct
+              </label>
+              {canEditChoices ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-9 w-9 shrink-0 text-destructive hover:text-destructive"
+                  aria-label={`Delete option ${option.key || index + 1}`}
+                  disabled={question.options.length <= 2}
+                  onClick={() => {
+                    const options = question.options.filter((_, i) => i !== index);
+                    const answer_keys = question.answer_keys.filter((key) => key !== option.key);
+                    onChange({ ...question, options, answer_keys });
+                  }}
+                >
+                  <Trash2 className="h-4 w-4" aria-hidden="true" />
+                </Button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+        {canEditChoices ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="mt-2"
+            onClick={() =>
+              onChange({
+                ...question,
+                options: [
+                  ...question.options,
+                  { key: nextOptionKey(question.options), text: "", is_correct: null },
+                ],
+              })
+            }
+          >
+            <Plus className="h-4 w-4" aria-hidden="true" />
+            Add option
+          </Button>
+        ) : null}
+      </div>
     );
   }
 
