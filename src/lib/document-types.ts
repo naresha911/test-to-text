@@ -1,3 +1,9 @@
+import {
+  emptyGenerationItem,
+  parseGenerationItem,
+  type GenerationItem,
+} from "@/lib/generation/job-types";
+
 export const DOCUMENT_KINDS = ["past_paper", "practice_test", "ai_mock"] as const;
 export type DocumentKind = (typeof DOCUMENT_KINDS)[number];
 
@@ -28,6 +34,10 @@ export type MockGenerationState = {
   cursor: number;
   last_error: string | null;
   pairs: MockGenerationPair[];
+  /** Durable job id. Older mocks omit this. */
+  job_id?: string | null;
+  /** Per-question stage checkpoints. The cursor remains a progress display. */
+  items?: GenerationItem[];
 };
 
 export type DocumentMeta = {
@@ -102,6 +112,8 @@ export function emptyMockGeneration(
     cursor: 0,
     last_error: null,
     pairs: [],
+    job_id: null,
+    items: [],
     ...partial,
   };
 }
@@ -144,6 +156,11 @@ export function parseMockGeneration(raw: unknown): MockGenerationState | null {
   const sourceIds = Array.isArray(obj["source_question_ids"])
     ? obj["source_question_ids"].filter((id): id is string => typeof id === "string")
     : [];
+  const items = Array.isArray(obj["items"])
+    ? obj["items"]
+        .map((item) => parseGenerationItem(item))
+        .filter((item): item is GenerationItem => item != null)
+    : [];
   return {
     mode,
     status: statusOk ? status : "pending",
@@ -156,6 +173,8 @@ export function parseMockGeneration(raw: unknown): MockGenerationState | null {
     cursor: typeof obj["cursor"] === "number" && Number.isFinite(obj["cursor"]) ? obj["cursor"] : 0,
     last_error: typeof obj["last_error"] === "string" ? obj["last_error"] : null,
     pairs,
+    job_id: typeof obj["job_id"] === "string" ? obj["job_id"] : null,
+    items,
   };
 }
 
@@ -163,6 +182,24 @@ export function mockGenerationTotal(generation: MockGenerationState | null | und
   if (!generation) return 0;
   if (generation.mode === "from_source") return generation.source_question_ids.length;
   return generation.planned_count ?? 0;
+}
+
+export function ensureGenerationItems(state: MockGenerationState): MockGenerationState {
+  const total = mockGenerationTotal(state);
+  const jobId = state.job_id ?? crypto.randomUUID();
+  const items = [...(state.items ?? [])];
+  while (items.length < total) {
+    const sequence = items.length;
+    items.push(
+      emptyGenerationItem({
+        jobId,
+        sequence,
+        sourceQuestionId:
+          state.mode === "from_source" ? (state.source_question_ids[sequence] ?? null) : null,
+      }),
+    );
+  }
+  return { ...state, job_id: jobId, items };
 }
 
 export function isMockGenerationIncomplete(

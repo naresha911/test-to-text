@@ -17,8 +17,12 @@ import {
 } from "@/lib/document-types";
 import { getLocalCatalog, getLocalDocument, saveLocalDocument } from "@/lib/local-store.functions";
 import { resumeMockPaperGeneration } from "@/lib/mock-paper-client";
-import { generateMockQuestion } from "@/lib/mock-paper.functions";
-import type { Question } from "@/lib/question-schema";
+import {
+  generateMockQuestion,
+  regenerateMockFigure,
+  regenerateMockQuestion,
+} from "@/lib/mock-paper.functions";
+import { updateQuestionById, withGeneratedStatus, type Question } from "@/lib/question-schema";
 
 export const Route = createFileRoute("/compare/$mockId")({
   head: () => ({
@@ -39,6 +43,8 @@ function ComparePage() {
   const getFn = useServerFn(getLocalDocument);
   const saveFn = useServerFn(saveLocalDocument);
   const generateFn = useServerFn(generateMockQuestion);
+  const regenerateQuestionFn = useServerFn(regenerateMockQuestion);
+  const regenerateFigureFn = useServerFn(regenerateMockFigure);
   const catalogFn = useServerFn(getLocalCatalog);
 
   const [pairIndex, setPairIndex] = useState(0);
@@ -48,6 +54,7 @@ function ComparePage() {
   const [sourceDoc, setSourceDoc] = useState<DocumentMeta | null>(null);
   const [sourceQuestions, setSourceQuestions] = useState<Question[]>([]);
   const [sourceFigures, setSourceFigures] = useState<Record<string, string>>({});
+  const [mockFigures, setMockFigures] = useState<Record<string, string>>({});
   const [ready, setReady] = useState(false);
   const autoStartedRef = useRef(false);
 
@@ -65,6 +72,7 @@ function ComparePage() {
     }
     setMockDoc(mock.document);
     setMockQuestions(mock.questions);
+    setMockFigures(mock.figureUrls);
 
     if (mock.document.source_document_id) {
       const source = await getFn({ data: { id: mock.document.source_document_id } });
@@ -150,9 +158,9 @@ function ComparePage() {
         },
       });
       setMockQuestions(result.questions);
-      setMockDoc((current) =>
-        current ? { ...current, generation: result.generation } : current,
-      );
+      setMockDoc((current) => (current ? { ...current, generation: result.generation } : current));
+      const fresh = await getFn({ data: { id: mockId } });
+      if (fresh) setMockFigures(fresh.figureUrls);
       void queryClient.invalidateQueries({ queryKey: ["local-documents"] });
       if (result.completed) {
         toast.success("AI mock generation complete.");
@@ -205,7 +213,8 @@ function ComparePage() {
         <main className="mx-auto max-w-3xl px-4 py-10">
           <h1 className="text-3xl">{mockDoc.title}</h1>
           <p className="mt-2 text-muted-foreground">
-            This mock was generated from instructions only — side-by-side comparison is not available.
+            This mock was generated from instructions only — side-by-side comparison is not
+            available.
           </p>
           <Button className="mt-4" asChild>
             <Link to="/library">Back to library</Link>
@@ -308,7 +317,66 @@ function ComparePage() {
               <section>
                 <h2 className="mb-3 text-lg font-semibold">AI Mock</h2>
                 {mockQuestion ? (
-                  <QuestionCard question={mockQuestion} index={pairIndex} />
+                  <QuestionCard
+                    question={mockQuestion}
+                    index={pairIndex}
+                    resolve={(path) => mockFigures[path]}
+                    onReviewGenerated={(questionId, status) => {
+                      setMockQuestions((current) => {
+                        const updated = updateQuestionById(current, questionId, (question) =>
+                          withGeneratedStatus(question, status),
+                        );
+                        void saveFn({
+                          data: { id: mockId, patch: { questions: updated } },
+                        });
+                        return updated;
+                      });
+                    }}
+                    onRegenerateGenerated={(questionId) => {
+                      void regenerateQuestionFn({ data: { documentId: mockId, questionId } })
+                        .then(async (result) => {
+                          setMockQuestions(result.questions);
+                          setMockDoc((current) =>
+                            current ? { ...current, generation: result.generation } : current,
+                          );
+                          const fresh = await getFn({ data: { id: mockId } });
+                          if (fresh) setMockFigures(fresh.figureUrls);
+                          toast.success("A new question was generated.");
+                        })
+                        .catch((error: unknown) => {
+                          toast.error(
+                            error instanceof Error
+                              ? error.message
+                              : "Could not regenerate that question.",
+                          );
+                        });
+                    }}
+                    onRegenerateFigure={(questionId) => {
+                      const before = mockQuestion;
+                      void regenerateFigureFn({ data: { documentId: mockId, questionId } })
+                        .then(async (result) => {
+                          if (
+                            result.question.stem !== before.stem ||
+                            result.question.answer_keys.join() !== before.answer_keys.join()
+                          ) {
+                            throw new Error("Figure regeneration changed the question.");
+                          }
+                          setMockQuestions((current) =>
+                            updateQuestionById(current, questionId, () => result.question),
+                          );
+                          const fresh = await getFn({ data: { id: mockId } });
+                          if (fresh) setMockFigures(fresh.figureUrls);
+                          toast.success("Figure redrawn.");
+                        })
+                        .catch((error: unknown) => {
+                          toast.error(
+                            error instanceof Error
+                              ? error.message
+                              : "Could not redraw that figure.",
+                          );
+                        });
+                    }}
+                  />
                 ) : (
                   <p className="rounded-lg border border-dashed border-border p-6 text-sm text-muted-foreground">
                     Mock question not found for this pair.

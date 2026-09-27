@@ -22,7 +22,10 @@ function createSupabaseFetch(supabaseKey: string): typeof fetch {
     if (init?.headers) {
       new Headers(init.headers).forEach((value, key) => headers.set(key, value));
     }
-    if (isNewSupabaseApiKey(supabaseKey) && headers.get("Authorization") === `Bearer ${supabaseKey}`) {
+    if (
+      isNewSupabaseApiKey(supabaseKey) &&
+      headers.get("Authorization") === `Bearer ${supabaseKey}`
+    ) {
       headers.delete("Authorization");
     }
     headers.set("apikey", supabaseKey);
@@ -130,7 +133,11 @@ export async function pushExamPrepExport(payload: ExamPrepExport): Promise<void>
 
   await insertAll(supabase, "question_translations", asRows(payload.tables.question_translations));
   await insertAll(supabase, "question_options", asRows(payload.tables.question_options));
-  await insertAll(supabase, "option_translations", asRows(payload.tables.option_translations));
+  await insertAll(
+    supabase,
+    "option_translations",
+    clearFields(asRows(payload.tables.option_translations), ["option_image_path"]),
+  );
   await insertAll(supabase, "question_tags", asRows(payload.tables.question_tags));
   await insertAll(supabase, "matching_items", asRows(payload.tables.matching_items));
   await insertAll(supabase, "matching_pairs", asRows(payload.tables.matching_pairs));

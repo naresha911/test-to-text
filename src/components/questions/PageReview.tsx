@@ -14,6 +14,9 @@ type Props = {
   onQuestionChange?: ((question: Question) => void) | undefined;
   onRegenerate?: ((questionId: string) => void) | undefined;
   onDelete?: ((questionId: string) => void) | undefined;
+  onReviewGenerated?: ((questionId: string, status: "reviewed" | "rejected") => void) | undefined;
+  onRegenerateGenerated?: ((questionId: string) => void) | undefined;
+  onRegenerateFigure?: ((questionId: string) => void) | undefined;
   generatingIds?: Set<string> | undefined;
 };
 
@@ -26,6 +29,9 @@ export function PageReview({
   onQuestionChange,
   onRegenerate,
   onDelete,
+  onReviewGenerated,
+  onRegenerateGenerated,
+  onRegenerateFigure,
   generatingIds,
 }: Props) {
   const pageNumbers = [...new Set(questions.map((question) => question.page ?? null))].sort(
@@ -94,6 +100,9 @@ export function PageReview({
                   {...(onQuestionChange ? { onChange: onQuestionChange } : {})}
                   {...(onRegenerate ? { onRegenerate } : {})}
                   {...(onDelete ? { onDelete } : {})}
+                  {...(onReviewGenerated ? { onReviewGenerated } : {})}
+                  {...(onRegenerateGenerated ? { onRegenerateGenerated } : {})}
+                  {...(onRegenerateFigure ? { onRegenerateFigure } : {})}
                   {...(generatingIds ? { generatingIds } : {})}
                 />
               ))}

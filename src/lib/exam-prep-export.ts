@@ -1,6 +1,6 @@
 import type { DocumentMeta } from "@/lib/document-types";
 import { parseQuestionOrder } from "@/lib/question-order";
-import type { Question, QuestionType } from "@/lib/question-schema";
+import { isLearnerFacingQuestion, type Question, type QuestionType } from "@/lib/question-schema";
 
 export type ExamPrepQuestionType =
   | "mcq_single"
@@ -35,6 +35,8 @@ export type ExamPrepExport = {
     matching_items: Json[];
     matching_pairs: Json[];
   };
+  /** Full questions for the author download, including ones not yet reviewed. */
+  author_questions: Question[];
 };
 
 export function mapQuestionType(type: QuestionType, question: Question): ExamPrepQuestionType {
@@ -134,7 +136,7 @@ export function buildExamPrepExport(document: DocumentMeta, questions: Question[
     matching_pairs: [],
   };
 
-  const ordered = [...questions].sort((a, b) => {
+  const ordered = [...questions].filter(isLearnerFacingQuestion).sort((a, b) => {
     const byPrinted = parseQuestionOrder(a.number) - parseQuestionOrder(b.number);
     if (byPrinted !== 0) return byPrinted;
     return (a.page ?? 0) - (b.page ?? 0);
@@ -241,8 +243,7 @@ export function buildExamPrepExport(document: DocumentMeta, questions: Question[
 
     q.options.forEach((option, i) => {
       const optionId = crypto.randomUUID();
-      const isCorrect =
-        option.is_correct === true || q.answer_keys.includes(option.key);
+      const isCorrect = option.is_correct === true || q.answer_keys.includes(option.key);
       tables.question_options.push({
         id: optionId,
         question_id: q.id,
@@ -255,7 +256,7 @@ export function buildExamPrepExport(document: DocumentMeta, questions: Question[
         option_id: optionId,
         language_code: "en",
         option_text: option.text,
-        option_image_path: null,
+        option_image_path: option.image_path ?? null,
       });
     });
 
@@ -367,5 +368,6 @@ export function buildExamPrepExport(document: DocumentMeta, questions: Question[
     target: "rms-exam-prep",
     kind: document.kind,
     tables,
+    author_questions: questions,
   };
 }

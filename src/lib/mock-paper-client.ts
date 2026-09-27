@@ -1,5 +1,6 @@
 import type { DocumentMeta, MockGenerationState } from "@/lib/document-types";
-import { mockGenerationTotal } from "@/lib/document-types";
+import { ensureGenerationItems, mockGenerationTotal } from "@/lib/document-types";
+import type { GenerationItem } from "@/lib/generation/job-types";
 import {
   advanceGenerationAfterSuccess,
   audienceFromDocument,
@@ -26,8 +27,15 @@ type GenerateFn = (input: {
       standard_id?: number | null;
       stream_id?: number | null;
     };
+    documentId: string;
+    sourceDocumentId?: string | null;
+    jobId?: string;
+    item?: GenerationItem;
+    generation?: MockGenerationState;
+    savedQuestions?: Question[];
+    existingQuestion?: Question | null;
   };
-}) => Promise<Question>;
+}) => Promise<{ question: Question; item: GenerationItem }>;
 
 type SaveFn = (input: {
   data: {
@@ -86,7 +94,7 @@ export async function resumeMockPaperGeneration(options: {
   }
 
   let questions = [...options.questions];
-  let state = markGenerationInProgress(generation);
+  let state = ensureGenerationItems(markGenerationInProgress(generation));
   let generatedThisRun = 0;
 
   // Persist in_progress immediately so Resume/Compare UIs stay consistent.
@@ -107,8 +115,38 @@ export async function resumeMockPaperGeneration(options: {
     }
 
     const index = state.cursor;
+    const item = state.items?.[index];
+    if (!item) throw new Error(`Missing generation item at index ${index}.`);
+    const already = item.candidate_question_id
+      ? questions.find((question) => question.id === item.candidate_question_id)
+      : undefined;
+    const stageDone =
+      item.status === "completed" ||
+      item.status === "needs_review" ||
+      item.completed_stages.includes("review");
+    if (already && stageDone) {
+      const pair = {
+        source_question_id: item.source_question_id,
+        mock_question_id: already.id,
+      };
+      state = state.pairs.some((entry) => entry.mock_question_id === already.id)
+        ? {
+            ...state,
+            cursor: state.cursor + 1,
+            status: state.cursor + 1 >= total ? "completed" : "in_progress",
+            last_error: null,
+          }
+        : advanceGenerationAfterSuccess(state, pair);
+      await options.runSave({
+        data: { id: options.mockId, patch: { questions, generation: state } },
+      });
+      options.onProgress?.({ cursor: state.cursor, total, questions, generation: state });
+      continue;
+    }
+
     try {
       let question: Question;
+      let nextItem: GenerationItem;
       if (state.mode === "from_source") {
         const sourceId = state.source_question_ids[index];
         const sourceQuestion = options.sourceQuestions?.find((q) => q.id === sourceId);
@@ -135,7 +173,7 @@ export async function resumeMockPaperGeneration(options: {
           stream_id: sourceQuestion.stream_id ?? options.document.stream_id,
         };
 
-        question = await options.runGenerate({
+        const generated = await options.runGenerate({
           data: {
             mode: "from_source",
             sourceQuestion,
@@ -145,13 +183,29 @@ export async function resumeMockPaperGeneration(options: {
             sourceQuestionId: sourceId,
             audience,
             catalog,
+            documentId: options.mockId,
+            sourceDocumentId: options.document.source_document_id,
+            jobId: state.job_id ?? options.mockId,
+            item,
+            generation: state,
+            savedQuestions: questions,
+            existingQuestion: already ?? null,
           },
         });
-        questions = [...questions, question];
-        state = advanceGenerationAfterSuccess(state, {
-          source_question_id: sourceId,
-          mock_question_id: question.id,
-        });
+        question = generated.question;
+        nextItem = generated.item;
+        questions = questions.some((entry) => entry.id === question.id)
+          ? questions.map((entry) => (entry.id === question.id ? question : entry))
+          : [...questions, question];
+        state = {
+          ...advanceGenerationAfterSuccess(state, {
+            source_question_id: sourceId,
+            mock_question_id: question.id,
+          }),
+          items: (state.items ?? []).map((entry) =>
+            entry.item_id === item.item_id ? nextItem : entry,
+          ),
+        };
       } else {
         const instructions = state.instructions?.trim();
         if (!instructions) {
@@ -162,7 +216,7 @@ export async function resumeMockPaperGeneration(options: {
           standard_id: options.document.standard_id,
           stream_id: options.document.stream_id,
         };
-        question = await options.runGenerate({
+        const generated = await options.runGenerate({
           data: {
             mode: "from_instructions",
             instructions,
@@ -173,13 +227,28 @@ export async function resumeMockPaperGeneration(options: {
             previousStems: questions.map((q) => q.stem).filter(Boolean),
             audience: baseAudience,
             catalog,
+            documentId: options.mockId,
+            jobId: state.job_id ?? options.mockId,
+            item,
+            generation: state,
+            savedQuestions: questions,
+            existingQuestion: already ?? null,
           },
         });
-        questions = [...questions, question];
-        state = advanceGenerationAfterSuccess(state, {
-          source_question_id: null,
-          mock_question_id: question.id,
-        });
+        question = generated.question;
+        nextItem = generated.item;
+        questions = questions.some((entry) => entry.id === question.id)
+          ? questions.map((entry) => (entry.id === question.id ? question : entry))
+          : [...questions, question];
+        state = {
+          ...advanceGenerationAfterSuccess(state, {
+            source_question_id: null,
+            mock_question_id: question.id,
+          }),
+          items: (state.items ?? []).map((entry) =>
+            entry.item_id === item.item_id ? nextItem : entry,
+          ),
+        };
       }
 
       generatedThisRun += 1;

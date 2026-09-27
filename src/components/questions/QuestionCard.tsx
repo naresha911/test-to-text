@@ -84,10 +84,12 @@ function nextOptionKey(options: Option[]): string {
 function OptionList({
   question,
   editing,
+  resolve,
   onChange,
 }: {
   question: Question;
   editing: boolean;
+  resolve?: Resolver | undefined;
   onChange?: ((next: Question) => void) | undefined;
 }) {
   if (!question.options.length && !editing) return null;
@@ -213,7 +215,16 @@ function OptionList({
             >
               {option.key}
             </span>
-            <MathText value={option.text} className="min-w-0" />
+            <div className="min-w-0">
+              {option.image_path && resolve?.(option.image_path) ? (
+                <img
+                  src={resolve(option.image_path)}
+                  alt={option.image_description || `Option ${option.key}`}
+                  className="mb-1 max-h-28 rounded border border-border bg-paper object-contain"
+                />
+              ) : null}
+              {option.text ? <MathText value={option.text} className="min-w-0" /> : null}
+            </div>
           </li>
         );
       })}
@@ -266,7 +277,12 @@ function TypeBody({
               <MathText value={question.reason ?? null} />
             )}
           </div>
-          <OptionList question={question} editing={editing} {...(onChange ? { onChange } : {})} />
+          <OptionList
+            question={question}
+            editing={editing}
+            {...(resolve ? { resolve } : {})}
+            {...(onChange ? { onChange } : {})}
+          />
         </div>
       );
 
@@ -329,7 +345,12 @@ function TypeBody({
               ))}
             </ol>
           ) : null}
-          <OptionList question={question} editing={editing} {...(onChange ? { onChange } : {})} />
+          <OptionList
+            question={question}
+            editing={editing}
+            {...(resolve ? { resolve } : {})}
+            {...(onChange ? { onChange } : {})}
+          />
         </div>
       );
 
@@ -461,7 +482,14 @@ function TypeBody({
       );
 
     default:
-      return <OptionList question={question} editing={editing} {...(onChange ? { onChange } : {})} />;
+      return (
+        <OptionList
+          question={question}
+          editing={editing}
+          {...(resolve ? { resolve } : {})}
+          {...(onChange ? { onChange } : {})}
+        />
+      );
   }
 }
 
@@ -558,6 +586,9 @@ export function QuestionCard({
   onChange,
   onRegenerate,
   onDelete,
+  onReviewGenerated,
+  onRegenerateGenerated,
+  onRegenerateFigure,
   generatingIds,
 }: {
   question: Question;
@@ -568,6 +599,9 @@ export function QuestionCard({
   onChange?: ((next: Question) => void) | undefined;
   onRegenerate?: ((questionId: string) => void) | undefined;
   onDelete?: ((questionId: string) => void) | undefined;
+  onReviewGenerated?: ((questionId: string, status: "reviewed" | "rejected") => void) | undefined;
+  onRegenerateGenerated?: ((questionId: string) => void) | undefined;
+  onRegenerateFigure?: ((questionId: string) => void) | undefined;
   generatingIds?: Set<string> | undefined;
 }) {
   const [editing, setEditing] = useState(false);
@@ -635,6 +669,21 @@ export function QuestionCard({
             {question.difficulty}
           </Badge>
         ) : null}
+        {question.skill_type ? (
+          <Badge variant="outline" className="capitalize">
+            {question.skill_type.replaceAll("_", " ")}
+          </Badge>
+        ) : null}
+        {question.approval_status ? (
+          <Badge variant="outline" className="capitalize">
+            {question.approval_status}
+          </Badge>
+        ) : null}
+        {question.validation ? (
+          <Badge variant="outline" className="capitalize">
+            Check {question.validation.status.replaceAll("_", " ")}
+          </Badge>
+        ) : null}
         {question.page != null ? (
           <span className="text-xs text-muted-foreground">Page {question.page + 1}</span>
         ) : null}
@@ -675,7 +724,52 @@ export function QuestionCard({
             </Button>
           ) : null}
 
-          {!nested && onApprovalChange ? (
+          {!nested && question.approval_status && onReviewGenerated ? (
+            <>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={
+                  question.approval_status === "reviewed" ||
+                  question.approval_status === "published"
+                }
+                onClick={() => onReviewGenerated(question.id, "reviewed")}
+              >
+                Review
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled={question.approval_status === "rejected"}
+                onClick={() => onReviewGenerated(question.id, "rejected")}
+              >
+                Reject
+              </Button>
+              {onRegenerateGenerated ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => onRegenerateGenerated(question.id)}
+                >
+                  <RefreshCw className="h-3 w-3" aria-hidden="true" />
+                  Regenerate question
+                </Button>
+              ) : null}
+              {onRegenerateFigure && question.skill_type === "mirror_image" ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => onRegenerateFigure(question.id)}
+                >
+                  Regenerate figure
+                </Button>
+              ) : null}
+            </>
+          ) : !nested && onApprovalChange && !question.approval_status ? (
             <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-foreground">
               <Checkbox
                 checked={question.approved === true}
@@ -692,6 +786,26 @@ export function QuestionCard({
           ) : null}
         </div>
       </header>
+
+      {question.validation?.checks.length ? (
+        <div className="mt-3 rounded-md border border-border bg-secondary/30 px-3 py-2 text-sm">
+          <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+            Validation
+          </p>
+          <ul className="mt-1 space-y-1">
+            {question.validation.checks.map((check) => (
+              <li key={check.name}>
+                <span className="font-medium capitalize">{check.name}</span>
+                {": "}
+                <span className="capitalize">{check.status.replaceAll("_", " ")}</span>
+                {check.details ? (
+                  <span className="text-muted-foreground"> — {check.details}</span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       {question.instructions || editing ? (
         editing && onChange ? (
@@ -730,9 +844,7 @@ export function QuestionCard({
             <FieldLabel>Section</FieldLabel>
             <Input
               value={question.section ?? ""}
-              onChange={(event) =>
-                onChange({ ...question, section: event.target.value || null })
-              }
+              onChange={(event) => onChange({ ...question, section: event.target.value || null })}
             />
           </div>
           <div>
@@ -756,8 +868,7 @@ export function QuestionCard({
               onChange={(event) =>
                 onChange({
                   ...question,
-                  negative_marks:
-                    event.target.value === "" ? null : Number(event.target.value),
+                  negative_marks: event.target.value === "" ? null : Number(event.target.value),
                 })
               }
             />
@@ -848,7 +959,7 @@ export function QuestionCard({
           editing={editing}
           {...(generating ? { generating: true } : {})}
           {...(onChange ? { onChange } : {})}
-          {...(onRegenerate
+          {...(onRegenerate && !question.approval_status
             ? { onRegenerate: () => onRegenerate(question.id) }
             : {})}
         />

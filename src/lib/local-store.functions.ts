@@ -7,6 +7,7 @@ import {
   type DocumentKind,
   type MockGenerationState,
 } from "@/lib/document-types";
+import { GENERATION_ITEM_STATUSES, GENERATION_STAGES } from "@/lib/generation/job-types";
 import { buildExamPrepExport } from "@/lib/exam-prep-export";
 import {
   appendPage,
@@ -31,7 +32,21 @@ const GenerationPairSchema = z.object({
   mock_question_id: z.string(),
 });
 
-const GenerationSchema = z.object({
+const GenerationItemSchema = z.object({
+  item_id: z.string(),
+  sequence: z.number().int(),
+  source_question_id: z.string().nullable(),
+  stage: z.enum(GENERATION_STAGES),
+  status: z.enum(GENERATION_ITEM_STATUSES),
+  attempt_count: z.number().int(),
+  candidate_question_id: z.string().nullable(),
+  validation_status: z.enum(["passed", "failed", "needs_review"]).nullable(),
+  last_error: z.string().nullable(),
+  idempotency_key: z.string(),
+  completed_stages: z.array(z.enum(GENERATION_STAGES)),
+});
+
+export const GenerationSchema = z.object({
   mode: z.enum(["from_source", "from_instructions"]),
   status: z.enum(["pending", "in_progress", "completed", "failed"]),
   instructions: z.string().max(8000).nullable(),
@@ -40,6 +55,8 @@ const GenerationSchema = z.object({
   cursor: z.number().int().min(0),
   last_error: z.string().max(2000).nullable(),
   pairs: z.array(GenerationPairSchema),
+  job_id: z.string().nullable().optional(),
+  items: z.array(GenerationItemSchema).optional(),
 });
 
 export const listLocalDocuments = createServerFn({ method: "GET" }).handler(async () =>
@@ -95,9 +112,7 @@ const MetaPatch = z.object({
 });
 
 export const saveLocalDocument = createServerFn({ method: "POST" })
-  .validator((input: unknown) =>
-    z.object({ id: z.string().uuid(), patch: MetaPatch }).parse(input),
-  )
+  .validator((input: unknown) => z.object({ id: z.string().uuid(), patch: MetaPatch }).parse(input))
   .handler(async ({ data }) => {
     const patch: DocumentPatch = {};
     const src = data.patch;

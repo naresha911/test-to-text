@@ -38,8 +38,17 @@ import {
   saveLocalDocument,
 } from "@/lib/local-store.functions";
 import { resumeMockPaperGeneration } from "@/lib/mock-paper-client";
-import { generateMockQuestion } from "@/lib/mock-paper.functions";
-import { removeQuestionById, updateQuestionById, type Question } from "@/lib/question-schema";
+import {
+  generateMockQuestion,
+  regenerateMockFigure,
+  regenerateMockQuestion,
+} from "@/lib/mock-paper.functions";
+import {
+  removeQuestionById,
+  updateQuestionById,
+  withGeneratedStatus,
+  type Question,
+} from "@/lib/question-schema";
 
 export const Route = createFileRoute("/library")({
   head: () => ({
@@ -58,6 +67,8 @@ function PaperDetail({ id }: { id: string }) {
   const runGet = useServerFn(getLocalDocument);
   const runSave = useServerFn(saveLocalDocument);
   const runHintSolution = useServerFn(generateHintSolution);
+  const runRegenerateQuestion = useServerFn(regenerateMockQuestion);
+  const runRegenerateFigure = useServerFn(regenerateMockFigure);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [pageUrls, setPageUrls] = useState<Array<string | undefined>>([]);
   const [figureUrls, setFigureUrls] = useState<Record<string, string>>({});
@@ -104,7 +115,9 @@ function PaperDetail({ id }: { id: string }) {
     return () => {
       document.removeEventListener("visibilitychange", onHide);
       if (!loadedRef.current) return;
-      void runSave({ data: { id, patch: { questions: questionsRef.current } } }).catch(() => undefined);
+      void runSave({ data: { id, patch: { questions: questionsRef.current } } }).catch(
+        () => undefined,
+      );
     };
   }, [id, runSave]);
 
@@ -160,6 +173,52 @@ function PaperDetail({ id }: { id: string }) {
     }
   }
 
+  async function refreshFigures() {
+    const loaded = await runGet({ data: { id } });
+    if (loaded) setFigureUrls(loaded.figureUrls);
+  }
+
+  async function reviewGenerated(questionId: string, status: "reviewed" | "rejected") {
+    setQuestions((current) => {
+      const updated = updateQuestionById(current, questionId, (question) =>
+        withGeneratedStatus(question, status),
+      );
+      persist(updated);
+      return updated;
+    });
+  }
+
+  async function regenerateQuestion(questionId: string) {
+    try {
+      const result = await runRegenerateQuestion({ data: { documentId: id, questionId } });
+      setQuestions(result.questions);
+      questionsRef.current = result.questions;
+      await refreshFigures();
+      toast.success("A new question was generated.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not regenerate that question.");
+    }
+  }
+
+  async function regenerateFigure(questionId: string) {
+    const before = questionsRef.current.find((question) => question.id === questionId);
+    try {
+      const result = await runRegenerateFigure({ data: { documentId: id, questionId } });
+      if (
+        before &&
+        (result.question.stem !== before.stem ||
+          result.question.answer_keys.join() !== before.answer_keys.join())
+      ) {
+        throw new Error("Figure regeneration changed the question.");
+      }
+      setQuestions((current) => updateQuestionById(current, questionId, () => result.question));
+      await refreshFigures();
+      toast.success("Figure redrawn.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not redraw that figure.");
+    }
+  }
+
   if (!ready) {
     return (
       <div className="mt-4 flex justify-center">
@@ -185,6 +244,9 @@ function PaperDetail({ id }: { id: string }) {
         onQuestionChange={patchQuestion}
         onDelete={deleteQuestion}
         onRegenerate={(questionId) => void runGeneration(questionId, true)}
+        onReviewGenerated={(questionId, status) => void reviewGenerated(questionId, status)}
+        onRegenerateGenerated={(questionId) => void regenerateQuestion(questionId)}
+        onRegenerateFigure={(questionId) => void regenerateFigure(questionId)}
         generatingIds={generatingIds}
       />
     </div>
@@ -326,8 +388,8 @@ function LibraryPage() {
           <div className="mr-auto">
             <h1 className="text-4xl">Your library</h1>
             <p className="mt-2 text-muted-foreground">
-              Papers stored in local SQLite on this computer. Open one to keep adding pages, or generate an
-              AI mock.
+              Papers stored in local SQLite on this computer. Open one to keep adding pages, or
+              generate an AI mock.
             </p>
           </div>
           <Button asChild>
@@ -344,7 +406,9 @@ function LibraryPage() {
           </div>
         ) : !papers.data?.length ? (
           <div className="mt-8 rounded-xl border border-dashed border-border p-10 text-center">
-            <p className="text-muted-foreground">Nothing saved yet. Convert a paper on the home page.</p>
+            <p className="text-muted-foreground">
+              Nothing saved yet. Convert a paper on the home page.
+            </p>
             <div className="mt-4 flex flex-wrap justify-center gap-2">
               <Button asChild>
                 <Link to="/" search={{ id: undefined }}>
@@ -453,7 +517,11 @@ function LibraryPage() {
                         </Link>
                       </Button>
                     ) : null}
-                    <Button variant="outline" size="sm" onClick={() => void download(paper.id, paper.title)}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => void download(paper.id, paper.title)}
+                    >
                       <Download className="h-4 w-4" aria-hidden="true" />
                       JSON
                     </Button>
@@ -475,7 +543,11 @@ function LibraryPage() {
                         </>
                       )}
                     </Button>
-                    <Button size="sm" variant="secondary" onClick={() => setOpenId(open ? null : paper.id)}>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => setOpenId(open ? null : paper.id)}
+                    >
                       {open ? "Hide" : "Review"}
                     </Button>
                     <Button
