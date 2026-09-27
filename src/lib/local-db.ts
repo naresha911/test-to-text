@@ -155,6 +155,7 @@ async function openDatabase(): Promise<SqlJsDatabase> {
   db.run("PRAGMA foreign_keys = ON;");
   db.exec(schemaSql());
   ensureDocumentColumns(db);
+  ensureDefaultStandards(db);
   await persist(db);
   return db;
 }
@@ -279,6 +280,21 @@ function ensureDocumentColumns(db: SqlJsDatabase): void {
   }
   if (!names.has("generation_json")) {
     db.run("ALTER TABLE pp_documents ADD COLUMN generation_json TEXT");
+  }
+}
+
+/** AISSEE Class 6 / Class 9. Ids match exam-prep's standards lookup (5 and 8). */
+const DEFAULT_STANDARDS = [
+  { id: 5, name: "5th", display_order: 5 },
+  { id: 8, name: "8th", display_order: 8 },
+] as const;
+
+function ensureDefaultStandards(db: SqlJsDatabase): void {
+  for (const row of DEFAULT_STANDARDS) {
+    db.run(
+      "INSERT OR IGNORE INTO pp_catalog_standards (id, name, display_order) VALUES (?, ?, ?)",
+      [row.id, row.name, row.display_order],
+    );
   }
 }
 
@@ -700,6 +716,7 @@ export async function importCatalogDump(raw: unknown): Promise<Catalog> {
         params(Number(r["id"]), String(r["name"]), num(r["standard_id"])),
       );
     }
+    ensureDefaultStandards(db);
   });
   return getCatalog();
 }

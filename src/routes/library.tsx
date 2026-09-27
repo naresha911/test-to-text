@@ -598,7 +598,16 @@ function LibraryPage() {
                     <Button
                       variant="outline"
                       size="sm"
-                      disabled={pushingId === paper.id || paper.question_count === 0}
+                      disabled={
+                        pushingId === paper.id ||
+                        paper.question_count === 0 ||
+                        paper.standard_id == null
+                      }
+                      title={
+                        paper.standard_id == null
+                          ? "Choose 5th or 8th before pushing."
+                          : undefined
+                      }
                       onClick={() => void pushPaper(paper.id, paper.title)}
                     >
                       {pushingId === paper.id ? (

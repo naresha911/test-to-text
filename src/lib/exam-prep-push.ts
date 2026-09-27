@@ -114,8 +114,58 @@ async function linkedGroupIds(supabase: SupabaseClient, questionIds: string[]): 
   return [...found];
 }
 
+const DEFAULT_STANDARDS: Record<number, { name: string; display_order: number }> = {
+  5: { name: "5th", display_order: 5 },
+  8: { name: "8th", display_order: 8 },
+};
+
+function containerStandardId(payload: ExamPrepExport): number {
+  const paper = asRows(payload.tables.papers)[0];
+  const test = asRows(payload.tables.tests)[0];
+  const raw = paper?.["standard_id"] ?? test?.["standard_id"];
+  const id = typeof raw === "number" ? raw : null;
+  if (id == null) {
+    throw new Error("Choose a standard (5th or 8th) before pushing.");
+  }
+  return id;
+}
+
+function standardIdsIn(payload: ExamPrepExport): number[] {
+  const ids = new Set<number>();
+  for (const row of [
+    ...asRows(payload.tables.papers),
+    ...asRows(payload.tables.tests),
+    ...asRows(payload.tables.questions),
+    ...asRows(payload.tables.question_groups),
+  ]) {
+    const value = row["standard_id"];
+    if (typeof value === "number" && value in DEFAULT_STANDARDS) ids.add(value);
+  }
+  return [...ids];
+}
+
+async function ensureRemoteStandards(supabase: SupabaseClient, ids: number[]): Promise<void> {
+  if (!ids.length) return;
+  const { data, error } = await supabase.from("standards").select("id").in("id", ids);
+  fail("standards", error);
+  const existing = new Set((data ?? []).map((row) => Number((row as { id?: number }).id)));
+  const missing = ids
+    .filter((id) => !existing.has(id))
+    .map((id) => ({
+      id,
+      name: DEFAULT_STANDARDS[id]!.name,
+      display_order: DEFAULT_STANDARDS[id]!.display_order,
+    }));
+  if (!missing.length) return;
+  const { error: insertError } = await supabase.from("standards").insert(missing);
+  fail("standards", insertError);
+}
+
 export async function pushExamPrepExport(payload: ExamPrepExport): Promise<void> {
   const supabase = examPrepClient();
+  containerStandardId(payload);
+  await ensureRemoteStandards(supabase, standardIdsIn(payload));
+
   const questions = clearFields(asRows(payload.tables.questions), ["diagram_path"]);
   const questionIds = questions.map((row) => String(row["id"]));
 
