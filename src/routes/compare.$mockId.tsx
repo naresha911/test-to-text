@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { AppHeader } from "@/components/AppHeader";
+import { AddQuestionForm } from "@/components/questions/AddQuestionForm";
 import { QuestionCard } from "@/components/questions/QuestionCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,7 +23,16 @@ import {
   regenerateMockFigure,
   regenerateMockQuestion,
 } from "@/lib/mock-paper.functions";
-import { updateQuestionById, withGeneratedStatus, type Question } from "@/lib/question-schema";
+import { sortMockPairs, sortQuestions } from "@/lib/question-order";
+import {
+  createManualQuestion,
+  findQuestionById,
+  removeQuestionById,
+  updateQuestionById,
+  withGeneratedStatus,
+  type Question,
+  type QuestionType,
+} from "@/lib/question-schema";
 
 export const Route = createFileRoute("/compare/$mockId")({
   head: () => ({
@@ -56,7 +66,12 @@ function ComparePage() {
   const [sourceFigures, setSourceFigures] = useState<Record<string, string>>({});
   const [mockFigures, setMockFigures] = useState<Record<string, string>>({});
   const [ready, setReady] = useState(false);
+  const [focusId, setFocusId] = useState<string | null>(null);
   const autoStartedRef = useRef(false);
+  const mockDocRef = useRef(mockDoc);
+  const mockQuestionsRef = useRef(mockQuestions);
+  mockDocRef.current = mockDoc;
+  mockQuestionsRef.current = mockQuestions;
 
   const catalog = useQuery({
     queryKey: ["local-catalog"],
@@ -70,8 +85,18 @@ function ComparePage() {
       setMockDoc(null);
       return;
     }
-    setMockDoc(mock.document);
-    setMockQuestions(mock.questions);
+    const sorted = sortQuestions(mock.questions);
+    const generation = mock.document.generation
+      ? {
+          ...mock.document.generation,
+          pairs: sortMockPairs(mock.document.generation.pairs, sorted),
+        }
+      : mock.document.generation;
+    const document = { ...mock.document, generation };
+    mockDocRef.current = document;
+    mockQuestionsRef.current = sorted;
+    setMockDoc(document);
+    setMockQuestions(sorted);
     setMockFigures(mock.figureUrls);
 
     if (mock.document.source_document_id) {
@@ -99,7 +124,10 @@ function ComparePage() {
   }, [mockId]);
 
   const generation = mockDoc?.generation ?? null;
-  const pairs = generation?.pairs ?? [];
+  const pairs = useMemo(
+    () => sortMockPairs(generation?.pairs ?? [], mockQuestions),
+    [generation, mockQuestions],
+  );
   const totalPlanned = mockGenerationTotal(generation);
   const incomplete = isMockGenerationIncomplete(generation);
 
@@ -118,6 +146,96 @@ function ComparePage() {
       setPairIndex(pairs.length - 1);
     }
   }, [pairIndex, pairs.length]);
+
+  function saveMock(nextQuestions: Question[], nextGeneration?: MockGenerationState | null) {
+    const document = mockDocRef.current;
+    if (!document) return;
+    const generation =
+      nextGeneration === undefined
+        ? document.generation
+        : nextGeneration
+          ? { ...nextGeneration, pairs: sortMockPairs(nextGeneration.pairs, nextQuestions) }
+          : null;
+    const nextDoc = { ...document, generation };
+    mockDocRef.current = nextDoc;
+    mockQuestionsRef.current = nextQuestions;
+    setMockDoc(nextDoc);
+    setMockQuestions(nextQuestions);
+    void saveFn({
+      data: {
+        id: mockId,
+        patch:
+          nextGeneration === undefined
+            ? { questions: nextQuestions }
+            : { questions: nextQuestions, generation },
+      },
+    }).catch(() => toast.error("Could not autosave locally."));
+  }
+
+  function addQuestion(input: { number: string; type: QuestionType }): string {
+    const doc = mockDocRef.current;
+    const created = createManualQuestion({
+      number: input.number,
+      type: input.type,
+      marks: doc?.default_marks ?? null,
+      negative_marks: doc?.default_negative_marks ?? null,
+      difficulty: doc?.difficulty ?? null,
+      subject_id: doc?.subject_id ?? null,
+      standard_id: doc?.standard_id ?? null,
+      stream_id: doc?.stream_id ?? null,
+      year: doc?.year ?? null,
+      approval_status: "draft",
+      approved: false,
+    });
+    const updated = sortQuestions([...mockQuestionsRef.current, created]);
+    const generation = doc?.generation
+      ? {
+          ...doc.generation,
+          pairs: [
+            ...doc.generation.pairs,
+            { source_question_id: null, mock_question_id: created.id },
+          ],
+        }
+      : null;
+    saveMock(updated, generation);
+    const ordered = sortMockPairs(generation?.pairs ?? [], updated);
+    const index = ordered.findIndex((pair) => pair.mock_question_id === created.id);
+    setFocusId(created.id);
+    setPairIndex(index >= 0 ? index : 0);
+    void queryClient.invalidateQueries({ queryKey: ["local-documents"] });
+    toast.success(`Question ${created.number} added.`);
+    return created.id;
+  }
+
+  function deleteMockQuestion(questionId: string) {
+    const updated = removeQuestionById(mockQuestionsRef.current, questionId);
+    const generation = mockDocRef.current?.generation
+      ? {
+          ...mockDocRef.current.generation,
+          pairs: mockDocRef.current.generation.pairs.filter(
+            (pair) => pair.mock_question_id !== questionId,
+          ),
+        }
+      : null;
+    saveMock(updated, generation);
+    setFocusId(null);
+    void queryClient.invalidateQueries({ queryKey: ["local-documents"] });
+    toast.success("Question deleted.");
+  }
+
+  function patchMockQuestion(next: Question) {
+    const current = mockQuestionsRef.current;
+    const previous = findQuestionById(current, next.id);
+    const updated = sortQuestions(updateQuestionById(current, next.id, () => next));
+    const numberChanged = (previous?.number ?? null) !== (next.number ?? null);
+    const generation = mockDocRef.current?.generation ?? null;
+    saveMock(updated, numberChanged ? generation : undefined);
+    if (numberChanged && generation) {
+      const ordered = sortMockPairs(generation.pairs, updated);
+      const index = ordered.findIndex((pair) => pair.mock_question_id === next.id);
+      if (index >= 0) setPairIndex(index);
+    }
+  }
 
   async function runResume() {
     if (!mockDoc?.generation) return;
@@ -148,17 +266,39 @@ function ComparePage() {
         runGenerate: generateFn,
         runSave: saveFn,
         onProgress: ({ questions, generation: nextGen }) => {
-          setMockQuestions(questions);
-          setMockDoc((current) =>
-            current ? { ...current, generation: nextGen as MockGenerationState } : current,
-          );
-          if (nextGen.pairs.length) {
-            setPairIndex(nextGen.pairs.length - 1);
+          const sorted = sortQuestions(questions);
+          const nextGeneration = {
+            ...(nextGen as MockGenerationState),
+            pairs: sortMockPairs(nextGen.pairs, sorted),
+          };
+          mockQuestionsRef.current = sorted;
+          setMockQuestions(sorted);
+          setMockDoc((current) => {
+            const next = current ? { ...current, generation: nextGeneration } : current;
+            mockDocRef.current = next;
+            return next;
+          });
+          if (nextGeneration.pairs.length) {
+            setPairIndex(nextGeneration.pairs.length - 1);
           }
         },
       });
-      setMockQuestions(result.questions);
-      setMockDoc((current) => (current ? { ...current, generation: result.generation } : current));
+      const sortedResult = sortQuestions(result.questions);
+      mockQuestionsRef.current = sortedResult;
+      setMockQuestions(sortedResult);
+      setMockDoc((current) => {
+        const next = current
+          ? {
+              ...current,
+              generation: {
+                ...result.generation,
+                pairs: sortMockPairs(result.generation.pairs, sortedResult),
+              },
+            }
+          : current;
+        mockDocRef.current = next;
+        return next;
+      });
       const fresh = await getFn({ data: { id: mockId } });
       if (fresh) setMockFigures(fresh.figureUrls);
       void queryClient.invalidateQueries({ queryKey: ["local-documents"] });
@@ -267,6 +407,10 @@ function ComparePage() {
           ) : null}
         </div>
 
+        <div className="mt-6">
+          <AddQuestionForm questions={mockQuestions} onAdd={addQuestion} />
+        </div>
+
         {pairs.length === 0 ? (
           <div className="mt-10 rounded-xl border border-dashed border-border p-10 text-center text-muted-foreground">
             {generating
@@ -280,7 +424,10 @@ function ComparePage() {
                 variant="outline"
                 size="sm"
                 disabled={pairIndex <= 0}
-                onClick={() => setPairIndex((i) => Math.max(0, i - 1))}
+                onClick={() => {
+                  setFocusId(null);
+                  setPairIndex((i) => Math.max(0, i - 1));
+                }}
               >
                 <ChevronLeft className="h-4 w-4" aria-hidden="true" />
                 Previous
@@ -292,7 +439,10 @@ function ComparePage() {
                 variant="outline"
                 size="sm"
                 disabled={pairIndex >= pairs.length - 1}
-                onClick={() => setPairIndex((i) => Math.min(pairs.length - 1, i + 1))}
+                onClick={() => {
+                  setFocusId(null);
+                  setPairIndex((i) => Math.min(pairs.length - 1, i + 1));
+                }}
               >
                 Next
                 <ChevronRight className="h-4 w-4" aria-hidden="true" />
@@ -318,9 +468,13 @@ function ComparePage() {
                 <h2 className="mb-3 text-lg font-semibold">AI Mock</h2>
                 {mockQuestion ? (
                   <QuestionCard
+                    key={mockQuestion.id}
                     question={mockQuestion}
                     index={pairIndex}
+                    startEditing={mockQuestion.id === focusId}
                     resolve={(path) => mockFigures[path]}
+                    onChange={patchMockQuestion}
+                    onDelete={deleteMockQuestion}
                     onReviewGenerated={(questionId, status) => {
                       setMockQuestions((current) => {
                         const updated = updateQuestionById(current, questionId, (question) =>

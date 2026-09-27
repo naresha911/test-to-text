@@ -10,7 +10,7 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { MathText } from "@/components/MathText";
 import { Badge } from "@/components/ui/badge";
@@ -628,10 +628,56 @@ function HintSolutionBlock({
   );
 }
 
+function EditableNumber({
+  question,
+  index,
+  onChange,
+}: {
+  question: Question;
+  index: number;
+  onChange: (next: Question) => void;
+}) {
+  const [draft, setDraft] = useState(question.number ?? "");
+  const focused = useRef(false);
+
+  useEffect(() => {
+    if (!focused.current) setDraft(question.number ?? "");
+  }, [question.number]);
+
+  function commit(field: HTMLInputElement) {
+    focused.current = false;
+    const next = draft.trim();
+    const current = (question.number ?? "").trim();
+    if (next === current) return;
+    onChange({ ...question, number: next || null });
+    requestAnimationFrame(() => {
+      field.closest("article")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+  }
+
+  return (
+    <Input
+      value={draft}
+      className="h-7 w-24"
+      placeholder={`Q${index + 1}`}
+      aria-label="Question number"
+      onFocus={() => {
+        focused.current = true;
+      }}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={(event) => commit(event.currentTarget)}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") event.currentTarget.blur();
+      }}
+    />
+  );
+}
+
 export function QuestionCard({
   question,
   index,
   nested = false,
+  startEditing = false,
   resolve,
   onApprovalChange,
   onChange,
@@ -645,6 +691,7 @@ export function QuestionCard({
   question: Question;
   index: number;
   nested?: boolean;
+  startEditing?: boolean;
   resolve?: Resolver | undefined;
   onApprovalChange?: ((approved: boolean) => void) | undefined;
   onChange?: ((next: Question) => void) | undefined;
@@ -655,12 +702,19 @@ export function QuestionCard({
   onRegenerateFigure?: ((questionId: string) => void) | undefined;
   generatingIds?: Set<string> | undefined;
 }) {
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(startEditing);
+  const articleRef = useRef<HTMLElement>(null);
   const generating = generatingIds?.has(question.id) === true;
   const canEdit = !!onChange;
 
+  useEffect(() => {
+    if (!startEditing) return;
+    articleRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [startEditing]);
+
   return (
     <article
+      ref={articleRef}
       className={cn(
         "text-card-foreground",
         nested
@@ -671,13 +725,7 @@ export function QuestionCard({
     >
       <header className="flex flex-wrap items-center gap-2">
         {editing && onChange ? (
-          <Input
-            value={question.number ?? ""}
-            className="h-7 w-20"
-            placeholder={`Q${index + 1}`}
-            aria-label="Question number"
-            onChange={(event) => onChange({ ...question, number: event.target.value || null })}
-          />
+          <EditableNumber question={question} index={index} onChange={onChange} />
         ) : (
           <span className="rounded-md bg-primary px-2 py-0.5 text-xs font-semibold text-primary-foreground">
             {question.number ?? `Q${index + 1}`}

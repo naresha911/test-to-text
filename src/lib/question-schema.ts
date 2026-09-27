@@ -334,6 +334,21 @@ export function withQuestionType(question: Question, type: QuestionType): Questi
   return next;
 }
 
+/** A blank question the reviewer typed in, ready to edit and sorted by `number`. */
+export function createManualQuestion(
+  input: { number: string; type: QuestionType } & Partial<Omit<Question, "id" | "number" | "type">>,
+): Question {
+  const { number, type, ...rest } = input;
+  return withQuestionType(
+    emptyQuestion({
+      ...rest,
+      number: number.trim(),
+      source: rest.source ?? "manual",
+    }),
+    type,
+  );
+}
+
 /** Coerce loosely-shaped AI output into the canonical Question shape. */
 export function normalizeQuestion(raw: unknown, page: number): Question {
   const r = (raw ?? {}) as Record<string, unknown>;

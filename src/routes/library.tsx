@@ -24,6 +24,8 @@ import {
   documentKindLabel,
   isMockGenerationIncomplete,
   mockGenerationTotal,
+  type DocumentMeta,
+  type MockGenerationState,
 } from "@/lib/document-types";
 import { generateForApprovedQuestion } from "@/lib/hint-solution-client";
 import { generateHintSolution } from "@/lib/hint-solution.functions";
@@ -43,11 +45,15 @@ import {
   regenerateMockFigure,
   regenerateMockQuestion,
 } from "@/lib/mock-paper.functions";
+import { sortMockPairs, sortQuestions } from "@/lib/question-order";
 import {
+  createManualQuestion,
+  findQuestionById,
   removeQuestionById,
   updateQuestionById,
   withGeneratedStatus,
   type Question,
+  type QuestionType,
 } from "@/lib/question-schema";
 
 export const Route = createFileRoute("/library")({
@@ -69,12 +75,14 @@ function PaperDetail({ id }: { id: string }) {
   const runHintSolution = useServerFn(generateHintSolution);
   const runRegenerateQuestion = useServerFn(regenerateMockQuestion);
   const runRegenerateFigure = useServerFn(regenerateMockFigure);
+  const queryClient = useQueryClient();
   const [questions, setQuestions] = useState<Question[]>([]);
   const [pageUrls, setPageUrls] = useState<Array<string | undefined>>([]);
   const [figureUrls, setFigureUrls] = useState<Record<string, string>>({});
   const [generatingIds, setGeneratingIds] = useState<Set<string>>(() => new Set());
   const [ready, setReady] = useState(false);
   const questionsRef = useRef(questions);
+  const docRef = useRef<DocumentMeta | null>(null);
   const loadedRef = useRef(false);
   questionsRef.current = questions;
 
@@ -83,9 +91,19 @@ function PaperDetail({ id }: { id: string }) {
     loadedRef.current = false;
     void runGet({ data: { id } }).then((loaded) => {
       if (cancelled || !loaded) return;
-      questionsRef.current = loaded.questions;
+      const sorted = sortQuestions(loaded.questions);
+      questionsRef.current = sorted;
+      docRef.current = loaded.document.generation
+        ? {
+            ...loaded.document,
+            generation: {
+              ...loaded.document.generation,
+              pairs: sortMockPairs(loaded.document.generation.pairs, sorted),
+            },
+          }
+        : loaded.document;
       loadedRef.current = true;
-      setQuestions(loaded.questions);
+      setQuestions(sorted);
       const urls: Array<string | undefined> = [];
       for (const page of loaded.pages) urls[page.page_index] = page.dataUrl;
       setPageUrls(urls);
@@ -97,11 +115,12 @@ function PaperDetail({ id }: { id: string }) {
     };
   }, [id, runGet]);
 
-  function persist(next: Question[]) {
+  function persist(next: Question[], generation?: MockGenerationState) {
     questionsRef.current = next;
-    void runSave({ data: { id, patch: { questions: next } } }).catch(() =>
-      toast.error("Could not autosave locally."),
-    );
+    if (generation && docRef.current) docRef.current = { ...docRef.current, generation };
+    void runSave({
+      data: { id, patch: generation ? { questions: next, generation } : { questions: next } },
+    }).catch(() => toast.error("Could not autosave locally."));
   }
 
   useEffect(() => {
@@ -122,18 +141,68 @@ function PaperDetail({ id }: { id: string }) {
   }, [id, runSave]);
 
   function deleteQuestion(questionId: string) {
-    setQuestions((current) => {
-      const updated = removeQuestionById(current, questionId);
-      persist(updated);
-      return updated;
-    });
+    const updated = removeQuestionById(questionsRef.current, questionId);
+    const generation = docRef.current?.generation
+      ? {
+          ...docRef.current.generation,
+          pairs: docRef.current.generation.pairs.filter(
+            (pair) => pair.mock_question_id !== questionId,
+          ),
+        }
+      : undefined;
+    setQuestions(updated);
+    persist(updated, generation);
+    void queryClient.invalidateQueries({ queryKey: ["local-documents"] });
     toast.success("Question deleted.");
+  }
+
+  function addQuestion(input: { number: string; type: QuestionType }): string {
+    const doc = docRef.current;
+    const created = createManualQuestion({
+      number: input.number,
+      type: input.type,
+      marks: doc?.default_marks ?? null,
+      negative_marks: doc?.default_negative_marks ?? null,
+      difficulty: doc?.difficulty ?? null,
+      subject_id: doc?.subject_id ?? null,
+      standard_id: doc?.standard_id ?? null,
+      stream_id: doc?.stream_id ?? null,
+      year: doc?.year ?? null,
+      ...(doc?.kind === "ai_mock" ? { approval_status: "draft" as const, approved: false } : {}),
+    });
+    const updated = sortQuestions([...questionsRef.current, created]);
+    const generation = doc?.generation
+      ? {
+          ...doc.generation,
+          pairs: sortMockPairs(
+            [
+              ...doc.generation.pairs,
+              { source_question_id: null, mock_question_id: created.id },
+            ],
+            updated,
+          ),
+        }
+      : undefined;
+    setQuestions(updated);
+    persist(updated, generation);
+    void queryClient.invalidateQueries({ queryKey: ["local-documents"] });
+    toast.success(`Question ${created.number} added.`);
+    return created.id;
   }
 
   function patchQuestion(next: Question) {
     setQuestions((current) => {
-      const updated = updateQuestionById(current, next.id, () => next);
-      persist(updated);
+      const previous = findQuestionById(current, next.id);
+      const updated = sortQuestions(updateQuestionById(current, next.id, () => next));
+      const numberChanged = (previous?.number ?? null) !== (next.number ?? null);
+      const generation =
+        numberChanged && docRef.current?.generation
+          ? {
+              ...docRef.current.generation,
+              pairs: sortMockPairs(docRef.current.generation.pairs, updated),
+            }
+          : undefined;
+      persist(updated, generation);
       return updated;
     });
   }
@@ -243,6 +312,7 @@ function PaperDetail({ id }: { id: string }) {
         }}
         onQuestionChange={patchQuestion}
         onDelete={deleteQuestion}
+        onAddQuestion={addQuestion}
         onRegenerate={(questionId) => void runGeneration(questionId, true)}
         onReviewGenerated={(questionId, status) => void reviewGenerated(questionId, status)}
         onRegenerateGenerated={(questionId) => void regenerateQuestion(questionId)}
