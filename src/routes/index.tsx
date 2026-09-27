@@ -32,6 +32,7 @@ import {
 import { sortQuestions } from "@/lib/question-order";
 import {
   QUESTION_TYPE_LABELS,
+  removeQuestionById,
   updateQuestionById,
   type Question,
   type QuestionType,
@@ -317,6 +318,15 @@ function HomePage() {
       if (documentId) persist(documentId, undefined, next);
       return next;
     });
+  }
+
+  function deleteQuestion(questionId: string) {
+    setQuestions((current) => {
+      const updated = removeQuestionById(current, questionId);
+      if (documentId) persist(documentId, updated, undefined, { immediate: true });
+      return updated;
+    });
+    toast.success("Question deleted.");
   }
 
   function patchQuestion(next: Question) {
@@ -1020,6 +1030,7 @@ function HomePage() {
                     resolveFigure={(path) => figureUrls[path]}
                     onApprovalChange={setApproved}
                     onQuestionChange={patchQuestion}
+                    onDelete={deleteQuestion}
                     onRegenerate={(questionId) => void runGeneration(questionId, true)}
                     generatingIds={generatingIds}
                   />

@@ -142,6 +142,74 @@ export function emptyQuestion(partial: Partial<Question> = {}): Question {
   };
 }
 
+function blankOptions(count = 4): Option[] {
+  return Array.from({ length: count }, (_, index) => ({
+    key: String.fromCharCode(65 + index),
+    text: "",
+    is_correct: null,
+  }));
+}
+
+const ASSERTION_REASON_OPTIONS: Option[] = [
+  {
+    key: "A",
+    text: "Both Assertion and Reason are true and Reason is the correct explanation of Assertion.",
+    is_correct: null,
+  },
+  {
+    key: "B",
+    text: "Both Assertion and Reason are true but Reason is not the correct explanation of Assertion.",
+    is_correct: null,
+  },
+  {
+    key: "C",
+    text: "Assertion is true but Reason is false.",
+    is_correct: null,
+  },
+  {
+    key: "D",
+    text: "Assertion is false but Reason is true.",
+    is_correct: null,
+  },
+];
+
+/**
+ * Switch a question's type and seed the editor fields that type needs when they are empty.
+ * Existing options, blanks, pairs, and sub-questions are kept.
+ */
+export function withQuestionType(question: Question, type: QuestionType): Question {
+  if (question.type === type) return question;
+
+  const next: Question = { ...question, type };
+
+  if ((type === "mcq" || type === "multi_select") && next.options.length === 0) {
+    next.options = blankOptions();
+  }
+
+  if (type === "assertion_reason" && next.options.length === 0) {
+    next.options = ASSERTION_REASON_OPTIONS.map((option) => ({ ...option }));
+  }
+
+  if (type === "fill_blank" && next.blanks.length === 0) {
+    next.blanks = [""];
+  }
+
+  if (type === "match_the_following" && next.match_pairs.length === 0) {
+    next.match_pairs = Array.from({ length: 4 }, () => ({ left: "", right: "" }));
+  }
+
+  if (type === "comprehension" && next.sub_questions.length === 0) {
+    next.sub_questions = [
+      emptyQuestion({
+        type: "short_answer",
+        ...(question.page != null ? { page: question.page } : {}),
+      }),
+    ];
+  }
+
+  return next;
+}
+
 /** Coerce loosely-shaped AI output into the canonical Question shape. */
 export function normalizeQuestion(raw: unknown, page: number): Question {
   const r = (raw ?? {}) as Record<string, unknown>;
@@ -246,6 +314,17 @@ export function updateQuestionById(
     }
     return question;
   });
+}
+
+/** Remove a question by id, including nested comprehension sub-questions. */
+export function removeQuestionById(list: Question[], id: string): Question[] {
+  return list
+    .filter((question) => question.id !== id)
+    .map((question) =>
+      question.sub_questions.length
+        ? { ...question, sub_questions: removeQuestionById(question.sub_questions, id) }
+        : question,
+    );
 }
 
 /** Find a question by id in a nested tree. */

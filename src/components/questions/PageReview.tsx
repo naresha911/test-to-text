@@ -13,6 +13,7 @@ type Props = {
   onApprovalChange?: ((questionId: string, approved: boolean) => void) | undefined;
   onQuestionChange?: ((question: Question) => void) | undefined;
   onRegenerate?: ((questionId: string) => void) | undefined;
+  onDelete?: ((questionId: string) => void) | undefined;
   generatingIds?: Set<string> | undefined;
 };
 
@@ -24,6 +25,7 @@ export function PageReview({
   onApprovalChange,
   onQuestionChange,
   onRegenerate,
+  onDelete,
   generatingIds,
 }: Props) {
   const pageNumbers = [...new Set(questions.map((question) => question.page ?? null))].sort(
@@ -91,6 +93,7 @@ export function PageReview({
                     : {})}
                   {...(onQuestionChange ? { onChange: onQuestionChange } : {})}
                   {...(onRegenerate ? { onRegenerate } : {})}
+                  {...(onDelete ? { onDelete } : {})}
                   {...(generatingIds ? { generatingIds } : {})}
                 />
               ))}

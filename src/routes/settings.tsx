@@ -1,7 +1,7 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { useQuery } from "@tanstack/react-query";
-import { CheckCircle2, CircleAlert, Loader2 } from "lucide-react";
+import { ArrowLeft, CheckCircle2, CircleAlert, Loader2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -36,6 +36,7 @@ export const Route = createFileRoute("/settings")({
 });
 
 function SettingsPage() {
+  const router = useRouter();
   const fetchStatus = useServerFn(getReaderStatus);
   const importCatalog = useServerFn(importLocalCatalog);
   const loadCatalog = useServerFn(getLocalCatalog);
@@ -118,6 +119,22 @@ function SettingsPage() {
       <AppHeader />
 
       <main className="mx-auto max-w-3xl px-4 py-10">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="-ml-2 mb-4"
+          onClick={() => {
+            if (window.history.length > 1) {
+              router.history.back();
+              return;
+            }
+            void router.navigate({ to: "/", search: { id: undefined } });
+          }}
+        >
+          <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+          Back
+        </Button>
         <h1 className="text-3xl sm:text-4xl">Settings</h1>
         <p className="mt-3 text-muted-foreground">
           Pick which service reads uploaded pages. Import standards/subjects/topics/streams JSON so

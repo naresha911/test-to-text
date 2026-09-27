@@ -6,6 +6,7 @@ import {
   Loader2,
   Pencil,
   RefreshCw,
+  Trash2,
   X,
 } from "lucide-react";
 import { useState, type ReactNode } from "react";
@@ -20,9 +21,9 @@ import { Textarea } from "@/components/ui/textarea";
 import {
   QUESTION_TYPE_LABELS,
   QUESTION_TYPES,
+  withQuestionType,
   type Figure,
   type Question,
-  type QuestionType,
 } from "@/lib/question-schema";
 import { cn } from "@/lib/utils";
 
@@ -168,6 +169,7 @@ function TypeBody({
   onChange,
   generatingIds,
   onRegenerate,
+  onDelete,
 }: {
   question: Question;
   resolve?: Resolver | undefined;
@@ -175,6 +177,7 @@ function TypeBody({
   onChange?: ((next: Question) => void) | undefined;
   generatingIds?: Set<string> | undefined;
   onRegenerate?: ((questionId: string) => void) | undefined;
+  onDelete?: ((questionId: string) => void) | undefined;
 }) {
   switch (question.type) {
     case "assertion_reason":
@@ -362,6 +365,7 @@ function TypeBody({
                   : {})}
                 {...(generatingIds ? { generatingIds } : {})}
                 {...(onRegenerate ? { onRegenerate } : {})}
+                {...(onDelete ? { onDelete } : {})}
               />
             ))}
           </div>
@@ -494,6 +498,7 @@ export function QuestionCard({
   onApprovalChange,
   onChange,
   onRegenerate,
+  onDelete,
   generatingIds,
 }: {
   question: Question;
@@ -503,6 +508,7 @@ export function QuestionCard({
   onApprovalChange?: ((approved: boolean) => void) | undefined;
   onChange?: ((next: Question) => void) | undefined;
   onRegenerate?: ((questionId: string) => void) | undefined;
+  onDelete?: ((questionId: string) => void) | undefined;
   generatingIds?: Set<string> | undefined;
 }) {
   const [editing, setEditing] = useState(false);
@@ -540,7 +546,7 @@ export function QuestionCard({
             value={question.type}
             aria-label="Question type"
             onChange={(event) =>
-              onChange({ ...question, type: event.target.value as QuestionType })
+              onChange(withQuestionType(question, event.target.value as Question["type"]))
             }
           >
             {QUESTION_TYPES.map((type) => (
@@ -575,6 +581,24 @@ export function QuestionCard({
         ) : null}
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
+          {onDelete ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 text-destructive hover:text-destructive"
+              aria-label={`Delete question ${question.number ?? index + 1}`}
+              onClick={() => {
+                const label = question.number ?? `Q${index + 1}`;
+                if (window.confirm(`Delete ${label}? This cannot be undone.`)) {
+                  onDelete(question.id);
+                }
+              }}
+            >
+              <Trash2 className="h-4 w-4" aria-hidden="true" />
+            </Button>
+          ) : null}
+
           {canEdit ? (
             <Button
               type="button"
@@ -756,6 +780,7 @@ export function QuestionCard({
         {...(onChange ? { onChange } : {})}
         {...(generatingIds ? { generatingIds } : {})}
         {...(onRegenerate ? { onRegenerate } : {})}
+        {...(onDelete ? { onDelete } : {})}
       />
 
       {question.type !== "comprehension" || !question.sub_questions.length ? (

@@ -39,7 +39,7 @@ import {
 } from "@/lib/local-store.functions";
 import { resumeMockPaperGeneration } from "@/lib/mock-paper-client";
 import { generateMockQuestion } from "@/lib/mock-paper.functions";
-import { updateQuestionById, type Question } from "@/lib/question-schema";
+import { removeQuestionById, updateQuestionById, type Question } from "@/lib/question-schema";
 
 export const Route = createFileRoute("/library")({
   head: () => ({
@@ -98,6 +98,15 @@ function PaperDetail({ id }: { id: string }) {
       void runSave({ data: { id, patch: { questions: questionsRef.current } } }).catch(() => undefined);
     };
   }, [id, runSave]);
+
+  function deleteQuestion(questionId: string) {
+    setQuestions((current) => {
+      const updated = removeQuestionById(current, questionId);
+      persist(updated);
+      return updated;
+    });
+    toast.success("Question deleted.");
+  }
 
   function patchQuestion(next: Question) {
     setQuestions((current) => {
@@ -165,6 +174,7 @@ function PaperDetail({ id }: { id: string }) {
           if (approved) void runGeneration(questionId, false);
         }}
         onQuestionChange={patchQuestion}
+        onDelete={deleteQuestion}
         onRegenerate={(questionId) => void runGeneration(questionId, true)}
         generatingIds={generatingIds}
       />
