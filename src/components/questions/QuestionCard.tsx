@@ -935,11 +935,13 @@ export function QuestionCard({
         </div>
       ) : null}
 
-      {question.figures.length ? (
+      {question.figures.some((figure) => figure.role !== "option_figure") ? (
         <div className="mt-3 space-y-2">
-          {question.figures.map((figure, i) => (
-            <FigureBlock key={i} figure={figure} {...(resolve ? { resolve } : {})} />
-          ))}
+          {question.figures
+            .filter((figure) => figure.role !== "option_figure")
+            .map((figure, i) => (
+              <FigureBlock key={i} figure={figure} {...(resolve ? { resolve } : {})} />
+            ))}
         </div>
       ) : null}
 

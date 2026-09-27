@@ -159,6 +159,9 @@ export type Question = {
   negative_marks?: number | null;
   year?: number | null;
   source?: string | null;
+  /** Reader that produced this extraction. Absent on older papers. */
+  reader_id?: string | null;
+  reader_version?: string | null;
 };
 
 export type PaperMeta = {
@@ -429,6 +432,8 @@ export function normalizeQuestion(raw: unknown, page: number): Question {
       typeof r["negative_marks"] === "number" ? (r["negative_marks"] as number) : null,
     year: typeof r["year"] === "number" ? (r["year"] as number) : null,
     source: str(r["source"]),
+    reader_id: str(r["reader_id"]),
+    reader_version: str(r["reader_version"]),
   };
 }
 

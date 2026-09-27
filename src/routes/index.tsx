@@ -1,6 +1,15 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { ChevronDown, Download, FileJson, ImagePlus, Loader2, Sparkles, Trash2, X } from "lucide-react";
+import {
+  ChevronDown,
+  Download,
+  FileJson,
+  ImagePlus,
+  Loader2,
+  Sparkles,
+  Trash2,
+  X,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -17,7 +26,12 @@ import type { Catalog, DocumentKind, DocumentMeta, PageRecord } from "@/lib/docu
 import { extractPage } from "@/lib/extract.functions";
 import { generateForApprovedQuestion } from "@/lib/hint-solution-client";
 import { generateHintSolution } from "@/lib/hint-solution.functions";
-import { cropFigure, OCR_SPACE_MAX_BYTES, preparePageImage, shrinkJpegUnderBytes } from "@/lib/image-utils";
+import {
+  cropFigure,
+  OCR_SPACE_MAX_BYTES,
+  preparePageImage,
+  shrinkJpegUnderBytes,
+} from "@/lib/image-utils";
 import {
   appendLocalPage,
   createLocalDocument,
@@ -37,11 +51,7 @@ import {
   type Question,
   type QuestionType,
 } from "@/lib/question-schema";
-import {
-  DEFAULT_READER_SETTINGS,
-  READER_LABELS,
-  loadReaderSettings,
-} from "@/lib/reader-settings";
+import { DEFAULT_READER_SETTINGS, READER_LABELS, loadReaderSettings } from "@/lib/reader-settings";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({
@@ -140,7 +150,9 @@ function HomePage() {
   }, []);
 
   useEffect(() => {
-    void runCatalog().then(setCatalog).catch(() => undefined);
+    void runCatalog()
+      .then(setCatalog)
+      .catch(() => undefined);
   }, [runCatalog]);
 
   useEffect(() => {
@@ -361,9 +373,7 @@ function HomePage() {
         toast.success(force ? "Hint and solution regenerated." : "Hint and solution ready.");
       }
     } catch (error) {
-      toast.error(
-        error instanceof Error ? error.message : "Could not generate hint and solution.",
-      );
+      toast.error(error instanceof Error ? error.message : "Could not generate hint and solution.");
     } finally {
       if (requested.length) {
         setGeneratingIds((current) => {
@@ -387,26 +397,29 @@ function HomePage() {
     if (approved) void runGeneration(questionId, false);
   }
 
-  const addFiles = useCallback(async (list: FileList | null) => {
-    if (!list?.length) return;
-    const images = [...list].filter((file) => file.type.startsWith("image/"));
-    if (!images.length) {
-      toast.error("Please choose image files (JPG, PNG, HEIC exports or screenshots).");
-      return;
-    }
-    try {
-      const id = await ensureDocument();
-      for (const file of images) {
-        const prepared = await preparePageImage(file);
-        const page = await runAppendPage({
-          data: { documentId: id, dataUrl: prepared.dataUrl, originalName: file.name },
-        });
-        setPages((current) => [...current, page]);
+  const addFiles = useCallback(
+    async (list: FileList | null) => {
+      if (!list?.length) return;
+      const images = [...list].filter((file) => file.type.startsWith("image/"));
+      if (!images.length) {
+        toast.error("Please choose image files (JPG, PNG, HEIC exports or screenshots).");
+        return;
       }
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not read those images.");
-    }
-  }, [runAppendPage]);
+      try {
+        const id = await ensureDocument();
+        for (const file of images) {
+          const prepared = await preparePageImage(file);
+          const page = await runAppendPage({
+            data: { documentId: id, dataUrl: prepared.dataUrl, originalName: file.name },
+          });
+          setPages((current) => [...current, page]);
+        }
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Could not read those images.");
+      }
+    },
+    [runAppendPage],
+  );
 
   async function removeUploadedPage(page: PageRecord) {
     if (progress) return;
@@ -451,7 +464,9 @@ function HomePage() {
 
     for (let i = 0; i < toRead.length; i += 1) {
       const page = toRead[i]!;
-      const pageAlreadyHasQuestions = questionsRef.current.some((question) => question.page === page.page_index);
+      const pageAlreadyHasQuestions = questionsRef.current.some(
+        (question) => question.page === page.page_index,
+      );
       if (page.ocr_status === "done" && pageAlreadyHasQuestions) {
         setProgress({ done: i + 1, total: toRead.length });
         continue;
@@ -480,7 +495,8 @@ function HomePage() {
           question.year = meta.year;
           question.source = meta.source || meta.exam || null;
           if (question.marks == null) question.marks = meta.default_marks;
-          if (question.negative_marks == null) question.negative_marks = meta.default_negative_marks;
+          if (question.negative_marks == null)
+            question.negative_marks = meta.default_negative_marks;
           if (!question.difficulty) question.difficulty = meta.difficulty;
 
           for (const [figureIndex, figure] of question.figures.entries()) {
@@ -496,7 +512,12 @@ function HomePage() {
               },
             });
             figure.image_path = saved.path;
+            figure.generation_method = "cropped";
             urls[saved.path] = dataUrl;
+            if (figure.role === "option_figure" && figure.caption) {
+              const option = question.options.find((item) => item.key === figure.caption);
+              if (option) option.image_path = saved.path;
+            }
           }
           collected.push(question);
         }
@@ -521,7 +542,7 @@ function HomePage() {
         if (raw.includes("AI_CREDITS")) {
           toast.error(
             raw.replace(/^.*AI_CREDITS:\s*/, "") ||
-            "The AI reading credits for this workspace are used up.",
+              "The AI reading credits for this workspace are used up.",
           );
           break;
         }
@@ -579,8 +600,7 @@ function HomePage() {
     );
   }
 
-  const selectClass =
-    "h-9 w-full rounded-md border border-input bg-background px-2 text-sm";
+  const selectClass = "h-9 w-full rounded-md border border-input bg-background px-2 text-sm";
 
   const standardName = catalog.standards.find((s) => s.id === meta.standard_id)?.name;
   const streamName = streams.find((s) => s.id === meta.stream_id)?.name;

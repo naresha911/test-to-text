@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "lint": "eslint .",
     "test": "bun test",
+    "ocr": "python scripts/ocr_service.py",
     "format": "prettier --write ."
   },
   "overrides": {
