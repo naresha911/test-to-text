@@ -1,6 +1,12 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 
+import {
+  chatCompletionBody,
+  completeChatWithFallback,
+  generationChatTargets,
+  omniroutersApiKey,
+} from "@/lib/generation/chat-provider";
 import { structureOcrText as structureOcrTextOffline } from "@/lib/ocr-structure";
 import { normalizeQuestion, type Question } from "@/lib/question-schema";
 import { readOpenOcrPage, openOcrHealthy } from "@/lib/reader/openocr";
@@ -100,58 +106,50 @@ function resolvedQuestions(
   return { questions: offline, raw: offline.length ? "" : pageText.slice(0, 2000) };
 }
 
-/** Structure plain-text OCR output, with the same model fallback used by the image readers. */
+/** Structure plain-text OCR output. OmniRouters first, then OpenRouter, then the built-in reader. */
 async function structurePlainText(
   pageText: string,
   options: {
     page: number;
     hint?: string | undefined;
+    omniroutersKey?: string | undefined;
     openRouterKey?: string | undefined;
     lovableKey?: string | undefined;
     model?: string | undefined;
   },
 ): Promise<{ text: string } | { questions: Question[] }> {
   const messages = structureTextMessages(pageText, options.hint);
+  const targets = generationChatTargets({
+    omniroutersKey: options.omniroutersKey,
+    openRouterKey: options.openRouterKey,
+    lovableKey: options.lovableKey,
+    requestedModel: options.model,
+    omniroutersModel: process.env["OMNIROUTERS_MODEL"],
+    omniroutersBaseUrl: process.env["OMNIROUTERS_BASE_URL"],
+    openRouterModel: options.model?.trim() || DEFAULT_OPENROUTER_MODEL,
+    openRouterFallbacks: [],
+    lovableModel: "google/gemini-3.8-flash",
+  });
+  if (targets.length === 0) {
+    return { questions: structureOcrTextOffline(pageText, options.page) };
+  }
   try {
-    if (options.openRouterKey) {
-      return {
-        text: await callChat({
-          url: "https://openrouter.ai/api/v1/chat/completions",
-          headers: { Authorization: `Bearer ${options.openRouterKey}` },
-          model: options.model?.trim() || DEFAULT_OPENROUTER_MODEL,
+    const text = await completeChatWithFallback(
+      targets,
+      (target) =>
+        callChat({
+          url: target.url,
+          headers: target.headers,
+          model: target.model,
+          ...(target.models ? { models: target.models } : {}),
           messages,
-          label: "OpenRouter",
+          label: target.label,
           maxTokens: 12000,
         }),
-      };
-    }
-    if (options.lovableKey) {
-      return {
-        text: await callChat({
-          url: "https://ai.gateway.lovable.dev/v1/chat/completions",
-          headers: { "Lovable-API-Key": options.lovableKey, "X-Lovable-AIG-SDK": "fetch" },
-          model: "google/gemini-3.8-flash",
-          messages,
-          label: "The built-in AI reader",
-        }),
-      };
-    }
+      "No AI key is configured to clean up OCR text.",
+    );
+    return { text };
   } catch (error) {
-    if (options.lovableKey && options.openRouterKey) {
-      try {
-        return {
-          text: await callChat({
-            url: "https://ai.gateway.lovable.dev/v1/chat/completions",
-            headers: { "Lovable-API-Key": options.lovableKey, "X-Lovable-AIG-SDK": "fetch" },
-            model: "google/gemini-3.8-flash",
-            messages,
-            label: "The built-in AI reader",
-          }),
-        };
-      } catch {
-        /* fall through to offline structuring */
-      }
-    }
     if (!(error instanceof Error)) throw error;
   }
   return { questions: structureOcrTextOffline(pageText, options.page) };
@@ -166,7 +164,8 @@ type ChatMessage = {
 async function callChat(options: {
   url: string;
   headers: Record<string, string>;
-  model: string;
+  model?: string | null;
+  models?: string[];
   messages: ChatMessage[];
   label: string;
   maxTokens?: number;
@@ -174,13 +173,14 @@ async function callChat(options: {
   const response = await fetch(options.url, {
     method: "POST",
     headers: { "Content-Type": "application/json", ...options.headers },
-    body: JSON.stringify({
-      model: options.model,
-      stream: true,
-      // Keep OpenRouter requests below the free account's affordable ceiling.
-      max_tokens: options.maxTokens ?? 12000,
-      messages: options.messages,
-    }),
+    body: JSON.stringify(
+      chatCompletionBody({
+        model: options.model,
+        models: options.models,
+        messages: options.messages,
+        maxTokens: options.maxTokens ?? 12000,
+      }),
+    ),
   });
 
   if (!response.ok || !response.body) {
@@ -463,6 +463,7 @@ async function readOpenOcrExtraction(options: {
   imageDataUrl: string;
   page: number;
   hint?: string;
+  omniroutersKey?: string;
   lovableKey?: string;
   openRouterKey?: string;
   ocrSpaceKey?: string;
@@ -525,11 +526,15 @@ async function readOpenOcrExtraction(options: {
   }
 
   let questions = structureOcrTextOffline(pageText, options.page);
-  if (!usableStems(questions).length && (options.openRouterKey || options.lovableKey)) {
+  if (
+    !usableStems(questions).length &&
+    (options.omniroutersKey || options.openRouterKey || options.lovableKey)
+  ) {
     try {
       const structured = await structurePlainText(pageText, {
         page: options.page,
         ...(options.hint ? { hint: options.hint } : {}),
+        ...(options.omniroutersKey ? { omniroutersKey: options.omniroutersKey } : {}),
         ...(options.openRouterKey ? { openRouterKey: options.openRouterKey } : {}),
         ...(options.lovableKey ? { lovableKey: options.lovableKey } : {}),
         ...(options.model ? { model: options.model } : {}),
@@ -560,6 +565,7 @@ async function readOpenOcrExtraction(options: {
 export const extractPage = createServerFn({ method: "POST" })
   .validator((input: unknown) => InputSchema.parse(input))
   .handler(async ({ data }): Promise<{ questions: Question[]; raw: string }> => {
+    const omniroutersKey = omniroutersApiKey();
     const lovableKey = process.env["LOVABLE_API_KEY"];
     const openRouterKey = process.env["OPENROUTER_API_KEY"];
     const optiicKey = process.env["OPTIIC_API_KEY"];
@@ -598,6 +604,7 @@ export const extractPage = createServerFn({ method: "POST" })
         imageDataUrl: data.imageDataUrl,
         page: data.page,
         ...(data.hint ? { hint: data.hint } : {}),
+        ...(omniroutersKey ? { omniroutersKey } : {}),
         ...(lovableKey ? { lovableKey } : {}),
         ...(effectiveOpenRouterKey ? { openRouterKey: effectiveOpenRouterKey } : {}),
         ...(ocrSpaceKey ? { ocrSpaceKey } : {}),
@@ -636,6 +643,7 @@ export const extractPage = createServerFn({ method: "POST" })
       const structured = await structurePlainText(pageText, {
         page: data.page,
         hint: data.hint,
+        omniroutersKey,
         openRouterKey: effectiveOpenRouterKey,
         lovableKey,
         model: data.model,
@@ -657,12 +665,14 @@ export const extractPage = createServerFn({ method: "POST" })
 export const structureOcrText = createServerFn({ method: "POST" })
   .validator((input: unknown) => StructureInputSchema.parse(input))
   .handler(async ({ data }): Promise<{ questions: Question[]; raw: string }> => {
+    const omniroutersKey = omniroutersApiKey();
     const lovableKey = process.env["LOVABLE_API_KEY"];
     const openRouterKey = process.env["OPENROUTER_API_KEY"];
     const suppliedApiKey = data.apiKey?.trim();
     const structured = await structurePlainText(data.text, {
       page: data.page,
       hint: data.hint,
+      omniroutersKey,
       openRouterKey: suppliedApiKey || openRouterKey,
       lovableKey,
       model: data.model,

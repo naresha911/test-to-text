@@ -3,7 +3,12 @@ import { z } from "zod";
 
 import { createLocalImageAssetStore } from "@/lib/assets/store";
 import { parseMockGeneration, type MockGenerationState } from "@/lib/document-types";
-import { generationChatTargets, omniroutersApiKey } from "@/lib/generation/chat-provider";
+import {
+  chatCompletionBody,
+  completeChatWithFallback,
+  generationChatTargets,
+  omniroutersApiKey,
+} from "@/lib/generation/chat-provider";
 import {
   emptyGenerationItem,
   parseGenerationItem,
@@ -169,7 +174,7 @@ function extractJson(text: string): unknown {
 async function callChat(options: {
   url: string;
   headers: Record<string, string>;
-  model: string;
+  model?: string | null;
   models?: string[];
   messages: { role: "system" | "user"; content: string | unknown[] }[];
   label: string;
@@ -180,13 +185,14 @@ async function callChat(options: {
       "Content-Type": "application/json",
       ...options.headers,
     },
-    body: JSON.stringify({
-      model: options.model,
-      ...(options.models?.length ? { models: options.models } : {}),
-      stream: true,
-      max_tokens: 6000,
-      messages: options.messages,
-    }),
+    body: JSON.stringify(
+      chatCompletionBody({
+        model: options.model,
+        models: options.models,
+        messages: options.messages,
+        maxTokens: 6000,
+      }),
+    ),
   });
 
   if (!response.ok || !response.body) {
@@ -367,29 +373,19 @@ async function executeMockGeneration(
       openRouterFallbacks: MOCK_MODEL_FALLBACKS,
       lovableModel: LOVABLE_MOCK_MODEL,
     });
-    if (targets.length === 0) {
-      throw new Error(
-        "No AI key is configured for mock papers. Add OMNIROUTERS_API_KEY, OPENROUTER_API_KEY, or LOVABLE_API_KEY in .env.local (or Lovable project secrets), then restart the server.",
-      );
-    }
-    const failures: string[] = [];
-    for (const target of targets) {
-      try {
-        return await callChat({
+    return completeChatWithFallback(
+      targets,
+      (target) =>
+        callChat({
           url: target.url,
           headers: target.headers,
           model: target.model,
           ...(target.models ? { models: target.models } : {}),
           messages,
           label: target.label,
-        });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        failures.push(`${target.label} failed (${message})`);
-        if (targets.length === 1) throw error;
-      }
-    }
-    throw new Error(failures.join(". "));
+        }),
+      "No AI key is configured for mock papers. Add OMNIROUTERS_API_KEY, OPENROUTER_API_KEY, or LOVABLE_API_KEY in .env.local (or Lovable project secrets), then restart the server.",
+    );
   }
 
   let savedQuestions = Array.isArray(data.savedQuestions)

@@ -1,6 +1,10 @@
 /** OpenAI-compatible chat route documented at https://docs.omnirouters.com/api/llm/openai-chat */
 export const DEFAULT_OMNIROUTERS_BASE_URL = "https://omnirouters.com/v1";
-export const DEFAULT_OMNIROUTERS_MODEL = "gemini-2.5-flash";
+/**
+ * OmniRoute / OmniRouters selector. The gateway chooses an available model and
+ * falls back internally. This is not a pinned model id.
+ */
+export const OMNIROUTERS_AUTO_MODEL = "auto";
 
 export type GenerationProvider = "omnirouters" | "openrouter" | "lovable";
 
@@ -9,6 +13,10 @@ export type GenerationChatTarget = {
   label: string;
   url: string;
   headers: Record<string, string>;
+  /**
+   * For OmniRouters this is `auto` unless OMNIROUTERS_MODEL names a real model.
+   * OpenRouter and Lovable always send a concrete model id.
+   */
   model: string;
   models?: string[];
 };
@@ -23,13 +31,52 @@ function isOpenRouterOnlyModel(model: string): boolean {
   return model.includes(":free") || model.startsWith("openrouter/");
 }
 
-export function resolveOmniroutersModel(
-  requested: string | null | undefined,
-  configured: string | null | undefined,
-): string {
-  const candidate = requested?.trim();
-  if (candidate && !isOpenRouterOnlyModel(candidate)) return candidate;
-  return configured?.trim() || DEFAULT_OMNIROUTERS_MODEL;
+/**
+ * Ask OmniRouters to choose an available model.
+ * A concrete id is sent only when OMNIROUTERS_MODEL names one. OpenRouter-only ids stay on OpenRouter.
+ */
+export function resolveOmniroutersModel(configured: string | null | undefined): string {
+  const candidate = configured?.trim();
+  if (!candidate || isOpenRouterOnlyModel(candidate) || candidate === OMNIROUTERS_AUTO_MODEL) {
+    return OMNIROUTERS_AUTO_MODEL;
+  }
+  return candidate;
+}
+
+export function chatCompletionBody(input: {
+  model?: string | null;
+  models?: readonly string[] | null;
+  messages: unknown;
+  maxTokens: number;
+}): Record<string, unknown> {
+  const model = input.model?.trim();
+  return {
+    ...(model ? { model } : {}),
+    ...(input.models?.length ? { models: [...input.models] } : {}),
+    stream: true,
+    max_tokens: input.maxTokens,
+    messages: input.messages,
+  };
+}
+
+/** Try OmniRouters, then OpenRouter, then Lovable. A single configured target rethrows its own error. */
+export async function completeChatWithFallback(
+  targets: GenerationChatTarget[],
+  send: (target: GenerationChatTarget) => Promise<string>,
+  noneConfigured: string,
+): Promise<string> {
+  if (targets.length === 0) throw new Error(noneConfigured);
+  const failures: string[] = [];
+  for (const target of targets) {
+    try {
+      return await send(target);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      failures.push(`${target.label} failed (${message})`);
+      if (targets.length === 1) throw error;
+    }
+  }
+  throw new Error(failures.join(". "));
 }
 
 export function generationChatTargets(input: {
@@ -55,7 +102,7 @@ export function generationChatTargets(input: {
       label: "OmniRouters",
       url: `${base}/chat/completions`,
       headers: { Authorization: `Bearer ${omniKey}` },
-      model: resolveOmniroutersModel(input.requestedModel, input.omniroutersModel),
+      model: resolveOmniroutersModel(input.omniroutersModel),
     });
   }
 

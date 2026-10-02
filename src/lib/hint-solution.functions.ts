@@ -2,6 +2,12 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 
 import {
+  chatCompletionBody,
+  completeChatWithFallback,
+  generationChatTargets,
+  omniroutersApiKey,
+} from "@/lib/generation/chat-provider";
+import {
   buildQuestionPromptPayload,
   type SolutionAudience,
 } from "@/lib/question-context";
@@ -117,7 +123,7 @@ function extractJson(text: string): unknown {
 async function callChat(options: {
   url: string;
   headers: Record<string, string>;
-  model: string;
+  model?: string | null;
   models?: string[];
   messages: { role: "system" | "user"; content: string }[];
   label: string;
@@ -128,13 +134,14 @@ async function callChat(options: {
       "Content-Type": "application/json",
       ...options.headers,
     },
-    body: JSON.stringify({
-      model: options.model,
-      ...(options.models?.length ? { models: options.models } : {}),
-      stream: true,
-      max_tokens: 4000,
-      messages: options.messages,
-    }),
+    body: JSON.stringify(
+      chatCompletionBody({
+        model: options.model,
+        models: options.models,
+        messages: options.messages,
+        maxTokens: 4000,
+      }),
+    ),
   });
 
   if (!response.ok || !response.body) {
@@ -268,11 +275,12 @@ function parseResult(raw: unknown, source: Question): HintSolutionResult {
 export const generateHintSolution = createServerFn({ method: "POST" })
   .validator((input: unknown) => InputSchema.parse(input))
   .handler(async ({ data }): Promise<HintSolutionResult> => {
+    const omniroutersKey = omniroutersApiKey();
     const openRouterKey = process.env["OPENROUTER_API_KEY"];
     const lovableKey = process.env["LOVABLE_API_KEY"];
-    if (!openRouterKey && !lovableKey) {
+    if (!omniroutersKey && !openRouterKey && !lovableKey) {
       throw new Error(
-        "No AI key is configured for hints and solutions. Add OPENROUTER_API_KEY or LOVABLE_API_KEY in .env.local (or Lovable project secrets), then restart the server.",
+        "No AI key is configured for hints and solutions. Add OMNIROUTERS_API_KEY, OPENROUTER_API_KEY, or LOVABLE_API_KEY in .env.local (or Lovable project secrets), then restart the server.",
       );
     }
 
@@ -314,62 +322,29 @@ export const generateHintSolution = createServerFn({ method: "POST" })
       },
     ];
 
-    async function viaOpenRouter(): Promise<string> {
-      const model = data.model?.trim() || DEFAULT_SOLUTION_MODEL;
-      const models = [
-        model,
-        ...SOLUTION_MODEL_FALLBACKS.filter((candidate) => candidate !== model),
-      ];
-      return callChat({
-        url: "https://openrouter.ai/api/v1/chat/completions",
-        headers: { Authorization: `Bearer ${openRouterKey}` },
-        model,
-        models,
-        messages,
-        label: "OpenRouter",
-      });
-    }
-
-    async function viaLovable(): Promise<string> {
-      return callChat({
-        url: "https://ai.gateway.lovable.dev/v1/chat/completions",
-        headers: {
-          "Lovable-API-Key": lovableKey ?? "",
-          "X-Lovable-AIG-SDK": "fetch",
-        },
-        model: "google/gemini-3.8-flash",
-        messages,
-        label: "The built-in AI reader",
-      });
-    }
-
-    // Prefer OpenRouter free models when that key exists; otherwise use Lovable.
-    let text: string;
-    if (openRouterKey) {
-      try {
-        text = await viaOpenRouter();
-      } catch (openRouterError) {
-        if (lovableKey) {
-          try {
-            text = await viaLovable();
-          } catch (lovableError) {
-            const openRouterMessage =
-              openRouterError instanceof Error
-                ? openRouterError.message
-                : String(openRouterError);
-            const lovableMessage =
-              lovableError instanceof Error ? lovableError.message : String(lovableError);
-            throw new Error(
-              `OpenRouter failed (${openRouterMessage}). Lovable fallback also failed: ${lovableMessage}`,
-            );
-          }
-        } else {
-          throw openRouterError;
-        }
-      }
-    } else {
-      text = await viaLovable();
-    }
+    const text = await completeChatWithFallback(
+      generationChatTargets({
+        omniroutersKey,
+        openRouterKey,
+        lovableKey,
+        requestedModel: data.model,
+        omniroutersModel: process.env["OMNIROUTERS_MODEL"],
+        omniroutersBaseUrl: process.env["OMNIROUTERS_BASE_URL"],
+        openRouterModel: data.model?.trim() || DEFAULT_SOLUTION_MODEL,
+        openRouterFallbacks: SOLUTION_MODEL_FALLBACKS,
+        lovableModel: "google/gemini-3.8-flash",
+      }),
+      (target) =>
+        callChat({
+          url: target.url,
+          headers: target.headers,
+          model: target.model,
+          ...(target.models ? { models: target.models } : {}),
+          messages,
+          label: target.label,
+        }),
+      "No AI key is configured for hints and solutions. Add OMNIROUTERS_API_KEY, OPENROUTER_API_KEY, or LOVABLE_API_KEY in .env.local (or Lovable project secrets), then restart the server.",
+    );
 
     const parsed = extractJson(text);
     if (!parsed) {
