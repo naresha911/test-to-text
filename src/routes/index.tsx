@@ -22,7 +22,13 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Progress } from "@/components/ui/progress";
-import type { Catalog, DocumentKind, DocumentMeta, PageRecord } from "@/lib/document-types";
+import {
+  isPaperChangedError,
+  type Catalog,
+  type DocumentKind,
+  type DocumentMeta,
+  type PageRecord,
+} from "@/lib/document-types";
 import { extractPage } from "@/lib/extract.functions";
 import { generateForApprovedQuestion } from "@/lib/hint-solution-client";
 import { generateHintSolution } from "@/lib/hint-solution.functions";
@@ -76,7 +82,7 @@ export const Route = createFileRoute("/")({
 
 const emptyMeta = (
   kind: DocumentKind = "past_paper",
-): Omit<DocumentMeta, "id" | "created_at" | "updated_at"> => ({
+): Omit<DocumentMeta, "id" | "created_at" | "updated_at" | "questions_rev"> => ({
   kind,
   title: "",
   year: null,
@@ -122,6 +128,7 @@ function HomePage() {
   const [meta, setMeta] = useState(emptyMeta());
   const [pages, setPages] = useState<PageRecord[]>([]);
   const [questions, setQuestions] = useState<Question[]>([]);
+  const questionsRevRef = useRef(0);
   const [figureUrls, setFigureUrls] = useState<Record<string, string>>({});
   const [catalog, setCatalog] = useState<Catalog>({
     standards: [],
@@ -171,7 +178,14 @@ function HomePage() {
           return;
         }
         setDocumentId(loaded.document.id);
-        const { id: _id, created_at: _c, updated_at: _u, ...rest } = loaded.document;
+        const {
+          id: _id,
+          created_at: _c,
+          updated_at: _u,
+          questions_rev: loadedRev,
+          ...rest
+        } = loaded.document;
+        questionsRevRef.current = loadedRev;
         setMeta({
           ...rest,
           exam: rest.exam ?? "",
@@ -202,9 +216,10 @@ function HomePage() {
       const m = pending.meta ?? metaRef.current;
       const nextQuestions = pending.questions ?? questionsRef.current;
       let failed = false;
+      let conflicted = false;
       const write = (async () => {
         try {
-          await runSave({
+          const saved = await runSave({
             data: {
               id: pending.id,
               patch: {
@@ -214,10 +229,27 @@ function HomePage() {
                 source: m.source || null,
                 description: m.description || null,
                 questions: nextQuestions,
+                questions_rev: questionsRevRef.current,
               },
             },
           });
-        } catch {
+          if (saved) questionsRevRef.current = saved.questions_rev;
+        } catch (error) {
+          if (isPaperChangedError(error)) {
+            const loaded = await runGet({ data: { id: pending.id } });
+            if (loaded) {
+              questionsRevRef.current = loaded.document.questions_rev;
+              const sorted = sortQuestions(loaded.questions);
+              questionsRef.current = sorted;
+              setQuestions(sorted);
+              setFigureUrls(loaded.figureUrls);
+            }
+            // Drop the stale patch. Retrying it would delete the newer figure files.
+            pendingSaveRef.current = null;
+            conflicted = true;
+            toast.error("This paper changed on disk, so it was reloaded.");
+            return;
+          }
           failed = true;
           // Keep the failed patch queued so a later persist/flush can retry.
           pendingSaveRef.current = {
@@ -234,9 +266,9 @@ function HomePage() {
       } finally {
         if (inFlightSaveRef.current === write) inFlightSaveRef.current = null;
       }
-      if (failed) break;
+      if (failed || conflicted) break;
     }
-  }, [runSave]);
+  }, [runGet, runSave]);
   flushSaveRef.current = flushSave;
 
   const persist = useCallback(
@@ -296,6 +328,7 @@ function HomePage() {
       },
     });
     documentIdRef.current = created.id;
+    questionsRevRef.current = created.questions_rev;
     setDocumentId(created.id);
     void navigate({ to: "/", search: { id: created.id }, replace: true });
     persist(created.id, questionsRef.current, metaRef.current, { immediate: true });
@@ -502,7 +535,6 @@ function HomePage() {
     const collected = [...questionsRef.current];
     const urls = { ...figureUrls };
     let failed = 0;
-    let configurationError: string | null = null;
 
     for (let i = 0; i < toRead.length; i += 1) {
       const page = toRead[i]!;

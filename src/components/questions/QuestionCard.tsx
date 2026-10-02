@@ -160,14 +160,16 @@ function OptionImage({
   const image = optionImage(question, option);
   if (!image) return null;
   const url = resolve?.(image.path);
-  if (!url) return null;
+  if (!url && !onRemoveImage) return null;
   return (
     <div className="flex items-start gap-2">
-      <img
-        src={url}
-        alt={image.description}
-        className="max-h-28 w-auto max-w-full rounded border border-border bg-paper object-contain"
-      />
+      {url ? (
+        <img
+          src={url}
+          alt={image.description}
+          className="max-h-28 w-auto max-w-full rounded border border-border bg-paper object-contain"
+        />
+      ) : null}
       {onRemoveImage ? <DeleteImageButton onRemove={() => onRemoveImage(image.path)} /> : null}
     </div>
   );

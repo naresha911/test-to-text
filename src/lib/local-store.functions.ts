@@ -109,6 +109,7 @@ const MetaPatch = z.object({
   source_document_id: z.string().uuid().nullable().optional(),
   generation: GenerationSchema.nullable().optional(),
   questions: z.array(z.unknown()).optional(),
+  questions_rev: z.number().int().nonnegative().optional(),
 });
 
 export const saveLocalDocument = createServerFn({ method: "POST" })
@@ -140,6 +141,7 @@ export const saveLocalDocument = createServerFn({ method: "POST" })
     if (src.source_document_id !== undefined) patch.source_document_id = src.source_document_id;
     if (src.generation !== undefined) patch.generation = src.generation as MockGenerationState;
     if (src.questions !== undefined) patch.questions = src.questions as Question[];
+    if (src.questions_rev !== undefined) patch.questions_rev = src.questions_rev;
     return updateDocument(data.id, patch);
   });
 
@@ -261,6 +263,7 @@ export const createAiMockFromSource = createServerFn({ method: "POST" })
       default_marks: loaded.document.default_marks,
       default_negative_marks: loaded.document.default_negative_marks,
       questions: [],
+      questions_rev: created.questions_rev,
     });
 
     const next = await getDocument(created.id);
@@ -312,6 +315,7 @@ export const createAiMockFromInstructions = createServerFn({ method: "POST" })
       source: "ai_mock_from_instructions",
       description: data.instructions.trim().slice(0, 2000),
       questions: [],
+      questions_rev: created.questions_rev,
     });
 
     const next = await getDocument(created.id);

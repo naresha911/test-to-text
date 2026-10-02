@@ -65,9 +65,18 @@ export type DocumentMeta = {
   source_document_id: string | null;
   /** Resumable AI mock generation job state. */
   generation: MockGenerationState | null;
+  /** Increments on every questions save so a stale write cannot delete images. */
+  questions_rev: number;
   created_at: string;
   updated_at: string;
 };
+
+export const PAPER_CHANGED_MESSAGE = "This paper changed on disk. Reload it before saving.";
+
+export function isPaperChangedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return message.includes("changed on disk");
+}
 
 export type PageRecord = {
   id: string;

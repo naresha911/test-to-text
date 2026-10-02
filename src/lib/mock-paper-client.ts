@@ -34,8 +34,9 @@ type GenerateFn = (input: {
     generation?: MockGenerationState;
     savedQuestions?: Question[];
     existingQuestion?: Question | null;
+    questions_rev: number;
   };
-}) => Promise<{ question: Question; item: GenerationItem }>;
+}) => Promise<{ question: Question; item: GenerationItem; questions_rev: number }>;
 
 type SaveFn = (input: {
   data: {
@@ -43,15 +44,17 @@ type SaveFn = (input: {
     patch: {
       questions: Question[];
       generation: MockGenerationState;
+      questions_rev: number;
     };
   };
-}) => Promise<unknown>;
+}) => Promise<{ questions_rev: number } | null>;
 
 export type ResumeMockPaperResult = {
   questions: Question[];
   generation: MockGenerationState;
   completed: boolean;
   generatedThisRun: number;
+  questions_rev: number;
 };
 
 export type MockCatalogNames = {
@@ -80,6 +83,7 @@ export async function resumeMockPaperGeneration(options: {
     total: number;
     questions: Question[];
     generation: MockGenerationState;
+    questions_rev: number;
   }) => void;
   signal?: { cancelled: boolean };
 }): Promise<ResumeMockPaperResult> {
@@ -96,15 +100,23 @@ export async function resumeMockPaperGeneration(options: {
   let questions = [...options.questions];
   let state = ensureGenerationItems(markGenerationInProgress(generation));
   let generatedThisRun = 0;
+  let questionsRev = options.document.questions_rev;
 
   // Persist in_progress immediately so Resume/Compare UIs stay consistent.
-  await options.runSave({
+  const started = await options.runSave({
     data: {
       id: options.mockId,
-      patch: { questions, generation: state },
+      patch: { questions, generation: state, questions_rev: questionsRev },
     },
   });
-  options.onProgress?.({ cursor: state.cursor, total, questions, generation: state });
+  if (started) questionsRev = started.questions_rev;
+  options.onProgress?.({
+    cursor: state.cursor,
+    total,
+    questions,
+    generation: state,
+    questions_rev: questionsRev,
+  });
 
   const baseAudience = audienceFromDocument(options.document, options.catalogNames);
   const topicsById = options.catalogNames?.topicsById ?? {};
@@ -137,10 +149,20 @@ export async function resumeMockPaperGeneration(options: {
             last_error: null,
           }
         : advanceGenerationAfterSuccess(state, pair);
-      await options.runSave({
-        data: { id: options.mockId, patch: { questions, generation: state } },
+      const skipped = await options.runSave({
+        data: {
+          id: options.mockId,
+          patch: { questions, generation: state, questions_rev: questionsRev },
+        },
       });
-      options.onProgress?.({ cursor: state.cursor, total, questions, generation: state });
+      if (skipped) questionsRev = skipped.questions_rev;
+      options.onProgress?.({
+        cursor: state.cursor,
+        total,
+        questions,
+        generation: state,
+        questions_rev: questionsRev,
+      });
       continue;
     }
 
@@ -190,10 +212,12 @@ export async function resumeMockPaperGeneration(options: {
             generation: state,
             savedQuestions: questions,
             existingQuestion: already ?? null,
+            questions_rev: questionsRev,
           },
         });
         question = generated.question;
         nextItem = generated.item;
+        questionsRev = generated.questions_rev;
         questions = questions.some((entry) => entry.id === question.id)
           ? questions.map((entry) => (entry.id === question.id ? question : entry))
           : [...questions, question];
@@ -233,10 +257,12 @@ export async function resumeMockPaperGeneration(options: {
             generation: state,
             savedQuestions: questions,
             existingQuestion: already ?? null,
+            questions_rev: questionsRev,
           },
         });
         question = generated.question;
         nextItem = generated.item;
+        questionsRev = generated.questions_rev;
         questions = questions.some((entry) => entry.id === question.id)
           ? questions.map((entry) => (entry.id === question.id ? question : entry))
           : [...questions, question];
@@ -252,23 +278,41 @@ export async function resumeMockPaperGeneration(options: {
       }
 
       generatedThisRun += 1;
-      await options.runSave({
+      const saved = await options.runSave({
         data: {
           id: options.mockId,
-          patch: { questions, generation: state },
+          patch: { questions, generation: state, questions_rev: questionsRev },
         },
       });
-      options.onProgress?.({ cursor: state.cursor, total, questions, generation: state });
+      if (saved) questionsRev = saved.questions_rev;
+      options.onProgress?.({
+        cursor: state.cursor,
+        total,
+        questions,
+        generation: state,
+        questions_rev: questionsRev,
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Mock generation failed.";
       state = markGenerationFailed(state, message);
-      await options.runSave({
-        data: {
-          id: options.mockId,
-          patch: { questions, generation: state },
-        },
+      try {
+        const saved = await options.runSave({
+          data: {
+            id: options.mockId,
+            patch: { questions, generation: state, questions_rev: questionsRev },
+          },
+        });
+        if (saved) questionsRev = saved.questions_rev;
+      } catch {
+        // The original generation error is the one the caller should see.
+      }
+      options.onProgress?.({
+        cursor: state.cursor,
+        total,
+        questions,
+        generation: state,
+        questions_rev: questionsRev,
       });
-      options.onProgress?.({ cursor: state.cursor, total, questions, generation: state });
       throw error;
     }
   }
@@ -278,5 +322,6 @@ export async function resumeMockPaperGeneration(options: {
     generation: state,
     completed: state.status === "completed",
     generatedThisRun,
+    questions_rev: questionsRev,
   };
 }

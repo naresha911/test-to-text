@@ -74,11 +74,9 @@ describe("question image cleanup", () => {
 
     expect(original.figures).toHaveLength(2);
     expect(next.figures.map((figure) => figure.image_path)).toEqual(["doc/keep.jpg"]);
-    expect(next.options[0]).toMatchObject({
-      text: "Choice",
-      image_path: null,
-      image_description: null,
-    });
+    expect(next.options[0]?.text).toBe("Choice");
+    expect(next.options[0]?.image_path).toBeNull();
+    expect(next.options[0]?.image_description).toBeNull();
     expect(next.sub_questions[0]?.figures).toEqual([]);
   });
 
@@ -137,5 +135,21 @@ describe("question image cleanup", () => {
       "doc/stem.jpg",
       "doc/a.jpg",
     ]);
+  });
+
+  test("deleting a choice removes an option figure that was linked only by its caption", () => {
+    const original = question({
+      id: "q",
+      figures: [{ description: "A", image_path: "doc/a.jpg", role: "option_figure", caption: "A" }],
+      options: [
+        { key: "A", text: "A" },
+        { key: "B", text: "B" },
+      ],
+      answer_keys: ["A"],
+    });
+
+    const next = questionWithoutOption(original, 0);
+    expect(next.figures).toEqual([]);
+    expect(droppedImagePaths([original], [next])).toEqual(["doc/a.jpg"]);
   });
 });

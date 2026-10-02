@@ -12,6 +12,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   isMockGenerationIncomplete,
+  isPaperChangedError,
   mockGenerationTotal,
   type DocumentMeta,
   type MockGenerationState,
@@ -70,6 +71,8 @@ function ComparePage() {
   const autoStartedRef = useRef(false);
   const mockDocRef = useRef(mockDoc);
   const mockQuestionsRef = useRef(mockQuestions);
+  const questionsRevRef = useRef(0);
+  const saveChain = useRef(Promise.resolve());
   mockDocRef.current = mockDoc;
   mockQuestionsRef.current = mockQuestions;
 
@@ -95,6 +98,7 @@ function ComparePage() {
     const document = { ...mock.document, generation };
     mockDocRef.current = document;
     mockQuestionsRef.current = sorted;
+    questionsRevRef.current = mock.document.questions_rev;
     setMockDoc(document);
     setMockQuestions(sorted);
     setMockFigures(mock.figureUrls);
@@ -161,15 +165,35 @@ function ComparePage() {
     mockQuestionsRef.current = nextQuestions;
     setMockDoc(nextDoc);
     setMockQuestions(nextQuestions);
-    void saveFn({
-      data: {
-        id: mockId,
-        patch:
-          nextGeneration === undefined
-            ? { questions: nextQuestions }
-            : { questions: nextQuestions, generation },
-      },
-    }).catch(() => toast.error("Could not autosave locally."));
+    const run = saveChain.current.then(async () => {
+      try {
+        const saved = await saveFn({
+          data: {
+            id: mockId,
+            patch:
+              nextGeneration === undefined
+                ? { questions: mockQuestionsRef.current, questions_rev: questionsRevRef.current }
+                : {
+                    questions: mockQuestionsRef.current,
+                    generation: mockDocRef.current?.generation ?? generation,
+                    questions_rev: questionsRevRef.current,
+                  },
+          },
+        });
+        if (saved) questionsRevRef.current = saved.questions_rev;
+      } catch (error) {
+        if (!isPaperChangedError(error)) {
+          toast.error("Could not autosave locally.");
+          return;
+        }
+        await reload();
+        toast.error("This paper changed on disk, so it was reloaded.");
+      }
+    });
+    saveChain.current = run.then(
+      () => undefined,
+      () => undefined,
+    );
   }
 
   function addQuestion(input: { number: string; type: QuestionType }): string {
@@ -254,7 +278,7 @@ function ComparePage() {
 
       const result = await resumeMockPaperGeneration({
         mockId,
-        document: mockDoc,
+        document: { ...mockDoc, questions_rev: questionsRevRef.current },
         questions: mockQuestions,
         sourceQuestions,
         catalogNames: {
@@ -265,13 +289,14 @@ function ComparePage() {
         },
         runGenerate: generateFn,
         runSave: saveFn,
-        onProgress: ({ questions, generation: nextGen }) => {
+        onProgress: ({ questions, generation: nextGen, questions_rev }) => {
           const sorted = sortQuestions(questions);
           const nextGeneration = {
             ...(nextGen as MockGenerationState),
             pairs: sortMockPairs(nextGen.pairs, sorted),
           };
           mockQuestionsRef.current = sorted;
+          questionsRevRef.current = questions_rev;
           setMockQuestions(sorted);
           setMockDoc((current) => {
             const next = current ? { ...current, generation: nextGeneration } : current;
@@ -285,6 +310,7 @@ function ComparePage() {
       });
       const sortedResult = sortQuestions(result.questions);
       mockQuestionsRef.current = sortedResult;
+      questionsRevRef.current = result.questions_rev;
       setMockQuestions(sortedResult);
       setMockDoc((current) => {
         const next = current
@@ -300,7 +326,13 @@ function ComparePage() {
         return next;
       });
       const fresh = await getFn({ data: { id: mockId } });
-      if (fresh) setMockFigures(fresh.figureUrls);
+      if (fresh) {
+        const sortedFresh = sortQuestions(fresh.questions);
+        mockQuestionsRef.current = sortedFresh;
+        questionsRevRef.current = fresh.document.questions_rev;
+        setMockQuestions(sortedFresh);
+        setMockFigures(fresh.figureUrls);
+      }
       void queryClient.invalidateQueries({ queryKey: ["local-documents"] });
       if (result.completed) {
         toast.success("AI mock generation complete.");
@@ -476,25 +508,33 @@ function ComparePage() {
                     onChange={patchMockQuestion}
                     onDelete={deleteMockQuestion}
                     onReviewGenerated={(questionId, status) => {
-                      setMockQuestions((current) => {
-                        const updated = updateQuestionById(current, questionId, (question) =>
-                          withGeneratedStatus(question, status),
-                        );
-                        void saveFn({
-                          data: { id: mockId, patch: { questions: updated } },
-                        });
-                        return updated;
-                      });
+                      const updated = updateQuestionById(
+                        mockQuestionsRef.current,
+                        questionId,
+                        (question) => withGeneratedStatus(question, status),
+                      );
+                      saveMock(updated);
                     }}
                     onRegenerateGenerated={(questionId) => {
                       void regenerateQuestionFn({ data: { documentId: mockId, questionId } })
                         .then(async (result) => {
+                          mockQuestionsRef.current = result.questions;
                           setMockQuestions(result.questions);
-                          setMockDoc((current) =>
-                            current ? { ...current, generation: result.generation } : current,
-                          );
+                          setMockDoc((current) => {
+                            const next = current
+                              ? { ...current, generation: result.generation }
+                              : current;
+                            mockDocRef.current = next;
+                            return next;
+                          });
                           const fresh = await getFn({ data: { id: mockId } });
-                          if (fresh) setMockFigures(fresh.figureUrls);
+                          if (fresh) {
+                            const sortedFresh = sortQuestions(fresh.questions);
+                            mockQuestionsRef.current = sortedFresh;
+                            questionsRevRef.current = fresh.document.questions_rev;
+                            setMockQuestions(sortedFresh);
+                            setMockFigures(fresh.figureUrls);
+                          }
                           toast.success("A new question was generated.");
                         })
                         .catch((error: unknown) => {
@@ -515,11 +555,21 @@ function ComparePage() {
                           ) {
                             throw new Error("Figure regeneration changed the question.");
                           }
-                          setMockQuestions((current) =>
-                            updateQuestionById(current, questionId, () => result.question),
+                          const updated = updateQuestionById(
+                            mockQuestionsRef.current,
+                            questionId,
+                            () => result.question,
                           );
+                          mockQuestionsRef.current = updated;
+                          setMockQuestions(updated);
                           const fresh = await getFn({ data: { id: mockId } });
-                          if (fresh) setMockFigures(fresh.figureUrls);
+                          if (fresh) {
+                            const sortedFresh = sortQuestions(fresh.questions);
+                            mockQuestionsRef.current = sortedFresh;
+                            questionsRevRef.current = fresh.document.questions_rev;
+                            setMockQuestions(sortedFresh);
+                            setMockFigures(fresh.figureUrls);
+                          }
                           toast.success("Figure redrawn.");
                         })
                         .catch((error: unknown) => {

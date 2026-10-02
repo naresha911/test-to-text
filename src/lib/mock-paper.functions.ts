@@ -111,6 +111,7 @@ const InputSchema = z.object({
   generation: z.unknown().optional(),
   savedQuestions: z.array(z.unknown()).optional(),
   existingQuestion: z.unknown().optional(),
+  questions_rev: z.number().int().nonnegative(),
 });
 
 const SYSTEM_PROMPT = `You are an expert exam-paper author creating ORIGINAL mock questions for students.
@@ -321,7 +322,7 @@ const LOVABLE_MOCK_MODEL = "google/gemini-3.8-flash";
 
 async function executeMockGeneration(
   data: z.infer<typeof InputSchema>,
-): Promise<{ question: Question; item: GenerationItem }> {
+): Promise<{ question: Question; item: GenerationItem; questions_rev: number }> {
   const omniroutersKey = omniroutersApiKey();
   const openRouterKey = process.env["OPENROUTER_API_KEY"];
   const lovableKey = process.env["LOVABLE_API_KEY"];
@@ -395,6 +396,7 @@ async function executeMockGeneration(
     ? (data.savedQuestions as Question[])
     : [];
   let generationState = parseMockGeneration(data.generation);
+  let questionsRev = data.questions_rev;
 
   const result = await runGenerationItem({
     item,
@@ -541,14 +543,16 @@ async function executeMockGeneration(
           ? items.map((entry) => (entry.item_id === nextItem.item_id ? nextItem : entry))
           : [...items, nextItem],
       };
-      await updateDocument(data.documentId, {
+      const saved = await updateDocument(data.documentId, {
         questions: savedQuestions,
         generation: generationState,
+        questions_rev: questionsRev,
       });
+      if (saved) questionsRev = saved.questions_rev;
     },
   });
 
-  return { question: result.question, item: result.item };
+  return { question: result.question, item: result.item, questions_rev: questionsRev };
 }
 
 export const generateMockQuestion = createServerFn({ method: "POST" })
@@ -583,8 +587,11 @@ export const regenerateMockFigure = createServerFn({ method: "POST" })
       throw new Error("Figure regeneration changed the question.");
     }
     const questions = replaceQuestion(loaded.questions, next, question.id);
-    await updateDocument(data.documentId, { questions });
-    return { question: next };
+    const saved = await updateDocument(data.documentId, {
+      questions,
+      questions_rev: loaded.document.questions_rev,
+    });
+    return { question: next, questions_rev: saved?.questions_rev ?? loaded.document.questions_rev };
   });
 
 export const regenerateMockQuestion = createServerFn({ method: "POST" })
@@ -641,6 +648,7 @@ export const regenerateMockQuestion = createServerFn({ method: "POST" })
       item: fresh,
       generation,
       savedQuestions: loaded.questions.filter((entry) => entry.id !== current.id),
+      questions_rev: loaded.document.questions_rev,
       audience: {
         exam: loaded.document.exam,
         notes: loaded.document.notes,
@@ -662,6 +670,15 @@ export const regenerateMockQuestion = createServerFn({ method: "POST" })
         entry.candidate_question_id === current.id ? generated.item : entry,
       ),
     };
-    await updateDocument(data.documentId, { questions, generation: nextGeneration });
-    return { question: generated.question, generation: nextGeneration, questions };
+    const saved = await updateDocument(data.documentId, {
+      questions,
+      generation: nextGeneration,
+      questions_rev: generated.questions_rev,
+    });
+    return {
+      question: generated.question,
+      generation: nextGeneration,
+      questions,
+      questions_rev: saved?.questions_rev ?? generated.questions_rev,
+    };
   });

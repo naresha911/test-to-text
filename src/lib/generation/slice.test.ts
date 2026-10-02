@@ -47,6 +47,7 @@ function document(): DocumentMeta {
     default_negative_marks: 0,
     source_document_id: null,
     generation: null,
+    questions_rev: 0,
     created_at: now,
     updated_at: now,
   };

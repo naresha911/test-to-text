@@ -3,12 +3,13 @@
  * Server-only — keep Node imports inside async helpers so *.functions.ts
  * can still be analyzed for the client bundle.
  */
-import type {
-  Catalog,
-  DocumentKind,
-  DocumentMeta,
-  MockGenerationState,
-  PageRecord,
+import {
+  PAPER_CHANGED_MESSAGE,
+  type Catalog,
+  type DocumentKind,
+  type DocumentMeta,
+  type MockGenerationState,
+  type PageRecord,
 } from "@/lib/document-types";
 import { parseMockGeneration } from "@/lib/document-types";
 import {
@@ -242,6 +243,7 @@ function rowToMeta(row: Record<string, unknown>): DocumentMeta {
     default_negative_marks: num(row["default_negative_marks"]),
     source_document_id: str(row["source_document_id"]),
     generation: parseMockGeneration(row["generation_json"]),
+    questions_rev: num(row["questions_rev"]) ?? 0,
     created_at: String(row["created_at"]),
     updated_at: String(row["updated_at"]),
   };
@@ -302,6 +304,9 @@ function ensureDocumentColumns(db: SqlJsDatabase): void {
   }
   if (!names.has("generation_json")) {
     db.run("ALTER TABLE pp_documents ADD COLUMN generation_json TEXT");
+  }
+  if (!names.has("questions_rev")) {
+    db.run("ALTER TABLE pp_documents ADD COLUMN questions_rev INTEGER NOT NULL DEFAULT 0");
   }
 }
 
@@ -463,8 +468,14 @@ async function deleteStoredImages(relativePaths: readonly string[]): Promise<voi
       parents.push(path.dirname(absolute));
     }
   } finally {
-    for (const parent of parents) await pruneEmptyDirectories(parent, root);
     await forgetManifest({ keys: removed });
+    for (const parent of parents) {
+      try {
+        await pruneEmptyDirectories(parent, root);
+      } catch {
+        // The file is already gone. A directory cleanup failure must not restore it.
+      }
+    }
   }
 }
 
@@ -498,7 +509,7 @@ async function deleteDocumentDirectory(
   keep: ReadonlySet<string>,
 ): Promise<void> {
   const documentKey = normalizeStoredImagePath(documentId);
-  if (!documentKey) return;
+  if (!documentKey || documentKey.includes("/")) return;
   const fs = await nodeFs();
   const path = await nodePath();
   const root = path.resolve(await imagesRoot());
@@ -722,19 +733,25 @@ export async function updateDocument(
     const existing = queryOne(db, "SELECT * FROM pp_documents WHERE id = ?", [id]);
     if (!existing) return null;
 
+    const currentRev = num(existing["questions_rev"]) ?? 0;
     if (patch.questions) {
+      if (patch.questions_rev !== currentRev) throw new Error(PAPER_CHANGED_MESSAGE);
+      const documentKey = normalizeStoredImagePath(id);
       const previous = toQuestions(existing["questions"]);
       const dropped = droppedImagePaths(previous, patch.questions);
-      if (dropped.length) {
+      if (dropped.length && documentKey && !documentKey.includes("/")) {
         const inUse = imagePathsInUse(db, id, patch.questions);
+        const owned = dropped.filter(
+          (stored) => stored.startsWith(`${documentKey}/`) && !inUse.has(stored),
+        );
         // Remove files before the row changes so a failed delete can be retried.
-        await deleteStoredImages(dropped.filter((stored) => !inUse.has(stored)));
+        await deleteStoredImages(owned);
       }
     }
 
     const next = { ...existing };
     for (const [key, value] of Object.entries(patch)) {
-      if (value === undefined) continue;
+      if (value === undefined || key === "questions_rev") continue;
       if (key === "questions") {
         next["questions"] = JSON.stringify(value);
       } else if (key === "generation") {
@@ -746,6 +763,7 @@ export async function updateDocument(
       }
     }
     next["updated_at"] = nowIso();
+    next["questions_rev"] = patch.questions ? currentRev + 1 : currentRev;
 
     db.run(
       `UPDATE pp_documents SET
@@ -753,7 +771,7 @@ export async function updateDocument(
         duration_minutes = ?, total_marks = ?, difficulty = ?, exam = ?, notes = ?,
         source = ?, description = ?, section_timing = ?, negative_marking = ?,
         allow_pause = ?, max_attempts = ?, default_marks = ?, default_negative_marks = ?,
-        source_document_id = ?, generation_json = ?, questions = ?, updated_at = ?
+        source_document_id = ?, generation_json = ?, questions = ?, questions_rev = ?, updated_at = ?
        WHERE id = ?`,
       params(
         next["kind"],
@@ -780,6 +798,7 @@ export async function updateDocument(
         typeof next["questions"] === "string"
           ? next["questions"]
           : JSON.stringify(next["questions"] ?? []),
+        next["questions_rev"],
         next["updated_at"],
         id,
       ),
@@ -790,23 +809,23 @@ export async function updateDocument(
 }
 
 export async function deleteDocument(id: string): Promise<void> {
-  const owned = await withWrite((db) => {
+  await withWrite(async (db) => {
     const row = queryOne(db, "SELECT questions FROM pp_documents WHERE id = ?", [id]);
-    if (!row) return [] as string[];
-    const paths = [...collectQuestionsImagePaths(toQuestions(row["questions"]))];
+    const owned = row ? [...collectQuestionsImagePaths(toQuestions(row["questions"]))] : [];
+    const keep = imagePathsInUse(db, id, [], { includeOwnPages: false });
+    const documentKey = normalizeStoredImagePath(id);
+    if (documentKey && !documentKey.includes("/")) {
+      await deleteDocumentDirectory(id, keep);
+      const external = owned.filter(
+        (stored) => !stored.startsWith(`${documentKey}/`) && !keep.has(stored),
+      );
+      await deleteStoredImages(external);
+    }
+    if (!row) return;
     db.run("DELETE FROM pp_push_questions WHERE document_id = ?", [id]);
     db.run("DELETE FROM pp_push_documents WHERE document_id = ?", [id]);
     db.run("DELETE FROM pp_pages WHERE document_id = ?", [id]);
     db.run("DELETE FROM pp_documents WHERE id = ?", [id]);
-    return paths;
-  });
-
-  await withWrite(async (db) => {
-    const keep = imagePathsInUse(db, id, [], { includeOwnPages: false });
-    await deleteDocumentDirectory(id, keep);
-    const prefix = `${normalizeStoredImagePath(id) ?? ""}/`;
-    const external = owned.filter((stored) => !stored.startsWith(prefix) && !keep.has(stored));
-    await deleteStoredImages(external);
   });
 }
 

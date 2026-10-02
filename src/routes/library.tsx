@@ -23,6 +23,7 @@ import {
   documentKindBadge,
   documentKindLabel,
   isMockGenerationIncomplete,
+  isPaperChangedError,
   mockGenerationTotal,
   type DocumentMeta,
   type MockGenerationState,
@@ -82,8 +83,10 @@ function PaperDetail({ id }: { id: string }) {
   const [generatingIds, setGeneratingIds] = useState<Set<string>>(() => new Set());
   const [ready, setReady] = useState(false);
   const questionsRef = useRef(questions);
+  const questionsRevRef = useRef(0);
   const docRef = useRef<DocumentMeta | null>(null);
   const loadedRef = useRef(false);
+  const saveChain = useRef(Promise.resolve());
   questionsRef.current = questions;
 
   useEffect(() => {
@@ -103,6 +106,7 @@ function PaperDetail({ id }: { id: string }) {
           }
         : loaded.document;
       loadedRef.current = true;
+      questionsRevRef.current = loaded.document.questions_rev;
       setQuestions(sorted);
       const urls: Array<string | undefined> = [];
       for (const page of loaded.pages) urls[page.page_index] = page.dataUrl;
@@ -118,27 +122,56 @@ function PaperDetail({ id }: { id: string }) {
   function persist(next: Question[], generation?: MockGenerationState) {
     questionsRef.current = next;
     if (generation && docRef.current) docRef.current = { ...docRef.current, generation };
-    void runSave({
-      data: { id, patch: generation ? { questions: next, generation } : { questions: next } },
-    }).catch(() => toast.error("Could not autosave locally."));
+    const run = saveChain.current.then(async () => {
+      try {
+        const saved = await runSave({
+          data: {
+            id,
+            patch: generation
+              ? {
+                  questions: questionsRef.current,
+                  generation: docRef.current?.generation ?? generation,
+                  questions_rev: questionsRevRef.current,
+                }
+              : { questions: questionsRef.current, questions_rev: questionsRevRef.current },
+          },
+        });
+        if (saved) questionsRevRef.current = saved.questions_rev;
+      } catch (error) {
+        if (!isPaperChangedError(error)) {
+          toast.error("Could not autosave locally.");
+          return;
+        }
+        const loaded = await runGet({ data: { id } });
+        if (!loaded) return;
+        questionsRevRef.current = loaded.document.questions_rev;
+        const sorted = sortQuestions(loaded.questions);
+        questionsRef.current = sorted;
+        setQuestions(sorted);
+        setFigureUrls(loaded.figureUrls);
+        toast.error("This paper changed on disk, so it was reloaded.");
+      }
+    });
+    saveChain.current = run.then(
+      () => undefined,
+      () => undefined,
+    );
   }
 
   useEffect(() => {
     const onHide = () => {
       if (!loadedRef.current || document.visibilityState !== "hidden") return;
-      void runSave({ data: { id, patch: { questions: questionsRef.current } } }).catch(() =>
-        toast.error("Could not autosave locally."),
-      );
+      persist(questionsRef.current);
     };
     document.addEventListener("visibilitychange", onHide);
     return () => {
       document.removeEventListener("visibilitychange", onHide);
       if (!loadedRef.current) return;
-      void runSave({ data: { id, patch: { questions: questionsRef.current } } }).catch(
-        () => undefined,
-      );
+      persist(questionsRef.current);
     };
-  }, [id, runSave]);
+    // persist reads the latest refs when the queued save runs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
 
   function deleteQuestion(questionId: string) {
     const updated = removeQuestionById(questionsRef.current, questionId);
@@ -241,7 +274,10 @@ function PaperDetail({ id }: { id: string }) {
 
   async function refreshFigures() {
     const loaded = await runGet({ data: { id } });
-    if (loaded) setFigureUrls(loaded.figureUrls);
+    if (loaded) {
+      questionsRevRef.current = loaded.document.questions_rev;
+      setFigureUrls(loaded.figureUrls);
+    }
   }
 
   async function reviewGenerated(questionId: string, status: "reviewed" | "rejected") {
@@ -277,7 +313,9 @@ function PaperDetail({ id }: { id: string }) {
       ) {
         throw new Error("Figure regeneration changed the question.");
       }
-      setQuestions((current) => updateQuestionById(current, questionId, () => result.question));
+      const updated = updateQuestionById(questionsRef.current, questionId, () => result.question);
+      questionsRef.current = updated;
+      setQuestions(updated);
       await refreshFigures();
       toast.success("Figure redrawn.");
     } catch (error) {

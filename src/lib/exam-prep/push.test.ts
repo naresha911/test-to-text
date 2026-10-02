@@ -50,6 +50,7 @@ function document(): DocumentMeta {
     default_negative_marks: 0,
     source_document_id: null,
     generation: null,
+    questions_rev: 0,
     created_at: "2026-01-01T00:00:00.000Z",
     updated_at: "2026-01-02T00:00:00.000Z",
   };
