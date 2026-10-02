@@ -22,7 +22,7 @@ export const READER_LABELS: Record<ReaderEngine, string> = {
 
 export const READER_NOTES: Record<ReaderEngine, string> = {
   openocr:
-    "Default reader. OCR.space or Optiic reads the printed words. A local service finds the diagram boxes and the app crops them onto the question and its options. Start it with npm run ocr.",
+    "Default reader. OCR.space or Optiic reads the printed words. On the upload page, choose Text for words only, or Graphics when the pages contain diagrams. Graphics needs the local service: npm run ocr.",
   lovable:
     "Uses this workspace's included AI credits. Reads maths and diagrams directly from the page.",
   openrouter:

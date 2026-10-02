@@ -1,8 +1,8 @@
-"""Local figure-layout reader.
+"""Local reading service.
 
-Printed words are read later by OCR.space or Optiic. This service only returns
-the boxes around diagrams, so those regions can be cropped onto the question.
-It does not paraphrase the page.
+Printed words come from Tesseract when no other text engine is available.
+Diagram boxes come from PP-DocLayout on POST /layout, and only when the
+upload page is set to Graphics. This service does not paraphrase the page.
 """
 
 from __future__ import annotations
@@ -18,11 +18,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI
-from PIL import Image, ImageDraw
+from PIL import Image
 from pydantic import BaseModel
 
 READER_ID = "openocr"
-READER_VERSION = "openocr-layout-2"
+READER_VERSION = "openocr-text-1"
 MAX_BYTES = 15_000_000
 
 
@@ -68,145 +68,6 @@ def decode_image(payload: str) -> Image.Image:
     if len(raw) > MAX_BYTES:
         raise ValueError("That page image is larger than 15 MB.")
     return Image.open(io.BytesIO(raw)).convert("RGB")
-
-
-def _ink(image: Image.Image, max_side: int = 1400) -> tuple[bytearray, int, int]:
-    gray = image.convert("L")
-    scale = min(1.0, max_side / max(gray.size))
-    if scale < 1:
-        gray = gray.resize((max(1, int(gray.width * scale)), max(1, int(gray.height * scale))))
-    width, height = gray.size
-    pixels = list(gray.get_flattened_data() if hasattr(gray, "get_flattened_data") else gray.getdata())
-    ink = bytearray(1 if pixel < 185 else 0 for pixel in pixels)
-    return ink, width, height
-
-
-def _components(ink: bytearray, width: int, height: int) -> list[tuple[int, int, int, int, int]]:
-    seen = bytearray(width * height)
-    found: list[tuple[int, int, int, int, int]] = []
-    for start, value in enumerate(ink):
-        if not value or seen[start]:
-            continue
-        stack = [start]
-        seen[start] = 1
-        min_x = max_x = start % width
-        min_y = max_y = start // width
-        count = 0
-        while stack:
-            index = stack.pop()
-            count += 1
-            x, y = index % width, index // width
-            min_x = min(min_x, x)
-            max_x = max(max_x, x)
-            min_y = min(min_y, y)
-            max_y = max(max_y, y)
-            if x > 0:
-                left = index - 1
-                if ink[left] and not seen[left]:
-                    seen[left] = 1
-                    stack.append(left)
-            if x + 1 < width:
-                right = index + 1
-                if ink[right] and not seen[right]:
-                    seen[right] = 1
-                    stack.append(right)
-            if y > 0:
-                up = index - width
-                if ink[up] and not seen[up]:
-                    seen[up] = 1
-                    stack.append(up)
-            if y + 1 < height:
-                down = index + width
-                if ink[down] and not seen[down]:
-                    seen[down] = 1
-                    stack.append(down)
-        found.append((min_x, min_y, max_x, max_y, count))
-    return found
-
-
-def _contains(outer: tuple[float, float, float, float], inner: tuple[float, float, float, float]) -> bool:
-    return (
-        inner[0] >= outer[0] - 0.005
-        and inner[1] >= outer[1] - 0.005
-        and inner[0] + inner[2] <= outer[0] + outer[2] + 0.005
-        and inner[1] + inner[3] <= outer[1] + outer[3] + 0.005
-        and inner[2] * inner[3] < outer[2] * outer[3] * 0.85
-    )
-
-
-def _flat(box: tuple[float, float, float, float]) -> bool:
-    _x, _y, width, height = box
-    return height < 0.02 and width > height * 2.2
-
-
-def _merge_stacked(boxes: list[tuple[float, float, float, float]]) -> list[tuple[float, float, float, float]]:
-    merged: list[tuple[float, float, float, float]] = []
-    for box in sorted(boxes, key=lambda item: (item[1], item[0])):
-        x, y, width, height = box
-        placed = False
-        for index, other in enumerate(merged):
-            ox, oy, ow, oh = other
-            overlap = min(ox + ow, x + width) - max(ox, x)
-            if overlap > 0.5 * min(ow, width) and y <= oy + oh + 0.008:
-                nx = min(ox, x)
-                ny = min(oy, y)
-                merged[index] = (nx, ny, max(ox + ow, x + width) - nx, max(oy + oh, y + height) - ny)
-                placed = True
-                break
-        if not placed:
-            merged.append(box)
-    return merged
-
-
-def _figure_like(box_w: int, box_h: int, count: int, width: int, height: int) -> bool:
-    if min(box_w, box_h) < 16:
-        return False
-    nw, nh = box_w / width, box_h / height
-    area = nw * nh
-    if area < 0.00035 or area > 0.28:
-        return False
-    density = count / (box_w * box_h)
-    # Outlines sit between a faint rule and a solid text block.
-    if density < 0.035 or density > 0.72:
-        return False
-    aspect = nw / nh if nh else 99
-    if 0.5 <= aspect <= 2.05:
-        return True
-    # A row or column of shapes is taller or wider than one line of type.
-    if aspect > 2.05 and 0.028 <= nh <= 0.22 and nw <= 0.62:
-        return True
-    if aspect < 0.5 and 0.028 <= nw <= 0.22 and nh <= 0.4:
-        return True
-    return False
-
-
-def figure_boxes(image: Image.Image) -> list[dict]:
-    ink, width, height = _ink(image)
-    boxes: list[tuple[float, float, float, float]] = []
-    for min_x, min_y, max_x, max_y, count in _components(ink, width, height):
-        box_w = max_x - min_x + 1
-        box_h = max_y - min_y + 1
-        if not _figure_like(box_w, box_h, count, width, height):
-            continue
-        boxes.append((min_x / width, min_y / height, box_w / width, box_h / height))
-    boxes = [box for box in _merge_stacked(boxes) if not _flat(box)]
-    kept = [
-        box
-        for box in boxes
-        if not any(_contains(other, box) for other in boxes if other != box)
-    ]
-    kept.sort(key=lambda box: (round(box[1], 2), box[0]))
-    return [
-        {
-            "id": f"fig-{index + 1}",
-            "type": "figure",
-            "text": None,
-            "latex": None,
-            "bbox": [round(box[0], 4), round(box[1], 4), round(box[2], 4), round(box[3], 4)],
-            "confidence": 0.6,
-        }
-        for index, box in enumerate(kept)
-    ]
 
 
 def tesseract_blocks(image: Image.Image) -> list[dict]:
@@ -260,7 +121,7 @@ def read_image(image: Image.Image, source_bytes: int = 0) -> dict:
         "reader_version": version,
         "page_width": image.width,
         "page_height": image.height,
-        "blocks": [*text, *figure_boxes(image)],
+        "blocks": text,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     if source_bytes > 1_000_000:
@@ -292,35 +153,45 @@ def read_page(body: ReadRequest) -> dict:
     return read_image(image, source_bytes=payload_bytes(body.image_base64))
 
 
-def _sample_page() -> Image.Image:
-    image = Image.new("RGB", (1000, 700), "white")
-    draw = ImageDraw.Draw(image)
-    draw.polygon([(180, 80), (280, 180), (180, 280), (80, 180)], outline="black", width=4)
-    for index in range(4):
-        left = 80 + index * 180
-        draw.rectangle((left, 400, left + 110, 520), outline="black", width=4)
-    return image
+@app.post("/layout")
+def read_layout(body: ReadRequest) -> dict:
+    from fastapi import HTTPException
 
+    from layout_reader import graphic_blocks
 
-def _small_figures_page() -> Image.Image:
-    """A full page where each diagram is only a small fraction of the sheet."""
-    image = Image.new("RGB", (1600, 2200), "white")
-    draw = ImageDraw.Draw(image)
-    draw.rectangle((80, 80, 700, 96), fill="black")
-    draw.polygon([(1180, 400), (1260, 480), (1180, 560), (1100, 480)], outline="black", width=3)
-    for index in range(4):
-        left = 1040 + index * 120
-        draw.rectangle((left, 640, left + 80, 720), outline="black", width=3)
-    return image
+    try:
+        image = decode_image(body.image_base64)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        blocks = graphic_blocks(image)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return {
+        "reader_id": READER_ID,
+        "reader_version": "pp-doclayout-v2",
+        "page_width": image.width,
+        "page_height": image.height,
+        "blocks": blocks,
+    }
 
 
 if __name__ == "__main__":
     if "--self-test" in sys.argv:
-        for label, page in (("sample", _sample_page()), ("page", _small_figures_page())):
-            figures = [block for block in read_image(page)["blocks"] if block["type"] == "figure"]
-            if len(figures) != 5:
-                raise SystemExit(f"{label}: expected 5 figure boxes, found {len(figures)}: {figures}")
-            print("layout ok", label, len(figures))
+        from layout_reader import detections_to_blocks
+
+        page = Image.new("RGB", (400, 200), "white")
+        figures = [block for block in read_image(page)["blocks"] if block["type"] == "figure"]
+        if figures:
+            raise SystemExit(f"text read returned figure boxes: {figures}")
+        kept = detections_to_blocks(
+            [("text", 0.9, 0, 0, 80, 20), ("image", 0.8, 10, 40, 90, 120)],
+            100,
+            150,
+        )
+        if len(kept) != 1 or kept[0]["type"] != "figure":
+            raise SystemExit(f"expected one image region, found {kept}")
+        print("layout ok", "text has no blob figures", len(kept))
     else:
         import uvicorn
 

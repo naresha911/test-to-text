@@ -19,6 +19,7 @@ const NUMBER_ONLY = /^\(?(\d{1,3})\s*[.)]?$/;
 const NUMBER_START = /^\(?(\d{1,3})\s*[.)]\s+(.*)$/;
 const SECTION = /^section\s+([A-Z0-9]+)\b/i;
 const OPTION_SPLIT = /\(([A-Ha-h])\)\s*/g;
+const OPTION_LINE = /^\(([A-Ha-h])\)\s+\S/;
 
 function parseOptions(text: string): { stem: string; options: { key: string; text: string }[] } {
   const matches = [...text.matchAll(OPTION_SPLIT)];
@@ -27,15 +28,32 @@ function parseOptions(text: string): { stem: string; options: { key: string; tex
   const first = matches[0]!.index ?? 0;
   const stem = text.slice(0, first).trim();
   const options: { key: string; text: string }[] = [];
+  const used = new Set<string>();
 
   matches.forEach((match, i) => {
     const start = (match.index ?? 0) + match[0].length;
     const end = i + 1 < matches.length ? (matches[i + 1]!.index ?? text.length) : text.length;
     const body = text.slice(start, end).trim().replace(/[.;,]$/, "");
-    options.push({ key: match[1]!.toUpperCase(), text: body });
+    options.push({ key: unusedOptionKey(match[1]!.toUpperCase(), used), text: body });
   });
 
   return { stem, options };
+}
+
+/** OCR often reads a later choice, usually (d), as another (a). Keep the printed order. */
+function unusedOptionKey(preferred: string, used: Set<string>): string {
+  if (!used.has(preferred)) {
+    used.add(preferred);
+    return preferred;
+  }
+  for (let code = 65; code <= 72; code += 1) {
+    const key = String.fromCharCode(code);
+    if (!used.has(key)) {
+      used.add(key);
+      return key;
+    }
+  }
+  return preferred;
 }
 
 function classify(stem: string, options: { key: string; text: string }[]): QuestionType {
@@ -54,6 +72,80 @@ function classify(stem: string, options: { key: string; text: string }[]): Quest
   if (/calculate|find the value|evaluate|solve/.test(lower)) return "numerical";
   if (stem.length > 180) return "long_answer";
   return "short_answer";
+}
+
+function isJumble(line: string): boolean {
+  return (line.match(/\//g) ?? []).length >= 2;
+}
+
+function endsSentence(line: string): boolean {
+  return /[.?!]["']?$/.test(line);
+}
+
+/**
+ * Sentence-rearrangement pages print the number in the margin. OCR often drops it,
+ * leaving a slash-separated stem and (a)–(d) under a directions line.
+ */
+function groupUnnumberedChoices(rawLines: string[]): Draft[] {
+  const drafts: Draft[] = [];
+  const preamble: string[] = [];
+  let current: Draft | null = null;
+  let phase: "before" | "stem" | "options" = "before";
+
+  const begin = (line: string) => {
+    current = {
+      number: String(drafts.length + 1),
+      section: null,
+      instructions: null,
+      lines: [line],
+    };
+    drafts.push(current);
+    phase = OPTION_LINE.test(line) ? "options" : "stem";
+  };
+
+  for (let index = 0; index < rawLines.length; index += 1) {
+    const line = rawLines[index]!;
+    const next = rawLines[index + 1] ?? "";
+
+    if (OPTION_LINE.test(line)) {
+      if (!current || phase === "before") begin(line);
+      else current.lines.push(line);
+      phase = "options";
+      continue;
+    }
+
+    if (phase === "stem" && current) {
+      current.lines.push(line);
+      continue;
+    }
+
+    if (phase === "options" && current) {
+      const previous = current.lines[current.lines.length - 1] ?? "";
+      if (!endsSentence(previous) && !isJumble(line)) {
+        current.lines.push(line);
+        continue;
+      }
+      begin(line);
+      continue;
+    }
+
+    if (OPTION_LINE.test(next) || isJumble(line)) {
+      begin(line);
+      continue;
+    }
+
+    preamble.push(line);
+  }
+
+  const instructions = preamble.join(" ").replace(/\s+/g, " ").trim() || null;
+  const kept = drafts.filter((draft) => draft.lines.filter((line) => OPTION_LINE.test(line)).length >= 2);
+  if (instructions) {
+    for (const draft of kept) draft.instructions = instructions;
+  }
+  kept.forEach((draft, index) => {
+    draft.number = String(index + 1);
+  });
+  return kept;
 }
 
 /** Put a line break before a question number that OCR left mid-line, as in a two-column page. */
@@ -115,7 +207,9 @@ export function structureOcrText(pageText: string, page: number): Question[] {
     instructions = instructions ? `${instructions} ${line}` : line;
   }
 
-  return drafts
+  const grouped = drafts.length ? drafts : groupUnnumberedChoices(rawLines);
+
+  return grouped
     .map((draft) => {
       const joined = draft.lines.join(" ").replace(/\s+/g, " ").trim();
       if (!joined) return null;

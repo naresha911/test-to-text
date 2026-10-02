@@ -61,6 +61,7 @@ import {
   type QuestionType,
 } from "@/lib/question-schema";
 import { DEFAULT_READER_SETTINGS, READER_LABELS, loadReaderSettings } from "@/lib/reader-settings";
+import type { ContentMode } from "@/lib/reading/mode";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({
@@ -139,6 +140,7 @@ function HomePage() {
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
   const [filter, setFilter] = useState<QuestionType | "all">("all");
   const [reader, setReader] = useState(DEFAULT_READER_SETTINGS);
+  const [contentMode, setContentMode] = useState<ContentMode>("text");
   const [configOpen, setConfigOpen] = useState(false);
   const [generatingIds, setGeneratingIds] = useState<Set<string>>(() => new Set());
   const [loadingDoc, setLoadingDoc] = useState(!!searchId);
@@ -557,6 +559,7 @@ function HomePage() {
             page: page.page_index,
             engine: reader.engine,
             model: reader.model,
+            contentMode,
             ...(apiKey ? { apiKey } : {}),
             ...(meta.notes?.trim() ? { hint: meta.notes.trim() } : {}),
           },
@@ -799,28 +802,8 @@ function HomePage() {
                     event.target.value = "";
                   }}
                 />
-                <Button
-                  size="sm"
-                  className="h-9"
-                  onClick={() => void handleExtract()}
-                  disabled={!!progress || !pages.length}
-                >
-                  {progress ? (
-                    <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                  ) : (
-                    <Sparkles className="h-4 w-4" aria-hidden="true" />
-                  )}
-                  {progress ? `Reading ${progress.done + 1}/${progress.total}` : "Read pages"}
-                </Button>
               </div>
             </div>
-
-            {progress ? (
-              <Progress
-                className="mt-3"
-                value={(progress.done / Math.max(1, progress.total)) * 100}
-              />
-            ) : null}
 
             {pages.length ? (
               <ul className="mt-3 flex gap-2 overflow-x-auto pb-0.5">
@@ -852,6 +835,62 @@ function HomePage() {
                   </li>
                 ))}
               </ul>
+            ) : null}
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <div
+                className="flex h-9 items-center rounded-md border border-border p-0.5"
+                role="group"
+                aria-label="What these pages contain"
+              >
+                {(
+                  [
+                    ["text", "Text"],
+                    ["graphics", "Graphics"],
+                  ] as const
+                ).map(([mode, label]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    aria-pressed={contentMode === mode}
+                    disabled={!!progress}
+                    onClick={() => setContentMode(mode)}
+                    className={cn(
+                      "h-8 rounded px-3 text-sm disabled:opacity-50",
+                      contentMode === mode
+                        ? "bg-primary text-primary-foreground"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+              <Button
+                size="sm"
+                className="h-9"
+                onClick={() => void handleExtract()}
+                disabled={!!progress || !pages.length}
+              >
+                {progress ? (
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                ) : (
+                  <Sparkles className="h-4 w-4" aria-hidden="true" />
+                )}
+                {progress ? `Reading ${progress.done + 1}/${progress.total}` : "Read pages"}
+              </Button>
+              <p className="text-xs text-muted-foreground">
+                {contentMode === "text"
+                  ? "Words only. Diagrams are not cropped."
+                  : "Words, plus diagram crops."}
+              </p>
+            </div>
+
+            {progress ? (
+              <Progress
+                className="mt-3"
+                value={(progress.done / Math.max(1, progress.total)) * 100}
+              />
             ) : null}
 
             <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border pt-2">
