@@ -18,6 +18,7 @@ import {
   normalizeStoredImagePath,
 } from "@/lib/question-images";
 import type { Question } from "@/lib/question-schema";
+import { CONTENT_MODES, type ContentMode } from "@/lib/reading/mode";
 
 type SqlJsDatabase = import("sql.js").Database;
 type SqlValue = import("sql.js").SqlValue;
@@ -108,6 +109,7 @@ function schemaSql(): string {
       file_path TEXT NOT NULL,
       original_name TEXT NOT NULL DEFAULT '',
       ocr_status TEXT NOT NULL DEFAULT 'pending',
+      read_mode TEXT,
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS pp_pages_document_idx ON pp_pages(document_id, page_index);
@@ -184,6 +186,7 @@ async function openDatabase(): Promise<SqlJsDatabase> {
   db.run("PRAGMA foreign_keys = ON;");
   db.exec(schemaSql());
   ensureDocumentColumns(db);
+  ensurePageColumns(db);
   ensureDefaultStandards(db);
   await persist(db);
   return db;
@@ -268,6 +271,10 @@ function toQuestions(value: unknown): Question[] {
   return [];
 }
 
+function readModeFromRow(value: unknown): ContentMode | null {
+  return CONTENT_MODES.find((mode) => mode === value) ?? null;
+}
+
 function rowToPage(row: Record<string, unknown>): PageRecord {
   return {
     id: String(row["id"]),
@@ -276,6 +283,7 @@ function rowToPage(row: Record<string, unknown>): PageRecord {
     file_path: String(row["file_path"]),
     original_name: String(row["original_name"] ?? ""),
     ocr_status: String(row["ocr_status"] ?? "pending"),
+    read_mode: readModeFromRow(row["read_mode"]),
   };
 }
 
@@ -313,6 +321,14 @@ function ensureDocumentColumns(db: SqlJsDatabase): void {
   }
   if (!names.has("questions_rev")) {
     db.run("ALTER TABLE pp_documents ADD COLUMN questions_rev INTEGER NOT NULL DEFAULT 0");
+  }
+}
+
+function ensurePageColumns(db: SqlJsDatabase): void {
+  const cols = queryAll(db, "PRAGMA table_info(pp_pages)");
+  const names = new Set(cols.map((col) => String(col["name"])));
+  if (!names.has("read_mode")) {
+    db.run("ALTER TABLE pp_pages ADD COLUMN read_mode TEXT");
   }
 }
 
@@ -911,9 +927,26 @@ export async function removePage(pageId: string): Promise<void> {
   });
 }
 
-export async function markPageOcr(pageId: string, status: string): Promise<void> {
+export async function markPageOcr(
+  pageId: string,
+  status: string,
+  readMode?: ContentMode | null,
+): Promise<void> {
   await withWrite((db) => {
-    db.run("UPDATE pp_pages SET ocr_status = ? WHERE id = ?", [status, pageId]);
+    const mode = status === "done" ? readModeFromRow(readMode) : null;
+    db.run(
+      "UPDATE pp_pages SET ocr_status = ?, read_mode = ? WHERE id = ?",
+      params(status, mode, pageId),
+    );
+  });
+}
+
+/** Mark every page of a paper unread. Used when all questions are cleared. */
+export async function resetDocumentPageReads(documentId: string): Promise<void> {
+  await withWrite((db) => {
+    db.run("UPDATE pp_pages SET ocr_status = 'pending', read_mode = NULL WHERE document_id = ?", [
+      documentId,
+    ]);
   });
 }
 
@@ -1047,11 +1080,9 @@ export async function removePushLedger(documentId: string, questionIds: string[]
 
 export async function readRetiredGroups(documentId: string): Promise<string[]> {
   const db = await getDb();
-  const rows = queryAll(
-    db,
-    "SELECT group_id FROM pp_push_retired_groups WHERE document_id = ?",
-    [documentId],
-  );
+  const rows = queryAll(db, "SELECT group_id FROM pp_push_retired_groups WHERE document_id = ?", [
+    documentId,
+  ]);
   return rows.map((row) => String(row["group_id"]));
 }
 

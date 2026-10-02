@@ -46,6 +46,7 @@ import {
   getLocalDocument,
   markLocalPageOcr,
   removeLocalPage,
+  resetLocalDocumentPageReads,
   saveLocalDocument,
   saveLocalFigure,
 } from "@/lib/local-store.functions";
@@ -62,6 +63,7 @@ import {
 } from "@/lib/question-schema";
 import { DEFAULT_READER_SETTINGS, READER_LABELS, loadReaderSettings } from "@/lib/reader-settings";
 import type { ContentMode } from "@/lib/reading/mode";
+import { planPageRead, replaceQuestionsForPage } from "@/lib/reading/read-plan";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({
@@ -119,6 +121,7 @@ function HomePage() {
   const runRemovePage = useServerFn(removeLocalPage);
   const runSaveFigure = useServerFn(saveLocalFigure);
   const runMarkOcr = useServerFn(markLocalPageOcr);
+  const runResetReads = useServerFn(resetLocalDocumentPageReads);
   const runCatalog = useServerFn(getLocalCatalog);
   const runExport = useServerFn(exportLocalDocument);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -141,6 +144,7 @@ function HomePage() {
   const [filter, setFilter] = useState<QuestionType | "all">("all");
   const [reader, setReader] = useState(DEFAULT_READER_SETTINGS);
   const [contentMode, setContentMode] = useState<ContentMode>("text");
+  const [selectedPageIds, setSelectedPageIds] = useState<Set<string>>(() => new Set());
   const [configOpen, setConfigOpen] = useState(false);
   const [generatingIds, setGeneratingIds] = useState<Set<string>>(() => new Set());
   const [loadingDoc, setLoadingDoc] = useState(!!searchId);
@@ -155,7 +159,7 @@ function HomePage() {
     meta?: typeof meta;
   } | null>(null);
   const inFlightSaveRef = useRef<Promise<void> | null>(null);
-  const flushSaveRef = useRef<() => Promise<void>>(async () => undefined);
+  const flushSaveRef = useRef<() => Promise<boolean>>(async () => true);
 
   useEffect(() => {
     setReader(loadReaderSettings());
@@ -168,6 +172,7 @@ function HomePage() {
   }, [runCatalog]);
 
   useEffect(() => {
+    setSelectedPageIds(new Set());
     if (!searchId) {
       setLoadingDoc(false);
       return;
@@ -205,7 +210,7 @@ function HomePage() {
       .finally(() => setLoadingDoc(false));
   }, [searchId, runGet]);
 
-  const flushSave = useCallback(async () => {
+  const flushSave = useCallback(async (): Promise<boolean> => {
     if (saveTimer.current) {
       clearTimeout(saveTimer.current);
       saveTimer.current = null;
@@ -268,8 +273,9 @@ function HomePage() {
       } finally {
         if (inFlightSaveRef.current === write) inFlightSaveRef.current = null;
       }
-      if (failed || conflicted) break;
+      if (failed || conflicted) return false;
     }
+    return true;
   }, [runGet, runSave]);
   flushSaveRef.current = flushSave;
 
@@ -279,7 +285,7 @@ function HomePage() {
       nextQuestions?: Question[],
       nextMeta?: typeof meta,
       options?: { immediate?: boolean },
-    ) => {
+    ): Promise<boolean> => {
       // Merge into one pending patch so a meta keystroke cannot drop a question edit
       // (or vice versa) when the debounce timer is reset.
       const prev = pendingSaveRef.current;
@@ -292,14 +298,12 @@ function HomePage() {
         ...(questions !== undefined ? { questions } : {}),
         ...(nextPendingMeta !== undefined ? { meta: nextPendingMeta } : {}),
       };
-      if (options?.immediate) {
-        void flushSave();
-        return;
-      }
+      if (options?.immediate) return flushSave();
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
         void flushSave();
       }, 400);
+      return Promise.resolve(true);
     },
     [flushSave],
   );
@@ -354,6 +358,11 @@ function HomePage() {
     const approved = questions.filter((q) => q.approved).length;
     return { marks, sections, approved };
   }, [questions, meta.default_marks]);
+
+  const selectedAlreadyRead = pages.filter(
+    (page) => selectedPageIds.has(page.id) && page.ocr_status === "done",
+  ).length;
+  const readPageCount = pages.filter((page) => page.ocr_status === "done").length;
 
   const audience = useMemo(
     () => ({
@@ -507,6 +516,12 @@ function HomePage() {
       return;
     }
     const removedIndex = page.page_index;
+    setSelectedPageIds((current) => {
+      if (!current.has(page.id)) return current;
+      const next = new Set(current);
+      next.delete(page.id);
+      return next;
+    });
     setPages((current) =>
       current
         .filter((item) => item.id !== page.id)
@@ -521,32 +536,76 @@ function HomePage() {
     toast.success(`Removed page ${removedIndex + 1}.`);
   }
 
+  function togglePageSelected(pageId: string) {
+    setSelectedPageIds((current) => {
+      const next = new Set(current);
+      if (next.has(pageId)) next.delete(pageId);
+      else next.add(pageId);
+      return next;
+    });
+  }
+
+  async function clearAllQuestions() {
+    const savedId = documentIdRef.current;
+    if (savedId) {
+      try {
+        await runResetReads({ data: { documentId: savedId } });
+      } catch (error) {
+        toast.error(
+          error instanceof Error
+            ? error.message
+            : "Could not reset page read status. Questions were kept.",
+        );
+        return;
+      }
+      setPages((current) =>
+        current.map((page) => ({ ...page, ocr_status: "pending", read_mode: null })),
+      );
+    }
+    const cleared: Question[] = [];
+    questionsRef.current = cleared;
+    setQuestions(cleared);
+    if (savedId) await persist(savedId, cleared, undefined, { immediate: true });
+  }
+
   async function handleExtract() {
     if (!pages.length) {
       toast.error("Add at least one page image first.");
       return;
     }
-    const id = await ensureDocument();
-    const toRead = pages.filter((p) => p.dataUrl);
-    if (!toRead.length) {
-      toast.error("No page images available to read.");
+    const plan = planPageRead(pages, selectedPageIds);
+    if (plan.missingImage.length) {
+      const first = plan.missingImage[0]!;
+      toast.error(
+        plan.missingImage.length === 1
+          ? `Page ${first.page_index + 1} has no image to read.`
+          : `${plan.missingImage.length} pages have no image to read.`,
+      );
+    }
+    if (!plan.toRead.length) {
+      if (plan.skippedRead.length && !plan.missingImage.length) {
+        toast.success(
+          plan.usedAllUnread ? "Every page is already read." : "Selected pages are already read.",
+        );
+      } else if (!plan.skippedRead.length && !plan.missingImage.length) {
+        toast.error("Select pages that have not been read.");
+      }
       return;
     }
 
-    setProgress({ done: 0, total: toRead.length });
-    const collected = [...questionsRef.current];
+    const id = await ensureDocument();
+    const mode = contentMode;
+    const modeLabel = mode === "text" ? "Text" : "Graphics";
+    setProgress({ done: 0, total: plan.toRead.length });
+    let collected = [...questionsRef.current];
     const urls = { ...figureUrls };
     let failed = 0;
+    let readCount = 0;
+    let aborted = false;
 
-    for (let i = 0; i < toRead.length; i += 1) {
-      const page = toRead[i]!;
-      const pageAlreadyHasQuestions = questionsRef.current.some(
-        (question) => question.page === page.page_index,
-      );
-      if (page.ocr_status === "done" && pageAlreadyHasQuestions) {
-        setProgress({ done: i + 1, total: toRead.length });
-        continue;
-      }
+    for (let i = 0; i < plan.toRead.length; i += 1) {
+      const page = plan.toRead[i]!;
+      let pageSaved = false;
       try {
         const apiKey = reader.apiKeys?.[reader.engine]?.trim();
         const ocrSpaceKey =
@@ -562,7 +621,7 @@ function HomePage() {
             page: page.page_index,
             engine: reader.engine,
             model: reader.model,
-            contentMode,
+            contentMode: mode,
             ...(apiKey ? { apiKey } : {}),
             ...(ocrSpaceKey ? { ocrSpaceKey } : {}),
             ...(optiicKey ? { optiicKey } : {}),
@@ -570,85 +629,104 @@ function HomePage() {
           },
         });
 
-        for (const question of result.questions) {
-          question.standard_id = meta.standard_id;
-          question.stream_id = meta.stream_id;
-          question.subject_id = meta.subject_id;
-          question.year = meta.year;
-          question.source = meta.source || meta.exam || null;
-          if (question.marks == null) question.marks = meta.default_marks;
-          if (question.negative_marks == null)
-            question.negative_marks = meta.default_negative_marks;
-          if (!question.difficulty) question.difficulty = meta.difficulty;
-
-          for (const [figureIndex, figure] of question.figures.entries()) {
-            if (!figure.bbox || !page.dataUrl) continue;
-            const crop = await cropFigure(page.dataUrl, figure.bbox);
-            if (!crop) continue;
-            const dataUrl = await blobToDataUrl(crop);
-            const saved = await runSaveFigure({
-              data: {
-                documentId: id,
-                dataUrl,
-                filename: `p${page.page_index + 1}-fig-${collected.length + 1}-${figureIndex + 1}.jpg`,
-              },
-            });
-            figure.image_path = saved.path;
-            figure.generation_method = "cropped";
-            urls[saved.path] = dataUrl;
-            if (figure.role === "option_figure" && figure.caption) {
-              const option = question.options.find((item) => item.key === figure.caption);
-              if (option) option.image_path = saved.path;
-            }
-          }
-          collected.push(question);
-        }
         if (!result.questions.length) {
           failed += 1;
           toast.error(
             `Page ${page.page_index + 1} was read, but no questions could be built from the text.`,
           );
-          setPages((current) =>
-            current.map((p) => (p.id === page.id ? { ...p, ocr_status: "pending" } : p)),
-          );
-          void runMarkOcr({ data: { pageId: page.id, status: "pending" } });
         } else {
+          for (const [questionIndex, question] of result.questions.entries()) {
+            question.standard_id = meta.standard_id;
+            question.stream_id = meta.stream_id;
+            question.subject_id = meta.subject_id;
+            question.year = meta.year;
+            question.source = meta.source || meta.exam || null;
+            if (question.marks == null) question.marks = meta.default_marks;
+            if (question.negative_marks == null)
+              question.negative_marks = meta.default_negative_marks;
+            if (!question.difficulty) question.difficulty = meta.difficulty;
+
+            for (const [figureIndex, figure] of question.figures.entries()) {
+              if (!figure.bbox || !page.dataUrl) continue;
+              const crop = await cropFigure(page.dataUrl, figure.bbox);
+              if (!crop) continue;
+              const dataUrl = await blobToDataUrl(crop);
+              const saved = await runSaveFigure({
+                data: {
+                  documentId: id,
+                  dataUrl,
+                  filename: `p${page.page_index + 1}-q${questionIndex + 1}-fig-${figureIndex + 1}.jpg`,
+                },
+              });
+              figure.image_path = saved.path;
+              figure.generation_method = "cropped";
+              urls[saved.path] = dataUrl;
+              if (figure.role === "option_figure" && figure.caption) {
+                const option = question.options.find((item) => item.key === figure.caption);
+                if (option) option.image_path = saved.path;
+              }
+            }
+          }
+
+          collected = replaceQuestionsForPage(collected, page.page_index, result.questions);
+          const sorted = sortQuestions(collected);
+          collected = sorted;
+          setQuestions(sorted);
+          setFigureUrls({ ...urls });
+          const saved = await persist(id, sorted, undefined, { immediate: true });
+          if (!saved) {
+            failed += 1;
+            aborted = true;
+            break;
+          }
+          pageSaved = true;
+          await runMarkOcr({
+            data: { pageId: page.id, status: "done", readMode: mode },
+          });
           setPages((current) =>
-            current.map((p) => (p.id === page.id ? { ...p, ocr_status: "done" } : p)),
+            current.map((item) =>
+              item.id === page.id ? { ...item, ocr_status: "done", read_mode: mode } : item,
+            ),
           );
-          void runMarkOcr({ data: { pageId: page.id, status: "done" } });
+          readCount += 1;
         }
       } catch (error) {
         failed += 1;
         const raw = error instanceof Error ? error.message : "";
-        if (raw.includes("AI_CREDITS")) {
+        if (pageSaved) {
+          toast.error(
+            raw || `Page ${page.page_index + 1} was saved, but its read status could not be saved.`,
+          );
+          aborted = true;
+          break;
+        } else if (raw.includes("AI_CREDITS")) {
           toast.error(
             raw.replace(/^.*AI_CREDITS:\s*/, "") ||
               "The AI reading credits for this workspace are used up.",
           );
+          aborted = true;
           break;
+        } else {
+          toast.error(raw || `Page ${page.page_index + 1} could not be read.`);
         }
-        toast.error(raw || `Page ${page.page_index + 1} could not be read.`);
       }
 
-      setProgress({ done: i + 1, total: toRead.length });
-      const sorted = sortQuestions(collected);
-      setQuestions(sorted);
-      setFigureUrls({ ...urls });
-      persist(id, sorted, undefined, { immediate: true });
+      setProgress({ done: i + 1, total: plan.toRead.length });
     }
 
     setProgress(null);
-    const sorted = sortQuestions(collected);
-    setQuestions(sorted);
-    persist(id, sorted, undefined, { immediate: true });
-    if (sorted.length) {
-      const failedNote = failed ? ` — ${failed} page(s) returned nothing` : "";
+    if (aborted) return;
+
+    if (readCount) {
+      const skippedNote = plan.skippedRead.length
+        ? ` Skipped ${plan.skippedRead.length} already read.`
+        : "";
+      const failedNote = failed ? ` ${failed} page(s) could not be read.` : "";
       toast.success(
-        `Now ${sorted.length} question${sorted.length === 1 ? "" : "s"} in sequence${failedNote}.`,
+        `Read ${readCount} page${readCount === 1 ? "" : "s"} as ${modeLabel}.${skippedNote}${failedNote}`,
       );
     } else {
-      toast.error("No questions were found.");
+      toast.error(collected.length ? "No new pages were read." : "No questions were found.");
     }
   }
 
@@ -811,34 +889,59 @@ function HomePage() {
             </div>
 
             {pages.length ? (
-              <ul className="mt-3 flex gap-2 overflow-x-auto pb-0.5">
-                {pages.map((page) => (
-                  <li key={page.id} className="relative shrink-0">
-                    {page.dataUrl ? (
-                      <img
-                        src={page.dataUrl}
-                        alt={`Page ${page.page_index + 1}`}
-                        className="h-12 w-9 rounded border border-border object-cover"
-                      />
-                    ) : (
-                      <div className="flex h-12 w-9 items-center justify-center rounded border text-[10px]">
-                        {page.page_index + 1}
-                      </div>
-                    )}
-                    <span className="absolute bottom-0.5 left-0.5 rounded bg-background/80 px-1 text-[10px]">
-                      {page.page_index + 1}
-                    </span>
-                    <button
-                      type="button"
-                      aria-label={`Remove page ${page.page_index + 1}`}
-                      disabled={!!progress}
-                      onClick={() => void removeUploadedPage(page)}
-                      className="absolute -top-1.5 -right-1.5 z-10 rounded-full bg-destructive p-0.5 text-destructive-foreground disabled:opacity-50"
-                    >
-                      <X className="h-3 w-3" aria-hidden="true" />
-                    </button>
-                  </li>
-                ))}
+              <ul className="mt-3 flex items-start gap-2 overflow-x-auto pb-1">
+                {pages.map((page) => {
+                  const selected = selectedPageIds.has(page.id);
+                  const badge = pageReadBadge(page);
+                  return (
+                    <li key={page.id} className="relative shrink-0">
+                      <button
+                        type="button"
+                        aria-pressed={selected}
+                        disabled={!!progress}
+                        aria-label={
+                          badge
+                            ? `Page ${page.page_index + 1}, ${badge}`
+                            : `Page ${page.page_index + 1}, not read`
+                        }
+                        onClick={() => togglePageSelected(page.id)}
+                        className={cn(
+                          "flex flex-col items-center gap-0.5 rounded-md p-0.5 disabled:opacity-50",
+                          selected ? "ring-2 ring-primary" : "ring-1 ring-transparent",
+                        )}
+                      >
+                        {page.dataUrl ? (
+                          <img
+                            src={page.dataUrl}
+                            alt=""
+                            className="h-12 w-9 rounded border border-border object-cover"
+                          />
+                        ) : (
+                          <div className="flex h-12 w-9 items-center justify-center rounded border text-[10px]">
+                            {page.page_index + 1}
+                          </div>
+                        )}
+                        <span className="text-[10px] text-muted-foreground">
+                          {page.page_index + 1}
+                        </span>
+                        {badge ? (
+                          <span className="whitespace-nowrap text-[10px] font-medium text-foreground">
+                            {badge}
+                          </span>
+                        ) : null}
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Remove page ${page.page_index + 1}`}
+                        disabled={!!progress}
+                        onClick={() => void removeUploadedPage(page)}
+                        className="absolute -top-1.5 -right-1.5 z-10 rounded-full bg-destructive p-0.5 text-destructive-foreground disabled:opacity-50"
+                      >
+                        <X className="h-3 w-3" aria-hidden="true" />
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             ) : null}
 
@@ -887,7 +990,12 @@ function HomePage() {
               <p className="text-xs text-muted-foreground">
                 {contentMode === "text"
                   ? "Words only. Diagrams are not cropped."
-                  : "Words, plus diagram crops."}
+                  : "Words, plus diagram crops."}{" "}
+                {selectedPageIds.size
+                  ? `${selectedPageIds.size} selected${
+                      selectedAlreadyRead ? `, ${selectedAlreadyRead} already read` : ""
+                    }.`
+                  : "No pages selected, so this reads every page that has not been read."}
               </p>
             </div>
 
@@ -914,7 +1022,9 @@ function HomePage() {
               <p className="min-w-0 flex-1 truncate text-xs text-muted-foreground">
                 <span className="text-foreground">{READER_LABELS[reader.engine]}</span>
                 {pages.length
-                  ? ` · ${pages.length} page${pages.length === 1 ? "" : "s"}`
+                  ? ` · ${pages.length} page${pages.length === 1 ? "" : "s"}${
+                      readPageCount ? ` · ${readPageCount} read` : ""
+                    }`
                   : " · No pages yet"}
                 {!configOpen && detailSummary ? ` · ${detailSummary}` : ""}
               </p>
@@ -1134,10 +1244,8 @@ function HomePage() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => {
-                      setQuestions([]);
-                      if (documentId) persist(documentId, [], undefined, { immediate: true });
-                    }}
+                    disabled={!!progress}
+                    onClick={() => void clearAllQuestions()}
                   >
                     <Trash2 className="h-4 w-4" aria-hidden="true" />
                     Clear
@@ -1164,7 +1272,8 @@ function HomePage() {
                 <FileJson className="mx-auto h-8 w-8 text-muted-foreground" aria-hidden="true" />
                 <h2 className="mt-4 text-2xl">Your parsed paper appears here</h2>
                 <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
-                  Create a past paper or practice test, add images, then read pages. Or add a
+                  Create a past paper or practice test, add images, then select pages and read them.
+                  With none selected, Read pages reads every page that has not been read. Or add a
                   question yourself — cards line up by question number. Work stays in local SQLite
                   until you download exam-prep JSON.
                 </p>
@@ -1190,6 +1299,13 @@ function HomePage() {
       </main>
     </div>
   );
+}
+
+function pageReadBadge(page: PageRecord): string | null {
+  if (page.ocr_status !== "done") return null;
+  if (page.read_mode === "text") return "Read · Text";
+  if (page.read_mode === "graphics") return "Read · Graphics";
+  return "Read";
 }
 
 function reindexQuestionsAfterPageRemoval(questions: Question[], removedIndex: number): Question[] {

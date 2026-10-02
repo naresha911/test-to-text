@@ -19,11 +19,13 @@ import {
   listDocuments,
   markPageOcr,
   removePage,
+  resetDocumentPageReads,
   saveFigure,
   updateDocument,
   type DocumentPatch,
 } from "@/lib/local-db";
 import type { Question } from "@/lib/question-schema";
+import { CONTENT_MODES } from "@/lib/reading/mode";
 
 const KindSchema = z.enum(DOCUMENT_KINDS);
 
@@ -173,10 +175,23 @@ export const removeLocalPage = createServerFn({ method: "POST" })
 
 export const markLocalPageOcr = createServerFn({ method: "POST" })
   .validator((input: unknown) =>
-    z.object({ pageId: z.string().uuid(), status: z.string().max(40) }).parse(input),
+    z
+      .object({
+        pageId: z.string().uuid(),
+        status: z.string().max(40),
+        readMode: z.enum(CONTENT_MODES).nullable().optional(),
+      })
+      .parse(input),
   )
   .handler(async ({ data }) => {
-    await markPageOcr(data.pageId, data.status);
+    await markPageOcr(data.pageId, data.status, data.readMode);
+    return { ok: true };
+  });
+
+export const resetLocalDocumentPageReads = createServerFn({ method: "POST" })
+  .validator((input: unknown) => z.object({ documentId: z.string().uuid() }).parse(input))
+  .handler(async ({ data }) => {
+    await resetDocumentPageReads(data.documentId);
     return { ok: true };
   });
 

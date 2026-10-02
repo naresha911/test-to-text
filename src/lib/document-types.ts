@@ -3,6 +3,7 @@ import {
   parseGenerationItem,
   type GenerationItem,
 } from "@/lib/generation/job-types";
+import type { ContentMode } from "@/lib/reading/mode";
 
 export const DOCUMENT_KINDS = ["past_paper", "practice_test", "ai_mock"] as const;
 export type DocumentKind = (typeof DOCUMENT_KINDS)[number];
@@ -85,6 +86,8 @@ export type PageRecord = {
   file_path: string;
   original_name: string;
   ocr_status: string;
+  /** Mode used when this page was marked read. Empty until then. */
+  read_mode: ContentMode | null;
   dataUrl?: string;
 };
 
