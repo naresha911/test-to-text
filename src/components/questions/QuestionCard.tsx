@@ -19,6 +19,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
+import { detachImagePath, questionWithoutOption } from "@/lib/question-images";
 import {
   QUESTION_TYPE_LABELS,
   QUESTION_TYPES,
@@ -31,11 +32,47 @@ import { cn } from "@/lib/utils";
 
 type Resolver = (path: string) => string | undefined;
 
-function FigureBlock({ figure, resolve }: { figure: Figure; resolve?: Resolver | undefined }) {
+function DeleteImageButton({ onRemove }: { onRemove: () => void }) {
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="icon"
+      className="h-7 w-7 shrink-0 text-destructive hover:text-destructive"
+      aria-label="Delete figure image"
+      onClick={() => {
+        if (
+          window.confirm(
+            "Delete this figure image permanently? The file is removed from this computer once no question still uses it.",
+          )
+        ) {
+          onRemove();
+        }
+      }}
+    >
+      <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+    </Button>
+  );
+}
+
+function FigureBlock({
+  figure,
+  resolve,
+  onRemove,
+}: {
+  figure: Figure;
+  resolve?: Resolver | undefined;
+  onRemove?: (() => void) | undefined;
+}) {
   const url = figure.image_path ? resolve?.(figure.image_path) : undefined;
   return (
-    <figure className="rounded-md border border-border bg-secondary/50 p-3">
-      <div className="flex items-start gap-3">
+    <figure className="relative rounded-md border border-border bg-secondary/50 p-3">
+      {onRemove ? (
+        <div className="absolute top-2 right-2">
+          <DeleteImageButton onRemove={onRemove} />
+        </div>
+      ) : null}
+      <div className={cn("flex items-start gap-3", onRemove && "pr-8")}>
         {url ? (
           <img
             src={url}
@@ -113,21 +150,26 @@ function OptionImage({
   question,
   option,
   resolve,
+  onRemoveImage,
 }: {
   question: Question;
   option: Option;
   resolve?: Resolver | undefined;
+  onRemoveImage?: ((path: string) => void) | undefined;
 }) {
   const image = optionImage(question, option);
   if (!image) return null;
   const url = resolve?.(image.path);
   if (!url) return null;
   return (
-    <img
-      src={url}
-      alt={image.description}
-      className="max-h-28 w-auto max-w-full rounded border border-border bg-paper object-contain"
-    />
+    <div className="flex items-start gap-2">
+      <img
+        src={url}
+        alt={image.description}
+        className="max-h-28 w-auto max-w-full rounded border border-border bg-paper object-contain"
+      />
+      {onRemoveImage ? <DeleteImageButton onRemove={() => onRemoveImage(image.path)} /> : null}
+    </div>
   );
 }
 
@@ -144,6 +186,9 @@ function OptionList({
 }) {
   if (!question.options.length && !editing) return null;
   const correct = new Set(question.answer_keys);
+  const removeImage = onChange
+    ? (path: string) => onChange(detachImagePath(question, path))
+    : undefined;
   const multi = question.type === "multi_select";
   const canEditChoices = question.type === "mcq" || question.type === "multi_select";
 
@@ -175,6 +220,7 @@ function OptionList({
                   question={question}
                   option={option}
                   {...(resolve ? { resolve } : {})}
+                  {...(removeImage ? { onRemoveImage: removeImage } : {})}
                 />
                 <Textarea
                   value={option.text}
@@ -213,11 +259,7 @@ function OptionList({
                   className="h-9 w-9 shrink-0 text-destructive hover:text-destructive"
                   aria-label={`Delete option ${option.key || index + 1}`}
                   disabled={question.options.length <= 2}
-                  onClick={() => {
-                    const options = question.options.filter((_, i) => i !== index);
-                    const answer_keys = question.answer_keys.filter((key) => key !== option.key);
-                    onChange({ ...question, options, answer_keys });
-                  }}
+                  onClick={() => onChange(questionWithoutOption(question, index))}
                 >
                   <Trash2 className="h-4 w-4" aria-hidden="true" />
                 </Button>
@@ -273,7 +315,12 @@ function OptionList({
               {option.key}
             </span>
             <div className="min-w-0 space-y-1">
-              <OptionImage question={question} option={option} {...(resolve ? { resolve } : {})} />
+              <OptionImage
+                question={question}
+                option={option}
+                {...(resolve ? { resolve } : {})}
+                {...(removeImage ? { onRemoveImage: removeImage } : {})}
+              />
               {option.text ? <MathText value={option.text} className="min-w-0" /> : null}
             </div>
           </li>
@@ -1038,9 +1085,19 @@ export function QuestionCard({
         <div className="mt-3 space-y-2">
           {question.figures
             .filter((figure) => figure.role !== "option_figure")
-            .map((figure, i) => (
-              <FigureBlock key={i} figure={figure} {...(resolve ? { resolve } : {})} />
-            ))}
+            .map((figure, i) => {
+              const imagePath = figure.image_path;
+              return (
+                <FigureBlock
+                  key={imagePath ?? `${figure.description}-${i}`}
+                  figure={figure}
+                  {...(resolve ? { resolve } : {})}
+                  {...(onChange && imagePath
+                    ? { onRemove: () => onChange(detachImagePath(question, imagePath)) }
+                    : {})}
+                />
+              );
+            })}
         </div>
       ) : null}
 

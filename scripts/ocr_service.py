@@ -11,7 +11,9 @@ import base64
 import io
 import shutil
 import subprocess
+import sys
 import tempfile
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -23,7 +25,31 @@ READER_ID = "openocr"
 READER_VERSION = "openocr-layout-2"
 MAX_BYTES = 15_000_000
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Python 3.14 on Windows logs ConnectionResetError when a client closes
+    # the socket (WinError 10054). Probes that are not /health or /read do that.
+    if sys.platform == "win32":
+        import asyncio
+
+        loop = asyncio.get_running_loop()
+        previous = loop.get_exception_handler()
+
+        def handler(loop, context):
+            error = context.get("exception")
+            if isinstance(error, ConnectionResetError):
+                return
+            if previous is not None:
+                previous(loop, context)
+            else:
+                loop.default_exception_handler(context)
+
+        loop.set_exception_handler(handler)
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 
 
 class ReadRequest(BaseModel):
@@ -289,8 +315,6 @@ def _small_figures_page() -> Image.Image:
 
 
 if __name__ == "__main__":
-    import sys
-
     if "--self-test" in sys.argv:
         for label, page in (("sample", _sample_page()), ("page", _small_figures_page())):
             figures = [block for block in read_image(page)["blocks"] if block["type"] == "figure"]

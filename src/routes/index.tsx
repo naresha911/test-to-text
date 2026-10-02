@@ -43,6 +43,7 @@ import {
   saveLocalDocument,
   saveLocalFigure,
 } from "@/lib/local-store.functions";
+import { droppedImagePaths } from "@/lib/question-images";
 import { sortQuestions } from "@/lib/question-order";
 import {
   QUESTION_TYPE_LABELS,
@@ -377,8 +378,14 @@ function HomePage() {
       questionsRef.current = updated;
       const savedId = documentIdRef.current;
       const numberChanged = (previous?.number ?? null) !== (next.number ?? null);
+      const imagesRemoved = previous != null && droppedImagePaths([previous], [next]).length > 0;
       if (savedId) {
-        persist(savedId, updated, undefined, numberChanged ? { immediate: true } : undefined);
+        persist(
+          savedId,
+          updated,
+          undefined,
+          numberChanged || imagesRemoved ? { immediate: true } : undefined,
+        );
       }
       return updated;
     });
@@ -1032,50 +1039,50 @@ function HomePage() {
           <section className="flex h-[112.5vh] min-h-[840px] min-w-0 flex-col overflow-x-hidden overflow-hidden rounded-xl border border-border bg-card shadow-[var(--shadow-paper)]">
             {questions.length ? (
               <div className="shrink-0 space-y-3 border-b border-border p-4">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <div className="mr-auto min-w-0">
-                      <p className="font-display text-2xl leading-none">
-                        {questions.length} question{questions.length === 1 ? "" : "s"}
-                      </p>
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {paperTotals.approved} approved · {paperTotals.marks} marks ·{" "}
-                        {paperTotals.sections.join(", ")}
-                        {meta.duration_minutes ? ` · ${meta.duration_minutes} min` : ""}
-                        {meta.difficulty ? ` · ${meta.difficulty}` : ""}
-                      </p>
-                    </div>
-                    <Button variant="outline" size="sm" onClick={() => void handleDownload()}>
-                      <Download className="h-4 w-4" aria-hidden="true" />
-                      Download JSON
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        setQuestions([]);
-                        if (documentId) persist(documentId, [], undefined, { immediate: true });
-                      }}
-                    >
-                      <Trash2 className="h-4 w-4" aria-hidden="true" />
-                      Clear
-                    </Button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="mr-auto min-w-0">
+                    <p className="font-display text-2xl leading-none">
+                      {questions.length} question{questions.length === 1 ? "" : "s"}
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {paperTotals.approved} approved · {paperTotals.marks} marks ·{" "}
+                      {paperTotals.sections.join(", ")}
+                      {meta.duration_minutes ? ` · ${meta.duration_minutes} min` : ""}
+                      {meta.difficulty ? ` · ${meta.difficulty}` : ""}
+                    </p>
                   </div>
+                  <Button variant="outline" size="sm" onClick={() => void handleDownload()}>
+                    <Download className="h-4 w-4" aria-hidden="true" />
+                    Download JSON
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setQuestions([]);
+                      if (documentId) persist(documentId, [], undefined, { immediate: true });
+                    }}
+                  >
+                    <Trash2 className="h-4 w-4" aria-hidden="true" />
+                    Clear
+                  </Button>
+                </div>
 
-                  <div className="flex flex-wrap gap-2">
-                    <button type="button" onClick={() => setFilter("all")}>
-                      <Badge variant={filter === "all" ? "default" : "outline"}>
-                        All {questions.length}
+                <div className="flex flex-wrap gap-2">
+                  <button type="button" onClick={() => setFilter("all")}>
+                    <Badge variant={filter === "all" ? "default" : "outline"}>
+                      All {questions.length}
+                    </Badge>
+                  </button>
+                  {counts.map(([type, count]) => (
+                    <button key={type} type="button" onClick={() => setFilter(type)}>
+                      <Badge variant={filter === type ? "default" : "outline"}>
+                        {QUESTION_TYPE_LABELS[type]} {count}
                       </Badge>
                     </button>
-                    {counts.map(([type, count]) => (
-                      <button key={type} type="button" onClick={() => setFilter(type)}>
-                        <Badge variant={filter === type ? "default" : "outline"}>
-                          {QUESTION_TYPE_LABELS[type]} {count}
-                        </Badge>
-                      </button>
-                    ))}
-                  </div>
+                  ))}
                 </div>
+              </div>
             ) : (
               <div className="shrink-0 border-b border-border px-6 py-8 text-center">
                 <FileJson className="mx-auto h-8 w-8 text-muted-foreground" aria-hidden="true" />

@@ -11,6 +11,11 @@ import type {
   PageRecord,
 } from "@/lib/document-types";
 import { parseMockGeneration } from "@/lib/document-types";
+import {
+  collectQuestionsImagePaths,
+  droppedImagePaths,
+  normalizeStoredImagePath,
+} from "@/lib/question-images";
 import type { Question } from "@/lib/question-schema";
 
 type SqlJsDatabase = import("sql.js").Database;
@@ -126,6 +131,23 @@ function schemaSql(): string {
       id INTEGER PRIMARY KEY,
       name TEXT NOT NULL,
       standard_id INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS pp_push_questions (
+      document_id TEXT NOT NULL,
+      question_id TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      pushed_at TEXT NOT NULL,
+      PRIMARY KEY (document_id, question_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS pp_push_documents (
+      document_id TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      total_count INTEGER NOT NULL,
+      synced_count INTEGER NOT NULL,
+      last_error TEXT,
+      updated_at TEXT NOT NULL
     );
   `;
 }
@@ -316,15 +338,25 @@ function bytesToDataUrl(bytes: Uint8Array, contentType: string): string {
   return `data:${contentType};base64,${btoa(binary)}`;
 }
 
-async function absoluteImagePath(relative: string): Promise<string> {
+function isInside(root: string, target: string, path: typeof import("node:path")): boolean {
+  const relative = path.relative(root, target);
+  return relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+async function resolveStoredImage(relative: string): Promise<string | null> {
+  const normalized = normalizeStoredImagePath(relative);
+  if (!normalized) return null;
   const path = await nodePath();
-  return path.join(await imagesRoot(), ...relative.split("/"));
+  const root = path.resolve(await imagesRoot());
+  const absolute = path.resolve(root, ...normalized.split("/"));
+  return isInside(root, absolute, path) ? absolute : null;
 }
 
 async function writeImage(relativePath: string, dataUrl: string): Promise<void> {
   const fs = await nodeFs();
   const path = await nodePath();
-  const abs = await absoluteImagePath(relativePath);
+  const abs = await resolveStoredImage(relativePath);
+  if (!abs) throw new Error("Invalid image path");
   await fs.mkdir(path.dirname(abs), { recursive: true });
   const { bytes } = dataUrlToBytes(dataUrl);
   await fs.writeFile(abs, Buffer.from(bytes));
@@ -332,8 +364,10 @@ async function writeImage(relativePath: string, dataUrl: string): Promise<void> 
 
 async function readImageDataUrl(relativePath: string): Promise<string | undefined> {
   const fs = await nodeFs();
+  const abs = await resolveStoredImage(relativePath);
+  if (!abs) return undefined;
   try {
-    const buf = await fs.readFile(await absoluteImagePath(relativePath));
+    const buf = await fs.readFile(abs);
     const lower = relativePath.toLowerCase();
     const contentType = lower.endsWith(".svg")
       ? "image/svg+xml"
@@ -352,29 +386,180 @@ export async function readLocalImageDataUrl(relativePath: string): Promise<strin
   return readImageDataUrl(relativePath);
 }
 
-async function removeImage(relativePath: string): Promise<void> {
+type ManifestEntry = { storage_key?: string };
+
+async function forgetManifest(options: {
+  keys?: ReadonlySet<string>;
+  prefix?: string;
+  keep?: ReadonlySet<string>;
+}): Promise<void> {
+  if (!options.keys?.size && !options.prefix) return;
   const fs = await nodeFs();
+  const path = await nodePath();
+  const manifestPath = path.join(await imagesRoot(), "_manifest.json");
+  let manifest: Record<string, ManifestEntry>;
   try {
-    await fs.unlink(await absoluteImagePath(relativePath));
+    const parsed = JSON.parse(await fs.readFile(manifestPath, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return;
+    manifest = parsed as Record<string, ManifestEntry>;
   } catch {
-    // ignore missing files
+    return;
+  }
+
+  let changed = false;
+  for (const [assetId, entry] of Object.entries(manifest)) {
+    const storageKey = entry?.storage_key;
+    if (typeof storageKey !== "string") continue;
+    const listed = options.keys?.has(storageKey) ?? false;
+    const underPrefix =
+      options.prefix != null &&
+      storageKey.startsWith(`${options.prefix}/`) &&
+      !options.keep?.has(storageKey);
+    if (!listed && !underPrefix) continue;
+    delete manifest[assetId];
+    changed = true;
+  }
+  if (changed) await fs.writeFile(manifestPath, JSON.stringify(manifest));
+}
+
+async function pruneEmptyDirectories(startDir: string, root: string): Promise<void> {
+  const fs = await nodeFs();
+  const path = await nodePath();
+  let current = path.resolve(startDir);
+  const resolvedRoot = path.resolve(root);
+  while (isInside(resolvedRoot, current, path)) {
+    let entries: string[];
+    try {
+      entries = await fs.readdir(current);
+    } catch {
+      return;
+    }
+    if (entries.length > 0) return;
+    await fs.rmdir(current);
+    current = path.dirname(current);
   }
 }
 
-async function removeDocumentImages(documentId: string): Promise<void> {
+/** Unlink image files and drop their asset-manifest rows. Missing files count as deleted. */
+async function deleteStoredImages(relativePaths: readonly string[]): Promise<void> {
+  if (!relativePaths.length) return;
   const fs = await nodeFs();
   const path = await nodePath();
+  const root = path.resolve(await imagesRoot());
+  const removed = new Set<string>();
+  const parents: string[] = [];
   try {
-    await fs.rm(path.join(await imagesRoot(), documentId), { recursive: true, force: true });
-  } catch {
-    // ignore
+    for (const relative of relativePaths) {
+      const normalized = normalizeStoredImagePath(relative);
+      const absolute = normalized ? await resolveStoredImage(normalized) : null;
+      if (!normalized || !absolute) continue;
+      try {
+        await fs.unlink(absolute);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT") throw error;
+      }
+      removed.add(normalized);
+      parents.push(path.dirname(absolute));
+    }
+  } finally {
+    for (const parent of parents) await pruneEmptyDirectories(parent, root);
+    await forgetManifest({ keys: removed });
   }
+}
+
+async function deleteUnkeptFiles(
+  directory: string,
+  root: string,
+  keep: ReadonlySet<string>,
+): Promise<void> {
+  const fs = await nodeFs();
+  const path = await nodePath();
+  let entries;
+  try {
+    entries = await fs.readdir(directory, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const absolute = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      await deleteUnkeptFiles(absolute, root, keep);
+      continue;
+    }
+    const relative = path.relative(root, absolute).split(path.sep).join("/");
+    if (keep.has(relative) || entry.name === "_manifest.json") continue;
+    await fs.unlink(absolute);
+  }
+}
+
+async function deleteDocumentDirectory(
+  documentId: string,
+  keep: ReadonlySet<string>,
+): Promise<void> {
+  const documentKey = normalizeStoredImagePath(documentId);
+  if (!documentKey) return;
+  const fs = await nodeFs();
+  const path = await nodePath();
+  const root = path.resolve(await imagesRoot());
+  const directory = path.join(root, documentKey);
+  const keptInside = [...keep].some((stored) => stored.startsWith(`${documentKey}/`));
+  if (!keptInside) {
+    await fs.rm(directory, { recursive: true, force: true });
+  } else {
+    await deleteUnkeptFiles(directory, root, keep);
+    await pruneEmptyTree(directory, root);
+  }
+  await forgetManifest({ prefix: documentKey, keep });
+}
+
+async function pruneEmptyTree(directory: string, root: string): Promise<void> {
+  const fs = await nodeFs();
+  const path = await nodePath();
+  let entries;
+  try {
+    entries = await fs.readdir(directory, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    await pruneEmptyTree(path.join(directory, entry.name), root);
+  }
+  if (!isInside(path.resolve(root), path.resolve(directory), path)) return;
+  const remaining = await fs.readdir(directory);
+  if (remaining.length === 0) await fs.rmdir(directory);
+}
+
+function imagePathsInUse(
+  db: SqlJsDatabase,
+  documentId: string,
+  nextQuestions: readonly Question[],
+  options?: { includeOwnPages?: boolean },
+): Set<string> {
+  const inUse = collectQuestionsImagePaths(nextQuestions);
+  const others = queryAll(db, "SELECT questions FROM pp_documents WHERE id != ?", [documentId]);
+  for (const row of others) {
+    for (const stored of collectQuestionsImagePaths(toQuestions(row["questions"])))
+      inUse.add(stored);
+  }
+  const includeOwnPages = options?.includeOwnPages !== false;
+  const pages = includeOwnPages
+    ? queryAll(db, "SELECT file_path FROM pp_pages")
+    : queryAll(db, "SELECT file_path FROM pp_pages WHERE document_id != ?", [documentId]);
+  for (const page of pages) {
+    const stored = normalizeStoredImagePath(String(page["file_path"] ?? ""));
+    if (stored) inUse.add(stored);
+  }
+  return inUse;
 }
 
 async function listFigurePaths(documentId: string): Promise<string[]> {
+  const documentKey = normalizeStoredImagePath(documentId);
+  if (!documentKey) return [];
   const fs = await nodeFs();
   const path = await nodePath();
-  const dir = path.join(await imagesRoot(), documentId);
+  const dir = path.join(await imagesRoot(), documentKey);
   const found: string[] = [];
 
   async function walk(current: string, prefix: string): Promise<void> {
@@ -397,13 +582,22 @@ async function listFigurePaths(documentId: string): Promise<string[]> {
     }
   }
 
-  await walk(dir, documentId);
+  await walk(dir, documentKey);
   return found;
 }
 
-export async function listDocuments(): Promise<
-  Array<DocumentMeta & { question_count: number; page_count: number }>
-> {
+export type PushSyncStatus = "never" | "in_progress" | "incomplete" | "complete";
+
+export type DocumentListItem = DocumentMeta & {
+  question_count: number;
+  page_count: number;
+  push_status: PushSyncStatus;
+  push_synced: number;
+  push_total: number;
+  push_error: string | null;
+};
+
+export async function listDocuments(): Promise<DocumentListItem[]> {
   const db = await getDb();
   const rows = queryAll(db, "SELECT * FROM pp_documents ORDER BY updated_at DESC");
   const pageCounts = queryAll(
@@ -414,11 +608,29 @@ export async function listDocuments(): Promise<
   for (const p of pageCounts) {
     counts.set(String(p["document_id"]), Number(p["c"] ?? 0));
   }
-  return rows.map((row) => ({
-    ...rowToMeta(row),
-    question_count: toQuestions(row["questions"]).length,
-    page_count: counts.get(String(row["id"])) ?? 0,
-  }));
+  const pushRows = queryAll(
+    db,
+    "SELECT document_id, status, total_count, synced_count, last_error FROM pp_push_documents",
+  );
+  const pushes = new Map<string, Record<string, unknown>>();
+  for (const row of pushRows) pushes.set(String(row["document_id"]), row);
+  return rows.map((row) => {
+    const push = pushes.get(String(row["id"]));
+    const status = str(push?.["status"]);
+    const pushStatus: PushSyncStatus =
+      status === "in_progress" || status === "incomplete" || status === "complete"
+        ? status
+        : "never";
+    return {
+      ...rowToMeta(row),
+      question_count: toQuestions(row["questions"]).length,
+      page_count: counts.get(String(row["id"])) ?? 0,
+      push_status: pushStatus,
+      push_synced: num(push?.["synced_count"]) ?? 0,
+      push_total: num(push?.["total_count"]) ?? 0,
+      push_error: str(push?.["last_error"]),
+    };
+  });
 }
 
 export async function getDocument(id: string): Promise<{
@@ -506,9 +718,19 @@ export async function updateDocument(
   id: string,
   patch: DocumentPatch,
 ): Promise<DocumentMeta | null> {
-  return withWrite((db) => {
+  return withWrite(async (db) => {
     const existing = queryOne(db, "SELECT * FROM pp_documents WHERE id = ?", [id]);
     if (!existing) return null;
+
+    if (patch.questions) {
+      const previous = toQuestions(existing["questions"]);
+      const dropped = droppedImagePaths(previous, patch.questions);
+      if (dropped.length) {
+        const inUse = imagePathsInUse(db, id, patch.questions);
+        // Remove files before the row changes so a failed delete can be retried.
+        await deleteStoredImages(dropped.filter((stored) => !inUse.has(stored)));
+      }
+    }
 
     const next = { ...existing };
     for (const [key, value] of Object.entries(patch)) {
@@ -568,11 +790,24 @@ export async function updateDocument(
 }
 
 export async function deleteDocument(id: string): Promise<void> {
-  await withWrite(async (db) => {
+  const owned = await withWrite((db) => {
+    const row = queryOne(db, "SELECT questions FROM pp_documents WHERE id = ?", [id]);
+    if (!row) return [] as string[];
+    const paths = [...collectQuestionsImagePaths(toQuestions(row["questions"]))];
+    db.run("DELETE FROM pp_push_questions WHERE document_id = ?", [id]);
+    db.run("DELETE FROM pp_push_documents WHERE document_id = ?", [id]);
     db.run("DELETE FROM pp_pages WHERE document_id = ?", [id]);
     db.run("DELETE FROM pp_documents WHERE id = ?", [id]);
+    return paths;
   });
-  await removeDocumentImages(id);
+
+  await withWrite(async (db) => {
+    const keep = imagePathsInUse(db, id, [], { includeOwnPages: false });
+    await deleteDocumentDirectory(id, keep);
+    const prefix = `${normalizeStoredImagePath(id) ?? ""}/`;
+    const external = owned.filter((stored) => !stored.startsWith(prefix) && !keep.has(stored));
+    await deleteStoredImages(external);
+  });
 }
 
 export async function appendPage(input: {
@@ -609,7 +844,11 @@ export async function saveFigure(input: {
   dataUrl: string;
   filename: string;
 }): Promise<string> {
-  const file_path = `${input.documentId}/${input.filename}`;
+  const file_path = normalizeStoredImagePath(`${input.documentId}/${input.filename}`);
+  const documentKey = normalizeStoredImagePath(input.documentId);
+  if (!file_path || !documentKey || !file_path.startsWith(`${documentKey}/`)) {
+    throw new Error("Invalid figure filename");
+  }
   await writeImage(file_path, input.dataUrl);
   return file_path;
 }
@@ -619,7 +858,17 @@ export async function removePage(pageId: string): Promise<void> {
     const row = queryOne(db, "SELECT * FROM pp_pages WHERE id = ?", [pageId]);
     if (!row) return;
     const page = rowToPage(row);
-    await removeImage(page.file_path);
+    const document = queryOne(db, "SELECT questions FROM pp_documents WHERE id = ?", [
+      page.document_id,
+    ]);
+    const stillUsed = imagePathsInUse(
+      db,
+      page.document_id,
+      document ? toQuestions(document["questions"]) : [],
+      { includeOwnPages: false },
+    );
+    const stored = normalizeStoredImagePath(page.file_path);
+    if (stored && !stillUsed.has(stored)) await deleteStoredImages([stored]);
     db.run("DELETE FROM pp_pages WHERE id = ?", [pageId]);
 
     const remaining = queryAll(
@@ -719,4 +968,78 @@ export async function importCatalogDump(raw: unknown): Promise<Catalog> {
     ensureDefaultStandards(db);
   });
   return getCatalog();
+}
+
+export type PushQuestionReceipt = {
+  questionId: string;
+  contentHash: string;
+};
+
+export async function readPushLedger(documentId: string): Promise<Map<string, string>> {
+  const db = await getDb();
+  const rows = queryAll(
+    db,
+    "SELECT question_id, content_hash FROM pp_push_questions WHERE document_id = ?",
+    [documentId],
+  );
+  const ledger = new Map<string, string>();
+  for (const row of rows) ledger.set(String(row["question_id"]), String(row["content_hash"]));
+  return ledger;
+}
+
+export async function markPushLedger(
+  documentId: string,
+  entries: PushQuestionReceipt[],
+): Promise<void> {
+  if (!entries.length) return;
+  const pushedAt = nowIso();
+  await withWrite((db) => {
+    for (const entry of entries) {
+      db.run(
+        `INSERT INTO pp_push_questions (document_id, question_id, content_hash, pushed_at)
+         VALUES (?, ?, ?, ?)
+         ON CONFLICT(document_id, question_id) DO UPDATE SET
+           content_hash = excluded.content_hash,
+           pushed_at = excluded.pushed_at`,
+        [documentId, entry.questionId, entry.contentHash, pushedAt],
+      );
+    }
+  });
+}
+
+export async function removePushLedger(documentId: string, questionIds: string[]): Promise<void> {
+  if (!questionIds.length) return;
+  await withWrite((db) => {
+    for (const questionId of questionIds) {
+      db.run("DELETE FROM pp_push_questions WHERE document_id = ? AND question_id = ?", [
+        documentId,
+        questionId,
+      ]);
+    }
+  });
+}
+
+export async function savePushStatus(
+  documentId: string,
+  status: {
+    status: "in_progress" | "incomplete" | "complete";
+    total: number;
+    synced: number;
+    error: string | null;
+  },
+): Promise<void> {
+  await withWrite((db) => {
+    db.run(
+      `INSERT INTO pp_push_documents (
+         document_id, status, total_count, synced_count, last_error, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT(document_id) DO UPDATE SET
+         status = excluded.status,
+         total_count = excluded.total_count,
+         synced_count = excluded.synced_count,
+         last_error = excluded.last_error,
+         updated_at = excluded.updated_at`,
+      [documentId, status.status, status.total, status.synced, status.error, nowIso()],
+    );
+  });
 }

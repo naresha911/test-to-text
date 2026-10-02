@@ -211,12 +211,8 @@ export const pushLocalDocument = createServerFn({ method: "POST" })
     if (!loaded) throw new Error("Document not found");
     if (!loaded.questions.length) throw new Error("This paper has no questions to push.");
     const { pushExamPrepExport } = await import("@/lib/exam-prep-push");
-    await pushExamPrepExport(buildExamPrepExport(loaded.document, loaded.questions));
-    return {
-      ok: true as const,
-      title: loaded.document.title,
-      questionCount: loaded.questions.length,
-    };
+    const result = await pushExamPrepExport(buildExamPrepExport(loaded.document, loaded.questions));
+    return result;
   });
 
 /** Create an AI mock draft from an existing library paper. */

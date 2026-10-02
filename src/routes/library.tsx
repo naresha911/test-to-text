@@ -175,10 +175,7 @@ function PaperDetail({ id }: { id: string }) {
       ? {
           ...doc.generation,
           pairs: sortMockPairs(
-            [
-              ...doc.generation.pairs,
-              { source_question_id: null, mock_question_id: created.id },
-            ],
+            [...doc.generation.pairs, { source_question_id: null, mock_question_id: created.id }],
             updated,
           ),
         }
@@ -366,9 +363,19 @@ function LibraryPage() {
     setPushingId(id);
     try {
       const result = await pushFn({ data: { id } });
-      toast.success(`Pushed "${result.title || title}" to exam-prep.`);
+      void queryClient.invalidateQueries({ queryKey: ["local-documents"] });
+      if (result.complete) {
+        toast.success(
+          result.skipped > 0
+            ? `"${result.title || title}" is on exam-prep. ${result.pushed} updated, ${result.skipped} already saved.`
+            : `Pushed "${result.title || title}" (${result.total} questions) to exam-prep.`,
+        );
+      } else {
+        toast.error(result.error ?? "Push stopped before every question was saved.");
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not push that paper.");
+      void queryClient.invalidateQueries({ queryKey: ["local-documents"] });
     } finally {
       setPushingId(null);
     }
@@ -513,6 +520,11 @@ function LibraryPage() {
                           paper.kind === "ai_mock" && genTotal
                             ? `gen ${paper.generation?.cursor ?? 0}/${genTotal}`
                             : null,
+                          paper.push_status === "complete"
+                            ? "on exam-prep"
+                            : paper.push_total > 0
+                              ? `exam-prep ${paper.push_synced}/${paper.push_total}`
+                              : null,
                           paper.kind !== "ai_mock"
                             ? `${paper.page_count} page${paper.page_count === 1 ? "" : "s"}`
                             : null,
@@ -525,6 +537,9 @@ function LibraryPage() {
                         <p className="mt-1 text-xs text-destructive">
                           Generation paused: {paper.generation.last_error ?? "unknown error"}
                         </p>
+                      ) : null}
+                      {paper.push_status === "incomplete" && paper.push_error ? (
+                        <p className="mt-1 text-xs text-destructive">{paper.push_error}</p>
                       ) : null}
                     </div>
                     <Badge variant="outline">{documentKindBadge(paper.kind)}</Badge>
@@ -604,9 +619,7 @@ function LibraryPage() {
                         paper.standard_id == null
                       }
                       title={
-                        paper.standard_id == null
-                          ? "Choose 5th or 8th before pushing."
-                          : undefined
+                        paper.standard_id == null ? "Choose 5th or 8th before pushing." : undefined
                       }
                       onClick={() => void pushPaper(paper.id, paper.title)}
                     >
@@ -618,7 +631,9 @@ function LibraryPage() {
                       ) : (
                         <>
                           <Upload className="h-4 w-4" aria-hidden="true" />
-                          Push
+                          {paper.push_status === "incomplete" || paper.push_status === "in_progress"
+                            ? "Resume push"
+                            : "Push"}
                         </>
                       )}
                     </Button>
@@ -672,7 +687,7 @@ function LibraryPage() {
               {pendingDelete
                 ? `${pendingDelete.page_count} page image${pendingDelete.page_count === 1 ? "" : "s"}`
                 : "page images"}
-              , and any cropped figures stored in local SQLite. This cannot be undone.
+              , and any figure images stored on this computer. This cannot be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

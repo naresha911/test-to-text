@@ -144,7 +144,7 @@ function MockNewPage() {
         </div>
         <p className="mt-2 text-muted-foreground">
           Describe the paper you need. The AI invents original questions (no source paper, no side-by-side
-          comparison). Generation resumes from the library if a free model fails mid-run.
+          comparison). Generation resumes from the library if the model fails mid-run.
         </p>
 
         <form className="mt-8 space-y-5" onSubmit={(e) => void onSubmit(e)}>

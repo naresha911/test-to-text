@@ -1,6 +1,12 @@
 import type { DocumentMeta } from "@/lib/document-types";
+import { stableUuid } from "@/lib/exam-prep/stable-id";
 import { parseQuestionOrder } from "@/lib/question-order";
-import { isLearnerFacingQuestion, type Question, type QuestionType } from "@/lib/question-schema";
+import {
+  isLearnerFacingQuestion,
+  type Option,
+  type Question,
+  type QuestionType,
+} from "@/lib/question-schema";
 
 export type ExamPrepQuestionType =
   | "mcq_single"
@@ -67,18 +73,48 @@ export function mapQuestionType(type: QuestionType, question: Question): ExamPre
 }
 
 function questionText(question: Question): string {
+  let text = question.stem;
   if (question.type === "assertion_reason") {
     const parts = [
       question.assertion ? `Assertion: ${question.assertion}` : "",
       question.reason ? `Reason: ${question.reason}` : "",
       question.stem,
     ].filter(Boolean);
-    return parts.join("\n") || question.stem;
+    text = parts.join("\n") || question.stem;
+  } else if (question.passage && question.type === "comprehension") {
+    text = [question.passage, question.stem].filter(Boolean).join("\n\n");
   }
-  if (question.passage && question.type === "comprehension") {
-    return [question.passage, question.stem].filter(Boolean).join("\n\n");
+  if (question.instructions?.trim() && !text.includes(question.instructions.trim())) {
+    text = `${question.instructions.trim()}\n\n${text}`.trim();
   }
-  return question.stem;
+  return text;
+}
+
+function solutionText(question: Question): string | null {
+  const parts = [question.explanation?.trim() || ""];
+  const blanks = question.blanks.map((blank) => blank.trim()).filter(Boolean);
+  if (question.type === "fill_blank" && blanks.length) {
+    const answers = blanks.join(", ");
+    if (!parts.join("\n").includes(answers)) parts.push(`Answers: ${answers}`);
+  }
+  const written = question.answer_text?.trim();
+  if (written && !parts.join("\n").includes(written)) parts.push(written);
+  const text = parts.filter(Boolean).join("\n\n");
+  return text || null;
+}
+
+function learnerOptions(question: Question): Option[] {
+  if (
+    question.type === "true_false" &&
+    question.options.length === 0 &&
+    question.answer_boolean != null
+  ) {
+    return [
+      { key: "A", text: "True", is_correct: question.answer_boolean === true },
+      { key: "B", text: "False", is_correct: question.answer_boolean === false },
+    ];
+  }
+  return question.options;
 }
 
 type FlatQ = {
@@ -93,7 +129,7 @@ function flatten(questions: Question[]): FlatQ[] {
   let order = 1;
   for (const question of questions) {
     if (question.type === "comprehension" && question.sub_questions.length) {
-      const groupId = crypto.randomUUID();
+      const groupId = stableUuid(["question-group", question.id]);
       question.sub_questions.forEach((child, i) => {
         out.push({
           question: {
@@ -154,7 +190,7 @@ export function buildExamPrepExport(document: DocumentMeta, questions: Question[
   const isTestKind = document.kind === "practice_test" || document.kind === "ai_mock";
   if (isTestKind) {
     sectionNames.forEach((name, i) => {
-      const id = crypto.randomUUID();
+      const id = stableUuid(["test-section", containerId, name]);
       sectionIds.set(name, id);
       tables.test_sections.push({
         id,
@@ -209,6 +245,7 @@ export function buildExamPrepExport(document: DocumentMeta, questions: Question[
     const marks = q.marks ?? document.default_marks ?? 1;
     const negative = q.negative_marks ?? document.default_negative_marks ?? 0;
     const sectionName = q.section?.trim() || "General";
+    const tags = [...new Set(q.tags.map((tag) => tag.trim()).filter(Boolean))].sort();
 
     tables.questions.push({
       id: q.id,
@@ -224,7 +261,7 @@ export function buildExamPrepExport(document: DocumentMeta, questions: Question[
       negative_marks: negative,
       year: q.year ?? document.year,
       source: q.source ?? document.source ?? document.exam,
-      tags: q.tags,
+      tags,
       is_active: true,
       created_by: null,
       created_at: document.created_at,
@@ -232,17 +269,17 @@ export function buildExamPrepExport(document: DocumentMeta, questions: Question[
     });
 
     tables.question_translations.push({
-      id: crypto.randomUUID(),
+      id: stableUuid(["question-translation", q.id, "en"]),
       question_id: q.id,
       language_code: "en",
       question_text: questionText(q),
-      explanation: q.explanation ?? null,
+      explanation: solutionText(q),
       explanation_diagram_path: null,
       hint: q.hint ?? null,
     });
 
-    q.options.forEach((option, i) => {
-      const optionId = crypto.randomUUID();
+    learnerOptions(q).forEach((option, i) => {
+      const optionId = stableUuid(["question-option", q.id, option.key, String(i)]);
       const isCorrect = option.is_correct === true || q.answer_keys.includes(option.key);
       tables.question_options.push({
         id: optionId,
@@ -252,7 +289,7 @@ export function buildExamPrepExport(document: DocumentMeta, questions: Question[
         display_order: i + 1,
       });
       tables.option_translations.push({
-        id: crypto.randomUUID(),
+        id: stableUuid(["option-translation", optionId, "en"]),
         option_id: optionId,
         language_code: "en",
         option_text: option.text,
@@ -260,7 +297,7 @@ export function buildExamPrepExport(document: DocumentMeta, questions: Question[
       });
     });
 
-    for (const tag of q.tags) {
+    for (const tag of tags) {
       tables.question_tags.push({ question_id: q.id, tag });
     }
 
@@ -268,8 +305,8 @@ export function buildExamPrepExport(document: DocumentMeta, questions: Question[
       const leftIds: string[] = [];
       const rightIds: string[] = [];
       q.match_pairs.forEach((pair, i) => {
-        const leftId = crypto.randomUUID();
-        const rightId = crypto.randomUUID();
+        const leftId = stableUuid(["matching-item", q.id, "left", String(i)]);
+        const rightId = stableUuid(["matching-item", q.id, "right", String(i)]);
         leftIds.push(leftId);
         rightIds.push(rightId);
         tables.matching_items.push({
@@ -314,7 +351,7 @@ export function buildExamPrepExport(document: DocumentMeta, questions: Question[
         });
         if (q.passage) {
           tables.question_group_translations.push({
-            id: crypto.randomUUID(),
+            id: stableUuid(["group-translation", item.groupId, "en"]),
             group_id: item.groupId,
             language_code: "en",
             shared_text: q.passage,

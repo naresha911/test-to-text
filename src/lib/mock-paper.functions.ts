@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { createLocalImageAssetStore } from "@/lib/assets/store";
 import { parseMockGeneration, type MockGenerationState } from "@/lib/document-types";
+import { generationChatTargets, omniroutersApiKey } from "@/lib/generation/chat-provider";
 import {
   emptyGenerationItem,
   parseGenerationItem,
@@ -22,7 +23,7 @@ import {
 import { emptyQuestion, type Question } from "@/lib/question-schema";
 import { toSourceQuestionRecord } from "@/lib/source/source-record";
 
-/** Prefer free OpenRouter routes; models[] lets OpenRouter fall back if one is down. */
+/** OpenRouter fallback when OmniRouters is unset or fails. models[] lets OpenRouter try the next free route. */
 export const DEFAULT_MOCK_MODEL = "google/gemma-4-26b-a4b-it:free";
 export const MOCK_MODEL_FALLBACKS = [
   "google/gemma-4-26b-a4b-it:free",
@@ -316,9 +317,12 @@ function asQuestion(raw: unknown): Question {
   });
 }
 
+const LOVABLE_MOCK_MODEL = "google/gemini-3.8-flash";
+
 async function executeMockGeneration(
   data: z.infer<typeof InputSchema>,
 ): Promise<{ question: Question; item: GenerationItem }> {
+  const omniroutersKey = omniroutersApiKey();
   const openRouterKey = process.env["OPENROUTER_API_KEY"];
   const lovableKey = process.env["LOVABLE_API_KEY"];
 
@@ -351,54 +355,40 @@ async function executeMockGeneration(
   async function completeChat(
     messages: { role: "system" | "user"; content: string | unknown[] }[],
   ): Promise<string> {
-    if (!openRouterKey && !lovableKey) {
+    const targets = generationChatTargets({
+      omniroutersKey,
+      openRouterKey,
+      lovableKey,
+      requestedModel: data.model,
+      omniroutersModel: process.env["OMNIROUTERS_MODEL"],
+      omniroutersBaseUrl: process.env["OMNIROUTERS_BASE_URL"],
+      openRouterModel: DEFAULT_MOCK_MODEL,
+      openRouterFallbacks: MOCK_MODEL_FALLBACKS,
+      lovableModel: LOVABLE_MOCK_MODEL,
+    });
+    if (targets.length === 0) {
       throw new Error(
-        "No AI key is configured for mock papers. Add OPENROUTER_API_KEY or LOVABLE_API_KEY in .env.local (or Lovable project secrets), then restart the server.",
+        "No AI key is configured for mock papers. Add OMNIROUTERS_API_KEY, OPENROUTER_API_KEY, or LOVABLE_API_KEY in .env.local (or Lovable project secrets), then restart the server.",
       );
     }
-    async function viaOpenRouter(): Promise<string> {
-      const model = data.model?.trim() || DEFAULT_MOCK_MODEL;
-      const models = [model, ...MOCK_MODEL_FALLBACKS.filter((candidate) => candidate !== model)];
-      return callChat({
-        url: "https://openrouter.ai/api/v1/chat/completions",
-        headers: { Authorization: `Bearer ${openRouterKey}` },
-        model,
-        models,
-        messages,
-        label: "OpenRouter",
-      });
-    }
-    async function viaLovable(): Promise<string> {
-      return callChat({
-        url: "https://ai.gateway.lovable.dev/v1/chat/completions",
-        headers: {
-          "Lovable-API-Key": lovableKey ?? "",
-          "X-Lovable-AIG-SDK": "fetch",
-        },
-        model: "google/gemini-3.8-flash",
-        messages,
-        label: "The built-in AI reader",
-      });
-    }
-    if (openRouterKey) {
+    const failures: string[] = [];
+    for (const target of targets) {
       try {
-        return await viaOpenRouter();
-      } catch (openRouterError) {
-        if (!lovableKey) throw openRouterError;
-        try {
-          return await viaLovable();
-        } catch (lovableError) {
-          const openRouterMessage =
-            openRouterError instanceof Error ? openRouterError.message : String(openRouterError);
-          const lovableMessage =
-            lovableError instanceof Error ? lovableError.message : String(lovableError);
-          throw new Error(
-            `OpenRouter failed (${openRouterMessage}). Lovable fallback also failed: ${lovableMessage}`,
-          );
-        }
+        return await callChat({
+          url: target.url,
+          headers: target.headers,
+          model: target.model,
+          ...(target.models ? { models: target.models } : {}),
+          messages,
+          label: target.label,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        failures.push(`${target.label} failed (${message})`);
+        if (targets.length === 1) throw error;
       }
     }
-    return viaLovable();
+    throw new Error(failures.join(". "));
   }
 
   let savedQuestions = Array.isArray(data.savedQuestions)
@@ -513,7 +503,7 @@ async function executeMockGeneration(
       const figure = sourceQuestion?.figures.find((entry) => entry.image_path);
       if (!figure?.image_path) return null;
       const dataUrl = await readLocalImageDataUrl(figure.image_path);
-      if (!dataUrl || (!openRouterKey && !lovableKey)) return null;
+      if (!dataUrl || (!omniroutersKey && !openRouterKey && !lovableKey)) return null;
       try {
         const text = await completeChat([
           {
