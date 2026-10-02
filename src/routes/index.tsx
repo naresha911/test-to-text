@@ -549,6 +549,9 @@ function HomePage() {
       }
       try {
         const apiKey = reader.apiKeys?.[reader.engine]?.trim();
+        const ocrSpaceKey =
+          reader.engine === "openocr" ? reader.apiKeys?.ocrspace?.trim() : undefined;
+        const optiicKey = reader.engine === "openocr" ? reader.apiKeys?.optiic?.trim() : undefined;
         const imageDataUrl =
           reader.engine === "ocrspace"
             ? await shrinkJpegUnderBytes(page.dataUrl!, OCR_SPACE_MAX_BYTES)
@@ -561,6 +564,8 @@ function HomePage() {
             model: reader.model,
             contentMode,
             ...(apiKey ? { apiKey } : {}),
+            ...(ocrSpaceKey ? { ocrSpaceKey } : {}),
+            ...(optiicKey ? { optiicKey } : {}),
             ...(meta.notes?.trim() ? { hint: meta.notes.trim() } : {}),
           },
         });

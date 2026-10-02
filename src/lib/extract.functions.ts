@@ -31,6 +31,10 @@ const InputSchema = z.object({
   engine: z.enum(READER_ENGINES).default("openocr"),
   /** Optional reader key supplied by the browser for self-hosted/local use. */
   apiKey: z.string().max(1000).optional(),
+  /** Browser OCR.space key used when OpenOCR falls back to that service. */
+  ocrSpaceKey: z.string().max(1000).optional(),
+  /** Browser Optiic key used when OpenOCR falls back to that service. */
+  optiicKey: z.string().max(1000).optional(),
   /** Model id, only used by the OpenRouter engine. */
   model: z.string().min(2).max(120).optional(),
   /** Text or Graphics for this Read pages click. Text never crops figures. */
@@ -281,14 +285,26 @@ export const extractPage = createServerFn({ method: "POST" })
     const optiicKey = process.env["OPTIIC_API_KEY"];
     const ocrSpaceKey = process.env["OCR_SPACE_API_KEY"];
     const suppliedApiKey = data.apiKey?.trim();
+    const suppliedOcrSpaceKey = data.ocrSpaceKey?.trim();
+    const suppliedOptiicKey = data.optiicKey?.trim();
 
-    // A browser-supplied key is scoped to the selected engine. Environment keys remain
-    // the default for deployments that configure readers server-side.
+    // A browser-supplied key is scoped to the selected engine. OpenOCR also reads
+    // the saved OCR.space and Optiic keys, because those services are its fallbacks.
+    // Environment keys remain the default when the browser did not supply one.
     const effectiveOpenRouterKey =
       data.engine === "openrouter" ? suppliedApiKey || openRouterKey : openRouterKey;
-    const effectiveOptiicKey = data.engine === "optiic" ? suppliedApiKey || optiicKey : optiicKey;
+    const effectiveOptiicKey =
+      data.engine === "optiic"
+        ? suppliedApiKey || optiicKey
+        : data.engine === "openocr"
+          ? suppliedOptiicKey || optiicKey
+          : optiicKey;
     const effectiveOcrSpaceKey =
-      data.engine === "ocrspace" ? suppliedApiKey || ocrSpaceKey : ocrSpaceKey;
+      data.engine === "ocrspace"
+        ? suppliedApiKey || ocrSpaceKey
+        : data.engine === "openocr"
+          ? suppliedOcrSpaceKey || ocrSpaceKey
+          : ocrSpaceKey;
 
     const openRouter = (messages: ChatMessage[]) =>
       callChat({
@@ -320,8 +336,8 @@ export const extractPage = createServerFn({ method: "POST" })
         page: data.page,
         mode: data.contentMode,
         ...(data.hint ? { hint: data.hint } : {}),
-        ...(ocrSpaceKey ? { ocrSpaceKey } : {}),
-        ...(optiicKey ? { optiicKey } : {}),
+        ...(effectiveOcrSpaceKey ? { ocrSpaceKey: effectiveOcrSpaceKey } : {}),
+        ...(effectiveOptiicKey ? { optiicKey: effectiveOptiicKey } : {}),
         structureWithModel: async (pageText) => {
           if (!omniroutersKey && !lovableKey && !effectiveOpenRouterKey) return null;
           const structured = await structurePlainText(pageText, {
