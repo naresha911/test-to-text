@@ -77,6 +77,7 @@ function hex(bytes: Uint8Array): string {
 class MemoryRemote implements RemoteWriter {
   readonly tables = new Map<string, Map<string, Row>>();
   failQuestionId: string | null = null;
+  failTable: string | null = null;
 
   private bucket(table: string): Map<string, Row> {
     let found = this.tables.get(table);
@@ -120,6 +121,9 @@ class MemoryRemote implements RemoteWriter {
   }
 
   async upsert(table: string, rows: Row[], options?: UpsertOptions): Promise<void> {
+    if (this.failTable === table) {
+      throw new ExamPrepRequestError(table, "network down", null, true);
+    }
     if (
       table === "questions" &&
       this.failQuestionId &&
@@ -175,6 +179,7 @@ class MemoryRemote implements RemoteWriter {
 
 function memoryLedger(): PushLedger & { hashes: Map<string, string>; last: PushLedgerStatus | null } {
   const hashes = new Map<string, string>();
+  const retired = new Set<string>();
   const state: { last: PushLedgerStatus | null } = { last: null };
   return {
     hashes,
@@ -192,6 +197,15 @@ function memoryLedger(): PushLedger & { hashes: Map<string, string>; last: PushL
     },
     async saveStatus(_documentId, status) {
       state.last = status;
+    },
+    async readRetiredGroups() {
+      return [...retired];
+    },
+    async rememberRetiredGroups(_documentId, groupIds) {
+      for (const groupId of groupIds) if (groupId) retired.add(groupId);
+    },
+    async forgetRetiredGroups(_documentId, groupIds) {
+      for (const groupId of groupIds) retired.delete(groupId);
     },
   };
 }
@@ -391,14 +405,157 @@ describe("exam-prep push resume", () => {
     expect(remote.tables.get("test_questions")?.size).toBe(2);
   });
 
+  test("re-pushing an edited question keeps translations in other languages", async () => {
+    const remote = new MemoryRemote();
+    const ledger = memoryLedger();
+    const deps = { writer: remote, ledger, batchSize: 5, now: () => "2026-02-01T00:00:00.000Z" };
+    await runExamPrepPush(buildExamPrepExport(document(), [mcq(Q1, "One")]), deps);
+    const optionId = [...(remote.tables.get("question_options")?.values() ?? [])][0]?.["id"];
+    remote.tables.get("question_translations")?.set("hi-question", {
+      id: "11111111-1111-4111-8111-111111111111",
+      question_id: Q1,
+      language_code: "hi",
+      question_text: "Hindi stem",
+    });
+    remote.tables.get("option_translations")?.set("hi-option", {
+      id: "22222222-2222-4222-8222-222222222222",
+      option_id: optionId,
+      language_code: "hi",
+      option_text: "Hindi choice",
+    });
+
+    const edited = await runExamPrepPush(
+      buildExamPrepExport(document(), [mcq(Q1, "One revised")]),
+      deps,
+    );
+    expect(edited.pushed).toBe(1);
+    const questionText = [...(remote.tables.get("question_translations")?.values() ?? [])].map(
+      (row) => row["question_text"],
+    );
+    expect(questionText).toContain("Hindi stem");
+    expect(questionText).toContain("One revised");
+    const optionText = [...(remote.tables.get("option_translations")?.values() ?? [])].map(
+      (row) => row["option_text"],
+    );
+    expect(optionText).toContain("Hindi choice");
+
+    const again = await runExamPrepPush(
+      buildExamPrepExport(document(), [mcq(Q1, "One revised")]),
+      deps,
+    );
+    expect(again.skipped).toBe(1);
+    expect(again.pushed).toBe(0);
+  });
+
+  test("a drifted section is rewritten and an unused section is removed", async () => {
+    const remote = new MemoryRemote();
+    const ledger = memoryLedger();
+    const testDocument: DocumentMeta = { ...document(), kind: "practice_test" };
+    const deps = { writer: remote, ledger, now: () => "2026-02-01T00:00:00.000Z" };
+    await runExamPrepPush(buildExamPrepExport(testDocument, [mcq(Q1, "One")]), deps);
+    const oldSection = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    remote.tables.get("test_sections")?.set(oldSection, {
+      id: oldSection,
+      test_id: DOC,
+      name: "Old",
+    });
+    const link = [...(remote.tables.get("test_questions")?.values() ?? [])][0];
+    if (link) link["section_id"] = oldSection;
+
+    const result = await runExamPrepPush(buildExamPrepExport(testDocument, [mcq(Q1, "One")]), deps);
+    expect(result.complete).toBe(true);
+    expect(result.pushed).toBe(1);
+    expect(remote.tables.get("test_sections")?.has(oldSection)).toBe(false);
+    const restored = [...(remote.tables.get("test_questions")?.values() ?? [])].find(
+      (row) => row["question_id"] === Q1,
+    );
+    expect(restored?.["section_id"]).not.toBe(oldSection);
+  });
+
+  test("a stale section that a rule still references is kept", async () => {
+    const remote = new MemoryRemote();
+    const ledger = memoryLedger();
+    const testDocument: DocumentMeta = { ...document(), kind: "practice_test" };
+    const deps = { writer: remote, ledger, now: () => "2026-02-01T00:00:00.000Z" };
+    await runExamPrepPush(buildExamPrepExport(testDocument, [mcq(Q1, "One")]), deps);
+    const oldSection = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+    await remote.upsert("test_sections", [{ id: oldSection, test_id: DOC, name: "Old" }]);
+    await remote.upsert("test_rules", [
+      {
+        id: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+        test_id: DOC,
+        section_id: oldSection,
+        question_count: 1,
+      },
+    ]);
+    const link = [...(remote.tables.get("test_questions")?.values() ?? [])][0];
+    if (link) link["section_id"] = oldSection;
+
+    const result = await runExamPrepPush(buildExamPrepExport(testDocument, [mcq(Q1, "One")]), deps);
+    expect(result.complete).toBe(true);
+    expect(result.pushed).toBe(1);
+    expect(remote.tables.get("test_sections")?.has(oldSection)).toBe(true);
+  });
+
+  test("a group unlinked by a failed push is removed on the next resume", async () => {
+    const remote = new MemoryRemote();
+    const ledger = memoryLedger();
+    const deps = { writer: remote, ledger, now: () => "2026-02-01T00:00:00.000Z" };
+    const grouped = emptyQuestion({
+      id: Q1,
+      type: "comprehension",
+      stem: "Passage",
+      passage: "Read this",
+      approved: true,
+      sub_questions: [mcq(Q2, "Child")],
+    });
+    await runExamPrepPush(buildExamPrepExport(document(), [grouped]), deps);
+    const groupId = [...(remote.tables.get("question_groups")?.keys() ?? [])][0] ?? "";
+    expect(groupId.length > 0).toBe(true);
+
+    remote.failTable = "question_translations";
+    const stopped = await runExamPrepPush(
+      buildExamPrepExport(document(), [
+        emptyQuestion({
+          ...grouped,
+          sub_questions: [mcq(Q2, "Child revised")],
+        }),
+      ]),
+      deps,
+    );
+    expect(stopped.complete).toBe(false);
+    expect(remote.tables.get("question_groups")?.has(groupId!)).toBe(true);
+    expect(remote.tables.get("group_questions")?.size ?? 0).toBe(0);
+
+    remote.failTable = null;
+    const resumed = await runExamPrepPush(buildExamPrepExport(document(), [mcq(Q2, "Child alone")]), deps);
+    expect(resumed.complete).toBe(true);
+    expect(remote.tables.get("question_groups")?.has(groupId!)).toBe(false);
+  });
+
+  test("a later failure does not claim that earlier questions were lost", async () => {
+    const remote = new MemoryRemote();
+    const ledger = memoryLedger();
+    const deps = { writer: remote, ledger, now: () => "2026-02-01T00:00:00.000Z" };
+    await runExamPrepPush(buildExamPrepExport(document(), [mcq(Q1, "One")]), deps);
+    remote.failTable = "papers";
+    const stopped = await runExamPrepPush(
+      buildExamPrepExport(document(), [mcq(Q1, "One"), mcq(Q2, "Two")]),
+      deps,
+    );
+    expect(stopped.complete).toBe(false);
+    expect(ledger.last?.synced).toBe(1);
+  });
+
   test("questionNeedsPush is false only when the fingerprint and remote counts match", () => {
     const plan = buildPushPlan(buildExamPrepExport(document(), [mcq(Q1, "One")]));
     const unit = plan.units[0]!;
-    const remote: RemotePresence = { linked: true, ...unit.counts };
+    const remote: RemotePresence = { linked: true, link: unit.link, ...unit.counts };
     expect(questionNeedsPush(unit, unit.contentHash, remote)).toBe(false);
     expect(questionNeedsPush(unit, "stale", remote)).toBe(true);
     expect(questionNeedsPush(unit, unit.contentHash, { ...remote, linked: false })).toBe(true);
     expect(questionNeedsPush(unit, unit.contentHash, { ...remote, options: 0 })).toBe(true);
+    expect(questionNeedsPush(unit, unit.contentHash, { ...remote, link: null })).toBe(true);
   });
 });
 

@@ -7,8 +7,11 @@ import { runExamPrepPush, type ExamPrepPushResult } from "@/lib/exam-prep/push";
 import { readContainerId } from "@/lib/exam-prep/push-plan";
 import { createSupabaseWriter } from "@/lib/exam-prep/remote-writer";
 import {
+  forgetRetiredGroups,
   markPushLedger,
   readPushLedger,
+  readRetiredGroups,
+  rememberRetiredGroups,
   removePushLedger,
   savePushStatus,
 } from "@/lib/local-db";
@@ -40,6 +43,9 @@ export async function pushExamPrepExport(payload: ExamPrepExport): Promise<ExamP
         mark: markPushLedger,
         remove: removePushLedger,
         saveStatus: savePushStatus,
+        readRetiredGroups,
+        rememberRetiredGroups,
+        forgetRetiredGroups,
       },
     });
   } finally {

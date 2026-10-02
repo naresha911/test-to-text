@@ -3,8 +3,8 @@
  *
  * Questions are written in batches. A batch is recorded locally only after
  * exam-prep accepts every row in it. The next push skips a question when that
- * record matches the current content and the remote rows are still complete.
- * A dropped connection therefore resumes at the first unconfirmed question.
+ * record matches the current content and the remote English rows are still
+ * complete. A dropped connection resumes at the first unconfirmed batch.
  *
  * Child rows are deleted and upserted with stable ids, so repeating a batch
  * cannot duplicate options, translations, or links. Question rows that are no
@@ -19,6 +19,7 @@ import {
   readContainerId,
   validateExamPrepExport,
   type PushPlan,
+  type QuestionCounts,
   type QuestionPushUnit,
   type RemotePresence,
   type Row,
@@ -31,6 +32,7 @@ const DEFAULT_STANDARDS: Record<number, { name: string; display_order: number }>
 };
 
 const BATCH_SIZE = 20;
+const ENGLISH = "en";
 
 export type PushLedgerStatus = {
   status: "in_progress" | "incomplete" | "complete";
@@ -47,6 +49,9 @@ export type PushLedger = {
   ): Promise<void>;
   remove(documentId: string, questionIds: string[]): Promise<void>;
   saveStatus(documentId: string, status: PushLedgerStatus): Promise<void>;
+  readRetiredGroups(documentId: string): Promise<string[]>;
+  rememberRetiredGroups(documentId: string, groupIds: string[]): Promise<void>;
+  forgetRetiredGroups(documentId: string, groupIds: string[]): Promise<void>;
 };
 
 export type ExamPrepPushResult = {
@@ -153,20 +158,27 @@ async function loadPresence(writer: RemoteWriter, plan: PushPlan): Promise<Map<s
 
   const linkTable = plan.kind === "paper" ? "paper_questions" : "test_questions";
   const linkColumn = plan.kind === "paper" ? "paper_id" : "test_id";
-  const links = await writer.selectEq(linkTable, "question_id", linkColumn, plan.documentId);
+  const linkColumns =
+    plan.kind === "paper"
+      ? "question_id,section,question_order,marks,negative_marks"
+      : "question_id,section_id,question_order,marks,negative_marks";
+  const links = await writer.selectEq(linkTable, linkColumns, linkColumn, plan.documentId);
   for (const row of links) {
     const state = presence.get(String(row["question_id"] ?? ""));
-    if (state) state.linked = true;
+    if (!state) continue;
+    state.linked = true;
+    state.link = row;
   }
 
-  const countRows = async (table: string, field: keyof RemotePresence) => {
-    const rows = await writer.selectIn(table, "question_id", "question_id", ids);
+  const countRows = async (table: string, field: keyof QuestionCounts, columns = "question_id") => {
+    const rows = await writer.selectIn(table, columns, "question_id", ids);
     for (const row of rows) {
+      if (columns.includes("language_code") && row["language_code"] !== ENGLISH) continue;
       const state = presence.get(String(row["question_id"] ?? ""));
-      if (state && field !== "linked") state[field] += 1;
+      if (state) state[field] += 1;
     }
   };
-  await countRows("question_translations", "translations");
+  await countRows("question_translations", "translations", "question_id,language_code");
   await countRows("question_options", "options");
   await countRows("question_tags", "tags");
   await countRows("matching_items", "matchingItems");
@@ -180,11 +192,12 @@ async function loadPresence(writer: RemoteWriter, plan: PushPlan): Promise<Map<s
   const optionIds = [...optionOwner.keys()];
   const optionTranslations = await writer.selectIn(
     "option_translations",
-    "option_id",
+    "option_id,language_code",
     "option_id",
     optionIds,
   );
   for (const row of optionTranslations) {
+    if (row["language_code"] !== ENGLISH) continue;
     const questionId = optionOwner.get(String(row["option_id"] ?? ""));
     const state = questionId ? presence.get(questionId) : undefined;
     if (state) state.optionTranslations += 1;
@@ -200,16 +213,21 @@ async function loadPresence(writer: RemoteWriter, plan: PushPlan): Promise<Map<s
   }
   const groupTranslations = await writer.selectIn(
     "question_group_translations",
-    "group_id",
+    "group_id,language_code",
     "group_id",
     [...groupOwner.keys()],
   );
-  const translatedGroups = new Set(groupTranslations.map((row) => String(row["group_id"] ?? "")));
+  const englishByGroup = new Map<string, number>();
+  for (const row of groupTranslations) {
+    if (row["language_code"] !== ENGLISH) continue;
+    const groupId = String(row["group_id"] ?? "");
+    englishByGroup.set(groupId, (englishByGroup.get(groupId) ?? 0) + 1);
+  }
   for (const [groupId, questionIds] of groupOwner) {
-    if (!translatedGroups.has(groupId)) continue;
+    const count = englishByGroup.get(groupId) ?? 0;
     for (const questionId of questionIds) {
       const state = presence.get(questionId);
-      if (state) state.groupTranslations = 1;
+      if (state) state.groupTranslations = count;
     }
   }
   return presence;
@@ -230,11 +248,21 @@ async function replaceBatch(
   const previousGroups = await writer.selectIn("group_questions", "group_id", "question_id", ids);
   const retired = previousGroups.map((row) => String(row["group_id"] ?? "")).filter(Boolean);
 
+  const desiredOptionIds = [
+    ...new Set(batch.flatMap((unit) => unit.options.map((option) => String(option["id"] ?? "")))),
+  ].filter(Boolean);
+  const existingOptions = await writer.selectIn("question_options", "id", "question_id", ids);
+  const staleOptionIds = existingOptions
+    .map((row) => String(row["id"] ?? ""))
+    .filter((id) => id && !desiredOptionIds.includes(id));
   await writer.deleteIn("matching_pairs", "question_id", ids);
   await writer.deleteIn("matching_items", "question_id", ids);
-  await writer.deleteIn("question_options", "question_id", ids);
+  await writer.deleteIn("question_options", "id", staleOptionIds);
   await writer.deleteIn("question_tags", "question_id", ids);
-  await writer.deleteIn("question_translations", "question_id", ids);
+  await writer.deleteIn("question_translations", "question_id", ids, {
+    column: "language_code",
+    value: ENGLISH,
+  });
   await writer.deleteIn("group_questions", "question_id", ids);
 
   const groups = uniqueRows(batch.flatMap((unit) => (unit.group ? [unit.group] : [])));
@@ -246,6 +274,7 @@ async function replaceBatch(
     "question_group_translations",
     "group_id",
     groups.map((group) => String(group["id"])),
+    { column: "language_code", value: ENGLISH },
   );
   await writer.upsert("question_group_translations", groupTranslations);
   await writer.upsert(
@@ -256,6 +285,10 @@ async function replaceBatch(
     "question_options",
     batch.flatMap((unit) => unit.options),
   );
+  await writer.deleteIn("option_translations", "option_id", desiredOptionIds, {
+    column: "language_code",
+    value: ENGLISH,
+  });
   await writer.upsert(
     "option_translations",
     batch.flatMap((unit) => unit.optionTranslations),
@@ -300,20 +333,30 @@ async function unlinkRemoved(
   await writer.updateIn("questions", { is_active: false }, "id", questionIds);
 }
 
-async function deleteEmptyGroups(
+async function releaseRetiredGroups(
   writer: RemoteWriter,
+  ledger: PushLedger,
   plan: PushPlan,
-  retired: Set<string>,
+  extra: string[],
 ): Promise<void> {
+  await ledger.rememberRetiredGroups(plan.documentId, extra);
+  const remembered = await ledger.readRetiredGroups(plan.documentId);
   const desired = new Set(
     plan.units.flatMap((unit) => (unit.group ? [String(unit.group["id"])] : [])),
   );
-  const candidates = [...retired].filter((id) => id && !desired.has(id));
-  if (!candidates.length) return;
-  const remaining = await writer.selectIn("group_questions", "group_id", "group_id", candidates);
+  const candidates = [...new Set(remembered)].filter((id) => id && !desired.has(id));
+  const remaining = candidates.length
+    ? await writer.selectIn("group_questions", "group_id", "group_id", candidates)
+    : [];
   const used = new Set(remaining.map((row) => String(row["group_id"] ?? "")));
   const empty = candidates.filter((id) => !used.has(id));
   await writer.deleteIn("question_groups", "id", empty);
+  const resolved = [
+    ...empty,
+    ...candidates.filter((id) => used.has(id)),
+    ...remembered.filter((id) => desired.has(id)),
+  ];
+  await ledger.forgetRetiredGroups(plan.documentId, resolved);
 }
 
 async function deleteUnusedSections(writer: RemoteWriter, plan: PushPlan): Promise<void> {
@@ -323,7 +366,10 @@ async function deleteUnusedSections(writer: RemoteWriter, plan: PushPlan): Promi
   const stale = remote.map((row) => String(row["id"] ?? "")).filter((id) => id && !desired.has(id));
   if (!stale.length) return;
   const rules = await writer.selectIn("test_rules", "section_id", "section_id", stale);
-  const blocked = new Set(rules.map((row) => String(row["section_id"] ?? "")));
+  const linked = await writer.selectIn("test_questions", "section_id", "section_id", stale);
+  const blocked = new Set(
+    [...rules, ...linked].map((row) => String(row["section_id"] ?? "")).filter(Boolean),
+  );
   await writer.deleteIn(
     "test_sections",
     "id",
@@ -364,17 +410,21 @@ export async function runExamPrepPush(
   }
 
   const now = deps.now ?? (() => new Date().toISOString());
-  const batchSize = deps.batchSize ?? BATCH_SIZE;
+  const batchSize = Math.max(1, deps.batchSize ?? BATCH_SIZE);
   let pushed = 0;
   let skipped = 0;
   let removed = 0;
+  let synced = 0;
+  let tracked = false;
   const base = resultBase({ documentId: plan.documentId, title: plan.title, total: plan.units.length });
 
   try {
+    synced = (await deps.ledger.read(plan.documentId)).size;
+    tracked = true;
     await deps.ledger.saveStatus(plan.documentId, {
       status: "in_progress",
       total: plan.units.length,
-      synced: 0,
+      synced,
       error: null,
     });
     await ensureStandards(deps.writer, plan.standardIds);
@@ -401,9 +451,23 @@ export async function runExamPrepPush(
           .filter((id) => id && !desired.has(id)),
       ),
     ];
+    const staleGroups = stale.length
+      ? await deps.writer.selectIn("group_questions", "group_id", "question_id", stale)
+      : [];
+    await deps.ledger.rememberRetiredGroups(
+      plan.documentId,
+      staleGroups.map((row) => String(row["group_id"] ?? "")),
+    );
     await unlinkRemoved(deps.writer, plan, stale);
     await deps.ledger.remove(plan.documentId, stale);
+    await releaseRetiredGroups(
+      deps.writer,
+      deps.ledger,
+      plan,
+      staleGroups.map((row) => String(row["group_id"] ?? "")),
+    );
     removed = stale.length;
+    synced = (await deps.ledger.read(plan.documentId)).size;
 
     const ledger = await deps.ledger.read(plan.documentId);
     const presence = await loadPresence(deps.writer, plan);
@@ -411,9 +475,20 @@ export async function runExamPrepPush(
       questionNeedsPush(unit, ledger.get(unit.questionId), presence.get(unit.questionId)),
     );
     skipped = plan.units.length - pending.length;
+    synced = skipped;
 
     const retiredGroups = new Set<string>();
     for (const batch of chunks(pending, batchSize)) {
+      const previousGroups = await deps.writer.selectIn(
+        "group_questions",
+        "group_id",
+        "question_id",
+        batch.map((unit) => unit.questionId),
+      );
+      await deps.ledger.rememberRetiredGroups(
+        plan.documentId,
+        previousGroups.map((row) => String(row["group_id"] ?? "")),
+      );
       const retired = await replaceBatch(deps.writer, plan, batch, now());
       for (const groupId of retired) retiredGroups.add(groupId);
       await deps.ledger.mark(
@@ -421,15 +496,16 @@ export async function runExamPrepPush(
         batch.map((unit) => ({ questionId: unit.questionId, contentHash: unit.contentHash })),
       );
       pushed += batch.length;
+      synced = skipped + pushed;
       await deps.ledger.saveStatus(plan.documentId, {
         status: "in_progress",
         total: plan.units.length,
-        synced: skipped + pushed,
+        synced,
         error: null,
       });
     }
 
-    await deleteEmptyGroups(deps.writer, plan, retiredGroups);
+    await releaseRetiredGroups(deps.writer, deps.ledger, plan, [...retiredGroups]);
     await deleteUnusedSections(deps.writer, plan);
     await deps.ledger.saveStatus(plan.documentId, {
       status: "complete",
@@ -440,7 +516,13 @@ export async function runExamPrepPush(
     return { ...base, pushed, skipped, removed, complete: true };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Push failed.";
-    const synced = skipped + pushed;
+    if (!tracked) {
+      try {
+        synced = (await deps.ledger.read(plan.documentId)).size;
+      } catch {
+        synced = skipped + pushed;
+      }
+    }
     try {
       await deps.ledger.saveStatus(plan.documentId, {
         status: "incomplete",

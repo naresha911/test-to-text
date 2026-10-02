@@ -183,15 +183,39 @@ export function examPrepClient(): SupabaseClient {
   });
 }
 
+const STABLE_ORDER: Record<string, string[]> = {
+  question_tags: ["question_id", "tag"],
+  matching_pairs: ["question_id", "left_item_id", "right_item_id"],
+  group_questions: ["group_id", "question_id"],
+  paper_questions: ["paper_id", "question_id"],
+  test_questions: ["test_id", "question_id"],
+};
+
 function request(query: PromiseLike<unknown>): PromiseLike<PostgrestResult> {
   return query as PromiseLike<PostgrestResult>;
+}
+
+/** Page through a stable key so a second page cannot skip or repeat rows. */
+function ordered(
+  table: string,
+  query: { order: (column: string, options: { ascending: boolean }) => unknown },
+): { range: (from: number, to: number) => PromiseLike<unknown> } {
+  const columns = STABLE_ORDER[table] ?? ["id"];
+  return columns.reduce<unknown>(
+    (current, column) =>
+      (current as { order: (column: string, options: { ascending: boolean }) => unknown }).order(
+        column,
+        { ascending: true },
+      ),
+    query,
+  ) as { range: (from: number, to: number) => PromiseLike<unknown> };
 }
 
 export function createSupabaseWriter(client: SupabaseClient = examPrepClient()): RemoteWriter {
   return {
     async selectEq(table, columns, column, value) {
       return selectAll(table, (from, to) =>
-        request(client.from(table).select(columns).eq(column, value).range(from, to)),
+        request(ordered(table, client.from(table).select(columns).eq(column, value)).range(from, to)),
       );
     },
 
@@ -200,7 +224,7 @@ export function createSupabaseWriter(client: SupabaseClient = examPrepClient()):
       const all: Row[] = [];
       for (const slice of chunks(values, WRITE_CHUNK)) {
         const rows = await selectAll(table, (from, to) =>
-          request(client.from(table).select(columns).in(column, slice).range(from, to)),
+          request(ordered(table, client.from(table).select(columns).in(column, slice)).range(from, to)),
         );
         all.push(...rows);
       }

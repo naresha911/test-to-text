@@ -150,6 +150,12 @@ function schemaSql(): string {
       last_error TEXT,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS pp_push_retired_groups (
+      document_id TEXT NOT NULL,
+      group_id TEXT NOT NULL,
+      PRIMARY KEY (document_id, group_id)
+    );
   `;
 }
 
@@ -823,6 +829,7 @@ export async function deleteDocument(id: string): Promise<void> {
     }
     if (!row) return;
     db.run("DELETE FROM pp_push_questions WHERE document_id = ?", [id]);
+    db.run("DELETE FROM pp_push_retired_groups WHERE document_id = ?", [id]);
     db.run("DELETE FROM pp_push_documents WHERE document_id = ?", [id]);
     db.run("DELETE FROM pp_pages WHERE document_id = ?", [id]);
     db.run("DELETE FROM pp_documents WHERE id = ?", [id]);
@@ -1033,6 +1040,43 @@ export async function removePushLedger(documentId: string, questionIds: string[]
       db.run("DELETE FROM pp_push_questions WHERE document_id = ? AND question_id = ?", [
         documentId,
         questionId,
+      ]);
+    }
+  });
+}
+
+export async function readRetiredGroups(documentId: string): Promise<string[]> {
+  const db = await getDb();
+  const rows = queryAll(
+    db,
+    "SELECT group_id FROM pp_push_retired_groups WHERE document_id = ?",
+    [documentId],
+  );
+  return rows.map((row) => String(row["group_id"]));
+}
+
+export async function rememberRetiredGroups(documentId: string, groupIds: string[]): Promise<void> {
+  const ids = [...new Set(groupIds.filter(Boolean))];
+  if (!ids.length) return;
+  await withWrite((db) => {
+    for (const groupId of ids) {
+      db.run(
+        `INSERT INTO pp_push_retired_groups (document_id, group_id) VALUES (?, ?)
+         ON CONFLICT(document_id, group_id) DO NOTHING`,
+        [documentId, groupId],
+      );
+    }
+  });
+}
+
+export async function forgetRetiredGroups(documentId: string, groupIds: string[]): Promise<void> {
+  const ids = [...new Set(groupIds.filter(Boolean))];
+  if (!ids.length) return;
+  await withWrite((db) => {
+    for (const groupId of ids) {
+      db.run("DELETE FROM pp_push_retired_groups WHERE document_id = ? AND group_id = ?", [
+        documentId,
+        groupId,
       ]);
     }
   });

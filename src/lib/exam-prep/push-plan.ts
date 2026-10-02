@@ -33,7 +33,11 @@ export type QuestionCounts = {
   groupTranslations: number;
 };
 
-export type RemotePresence = QuestionCounts & { linked: boolean };
+export type RemotePresence = QuestionCounts & {
+  linked: boolean;
+  /** Link row currently stored for this question, when the paper still includes it. */
+  link: Row | null;
+};
 
 export type QuestionPushUnit = {
   questionId: string;
@@ -275,6 +279,7 @@ export function buildPushPlan(payload: ExamPrepExport): PushPlan {
 export function emptyPresence(): RemotePresence {
   return {
     linked: false,
+    link: null,
     translations: 0,
     options: 0,
     optionTranslations: 0,
@@ -284,6 +289,25 @@ export function emptyPresence(): RemotePresence {
     groupLinks: 0,
     groupTranslations: 0,
   };
+}
+
+function sameStoredValue(left: unknown, right: unknown): boolean {
+  if (left == null && right == null) return true;
+  if (typeof left === "number" || typeof right === "number") {
+    const leftNumber = Number(left);
+    const rightNumber = Number(right);
+    return Number.isFinite(leftNumber) && Number.isFinite(rightNumber) && leftNumber === rightNumber;
+  }
+  return left === right;
+}
+
+/** True when the remote paper/test link still has the order, section, and marks we wrote. */
+export function linkMatches(expected: Row, actual: Row | null): boolean {
+  if (!actual) return false;
+  return Object.entries(expected).every(([key, value]) => {
+    if (key === "paper_id" || key === "test_id" || key === "question_id") return true;
+    return sameStoredValue(value, actual[key]);
+  });
 }
 
 /**
@@ -297,7 +321,7 @@ export function questionNeedsPush(
   remote: RemotePresence | undefined,
 ): boolean {
   if (ledgerHash !== unit.contentHash) return true;
-  if (!remote?.linked) return true;
+  if (!remote?.linked || !linkMatches(unit.link, remote.link)) return true;
   const fields: (keyof QuestionCounts)[] = [
     "translations",
     "options",
