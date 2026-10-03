@@ -1,4 +1,5 @@
 import { normalizeQuestion, type Question, type QuestionType } from "@/lib/question-schema";
+import { withoutTrailingDirections } from "@/lib/reading/direction-boundary";
 import { auditQuestion } from "@/lib/reading/read-audit";
 import type { ContentMode } from "@/lib/reading/mode";
 
@@ -276,18 +277,20 @@ function pairLine(line: string): { left: string; right: string } | null {
 }
 
 function splitOptions(text: string, pattern: RegExp): { stem: string; options: OptionDraft[] } {
+  const source = withoutTrailingDirections(text);
   const regex = new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`);
-  const matches = [...text.matchAll(regex)];
-  if (matches.length < 2) return { stem: text.trim(), options: [] };
+  const matches = [...source.matchAll(regex)];
+  if (matches.length < 2) return { stem: source.trim(), options: [] };
 
   const first = matches[0]!.index ?? 0;
-  const stem = text.slice(0, first).trim();
+  const stem = source.slice(0, first).trim();
   const options: OptionDraft[] = [];
   const used = new Set<string>();
   matches.forEach((match, index) => {
     const start = (match.index ?? 0) + match[0].length;
-    const end = index + 1 < matches.length ? (matches[index + 1]!.index ?? text.length) : text.length;
-    const optionText = text.slice(start, end).trim().replace(/[.;,]$/, "");
+    const end = index + 1 < matches.length ? (matches[index + 1]!.index ?? source.length) : source.length;
+    const optionText = source.slice(start, end).trim().replace(/[.;,]$/, "");
+    if (!optionText) return;
     options.push({ key: unusedOptionKey(match[1]!.toUpperCase(), used), text: optionText });
   });
   return { stem, options };

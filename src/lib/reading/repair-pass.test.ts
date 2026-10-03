@@ -55,6 +55,23 @@ describe("question blocks", () => {
     expect(blocks[0]!.bbox[1]).toBeLessThan(blocks[1]!.bbox[1]);
   });
 
+  test("stops a question block before the next directions header", () => {
+    const blocks = segmentQuestionBlocks([
+      line("20. Living in a fool's paradise", 0.1, 0.1),
+      line("(d) To live in a world of imagination", 0.1, 0.2),
+      line("DIRECTIONS (21-25): Choose the word which best expresses", 0.1, 0.3),
+      line("the meaning of the given words.", 0.1, 0.34),
+      line("21. Timid", 0.1, 0.42),
+    ]);
+
+    expect(blocks.map((block) => block.number)).toEqual(["20", "21"]);
+    expect(blocks[0]?.lines.map((item) => item.text)).toEqual([
+      "20. Living in a fool's paradise",
+      "(d) To live in a world of imagination",
+    ]);
+    expect(blocks[1]?.lines.map((item) => item.text)).toEqual(["21. Timid"]);
+  });
+
   test("splits a question number that was merged into the previous block", () => {
     const blocks = segmentQuestionBlocks([
       line("1. First question about cats", 0.1, 0.1, 0.8),

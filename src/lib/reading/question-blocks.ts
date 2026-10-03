@@ -1,4 +1,5 @@
 import type { TextLineBox } from "@/lib/reader/parse-blocks";
+import { isDirectionStart } from "@/lib/reading/direction-boundary";
 
 export type QuestionBlock = {
   number: string;
@@ -31,10 +32,11 @@ export function segmentQuestionBlocks(lines: readonly TextLineBox[]): QuestionBl
       const number = head.text.trim().match(NUMBER_HEAD)?.[1];
       if (!number) continue;
       const top = head.bbox[1];
-      const bottom = next ? next.bbox[1] : columnBottom(usable, bounds, top);
+      const nextTop = next ? next.bbox[1] : columnBottom(usable, bounds, top);
+      const bottom = directionTop(usable, bounds, top, nextTop) ?? nextTop;
       const bbox = normalBox(bounds.left, top, bounds.right - bounds.left, bottom - top);
       const blockLines = usable
-        .filter((line) => lineInside(line, bbox))
+        .filter((line) => lineInside(line, bbox) && !isDirectionStart(line.text))
         .sort((a, b) => a.bbox[1] - b.bbox[1] || a.bbox[0] - b.bbox[0]);
       if (!blockLines.includes(head)) blockLines.unshift(head);
       blocks.push({ number, bbox, lines: blockLines });
@@ -72,6 +74,25 @@ function columnBoundList(columns: TextLineBox[][]): { left: number; right: numbe
     { left: 0, right: Math.max(mid, 0.2) },
     { left: Math.min(mid, 0.8), right: 1 },
   ];
+}
+
+/** The next directions header ends this question. The header belongs to the questions under it. */
+function directionTop(
+  lines: readonly TextLineBox[],
+  bounds: { left: number; right: number },
+  top: number,
+  nextTop: number,
+): number | null {
+  let y: number | null = null;
+  for (const line of lines) {
+    const center = line.bbox[0] + line.bbox[2] / 2;
+    if (center < bounds.left || center >= bounds.right) continue;
+    if (line.bbox[1] < top - 0.001) continue;
+    if (line.bbox[1] >= nextTop - 0.001) continue;
+    if (!isDirectionStart(line.text)) continue;
+    if (y == null || line.bbox[1] < y) y = line.bbox[1];
+  }
+  return y;
 }
 
 function columnBottom(

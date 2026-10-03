@@ -49,6 +49,71 @@ describe("structureOcrText", () => {
     expect(questions[3]?.options).toHaveLength(4);
   });
 
+  test("a directions header stays with the questions it introduces", () => {
+    const questions = structureOcrText(
+      [
+        "Section A",
+        "20. Living in a fool's paradise",
+        "(a) To believe wrongly that your situation is good",
+        "(b) To be fooled by someone",
+        "(c) To live in luxuriously after fooling someone",
+        "(d) To live in a world of imagination",
+        "DIRECTIONS (21-25): Choose the word which best expresses",
+        "the meaning of the given words.",
+        "21. Timid",
+        "(a) bold",
+        "(b) shy",
+        "(c) angry",
+        "(d) proud",
+        "25. Huge",
+        "(a) tiny",
+        "(b) vast",
+        "(c) slow",
+        "(d) kind",
+        "26. Next",
+        "(a) one",
+        "(b) two",
+        "(c) three",
+        "(d) four",
+      ].join("\n"),
+      11,
+    );
+
+    const question20 = questions.find((question) => question.number === "20");
+    const question21 = questions.find((question) => question.number === "21");
+    const question25 = questions.find((question) => question.number === "25");
+    const question26 = questions.find((question) => question.number === "26");
+
+    expect(question20?.options.map((option) => option.text)).toEqual([
+      "To believe wrongly that your situation is good",
+      "To be fooled by someone",
+      "To live in luxuriously after fooling someone",
+      "To live in a world of imagination",
+    ]);
+    expect(question20?.instructions).toBe("Section A");
+    expect(question21?.stem).toBe("Timid");
+    expect(question21?.instructions).toContain("DIRECTIONS (21-25)");
+    expect(question21?.instructions).toContain("the meaning of the given words.");
+    expect(question25?.instructions).toBe(question21?.instructions);
+    expect(question26?.instructions).toBe("Section A");
+    expect(question26?.stem).toBe("Next");
+  });
+
+  test("a directions header glued onto the last option is not part of that option", () => {
+    const questions = structureOcrText(
+      "20. Living in a fool's paradise (a) good (b) fooled (c) luxury (d) To live in a world of imagination DIRECTIONS (21-25): Choose the word. 21. Timid (a) bold (b) shy",
+      11,
+    );
+
+    const question20 = questions.find((question) => question.number === "20");
+    const question21 = questions.find((question) => question.number === "21");
+    expect(question20?.options[3]?.text).toBe("To live in a world of imagination");
+    expect(question20?.instructions ?? "").not.toContain("DIRECTIONS");
+    expect(question21?.stem).toBe("Timid");
+    expect(question21?.instructions).toContain("DIRECTIONS (21-25)");
+    expect(question21?.options.map((option) => option.text)).toEqual(["bold", "shy"]);
+  });
+
   test("still splits a numbered question", () => {
     const questions = structureOcrText(
       "1. The cat sat on the mat.\n(a) chair (b) mat (c) tree (d) sky",

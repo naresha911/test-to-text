@@ -7,6 +7,12 @@
  */
 
 import { normalizeQuestion, type Question, type QuestionType } from "@/lib/question-schema";
+import {
+  directionRange,
+  isDirectionStart,
+  splitGluedDirections,
+  withoutTrailingDirections,
+} from "@/lib/reading/direction-boundary";
 
 type Draft = {
   number: string | null;
@@ -22,18 +28,20 @@ const OPTION_SPLIT = /\(([A-Ha-h])\)\s*/g;
 const OPTION_LINE = /^\(([A-Ha-h])\)\s+\S/;
 
 function parseOptions(text: string): { stem: string; options: { key: string; text: string }[] } {
-  const matches = [...text.matchAll(OPTION_SPLIT)];
-  if (matches.length < 2) return { stem: text.trim(), options: [] };
+  const source = withoutTrailingDirections(text);
+  const matches = [...source.matchAll(OPTION_SPLIT)];
+  if (matches.length < 2) return { stem: source.trim(), options: [] };
 
   const first = matches[0]!.index ?? 0;
-  const stem = text.slice(0, first).trim();
+  const stem = source.slice(0, first).trim();
   const options: { key: string; text: string }[] = [];
   const used = new Set<string>();
 
   matches.forEach((match, i) => {
     const start = (match.index ?? 0) + match[0].length;
-    const end = i + 1 < matches.length ? (matches[i + 1]!.index ?? text.length) : text.length;
-    const body = text.slice(start, end).trim().replace(/[.;,]$/, "");
+    const end = i + 1 < matches.length ? (matches[i + 1]!.index ?? source.length) : source.length;
+    const body = source.slice(start, end).trim().replace(/[.;,]$/, "");
+    if (!body) return;
     options.push({ key: unusedOptionKey(match[1]!.toUpperCase(), used), text: body });
   });
 
@@ -150,9 +158,11 @@ function groupUnnumberedChoices(rawLines: string[]): Draft[] {
 
 /** Put a line break before a question number that OCR left mid-line, as in a two-column page. */
 function separateQuestionNumbers(pageText: string): string {
-  return pageText
-    .replace(/\r\n/g, "\n")
-    .replace(/([^\n])[ \t]+(\d{1,3})\s*[.)]\s+(?=[A-Za-z"'(])/g, "$1\n$2. ");
+  return splitGluedDirections(
+    pageText
+      .replace(/\r\n/g, "\n")
+      .replace(/([^\n])[ \t]+(\d{1,3})\s*[.)]\s+(?=[A-Za-z"'(])/g, "$1\n$2. "),
+  );
 }
 
 /** Group raw OCR text into questions without using a language model. */
@@ -165,35 +175,81 @@ export function structureOcrText(pageText: string, page: number): Question[] {
   const drafts: Draft[] = [];
   const pendingNumbers: string[] = [];
   let section: string | null = null;
-  let instructions: string | null = null;
+  let sectionInstructions: string | null = null;
+  let directionInstructions: string | null = null;
+  let directionSpan: { start: number; end: number } | null = null;
+  let directionMode = false;
+  let directionBuffer: string[] = [];
   let current: Draft | null = null;
 
+  const flushDirections = () => {
+    if (!directionBuffer.length) return;
+    const text = directionBuffer.join(" ").replace(/\s+/g, " ").trim();
+    directionBuffer = [];
+    if (!text) return;
+    directionInstructions = text;
+    directionSpan = directionRange(text);
+    directionMode = true;
+  };
+
+  const instructionsFor = (number: string | null): string | null => {
+    const parsed = Number(number);
+    if (directionMode && directionSpan && Number.isFinite(parsed)) {
+      if (parsed < directionSpan.start) return sectionInstructions;
+      if (parsed > directionSpan.end) {
+        directionMode = false;
+        return sectionInstructions;
+      }
+    }
+    return directionMode ? directionInstructions : sectionInstructions;
+  };
+
   for (const line of rawLines) {
+    if (isDirectionStart(line)) {
+      current = null;
+      directionBuffer = [line];
+      continue;
+    }
+
     const sectionMatch = line.match(SECTION);
+    const numberOnly = line.match(NUMBER_ONLY);
+    const numbered = line.match(NUMBER_START);
+    if (directionBuffer.length && !sectionMatch && !numberOnly && !numbered) {
+      directionBuffer.push(line);
+      continue;
+    }
+    if (directionBuffer.length) flushDirections();
+
     if (sectionMatch) {
       section = sectionMatch[1]!.toUpperCase();
-      instructions = line;
+      sectionInstructions = line;
+      directionMode = false;
+      directionSpan = null;
       current = null;
       continue;
     }
 
-    const numberOnly = line.match(NUMBER_ONLY);
     if (numberOnly) {
       pendingNumbers.push(numberOnly[1]!);
       current = null;
       continue;
     }
 
-    const numbered = line.match(NUMBER_START);
     if (numbered) {
-      current = { number: numbered[1]!, section, instructions, lines: [numbered[2]!] };
+      current = {
+        number: numbered[1]!,
+        section,
+        instructions: instructionsFor(numbered[1]!),
+        lines: [numbered[2]!],
+      };
       drafts.push(current);
       continue;
     }
 
     // Optiic sometimes prints bare numbers first and the bodies afterwards.
     if (!current && pendingNumbers.length) {
-      current = { number: pendingNumbers.shift()!, section, instructions, lines: [line] };
+      const number = pendingNumbers.shift()!;
+      current = { number, section, instructions: instructionsFor(number), lines: [line] };
       drafts.push(current);
       continue;
     }
@@ -204,7 +260,7 @@ export function structureOcrText(pageText: string, page: number): Question[] {
     }
 
     // Leading text before any question: treat as paper-level instructions.
-    instructions = instructions ? `${instructions} ${line}` : line;
+    sectionInstructions = sectionInstructions ? `${sectionInstructions} ${line}` : line;
   }
 
   const grouped = drafts.length ? drafts : groupUnnumberedChoices(rawLines);

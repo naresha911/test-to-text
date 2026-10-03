@@ -47,6 +47,35 @@ describe("structureCropText", () => {
     expect(paren?.options.map((option) => option.text)).toEqual(["10", "20", "30"]);
   });
 
+  test("drops a directions header that follows the last choice", () => {
+    const question = structureCropText(
+      [
+        "20. Living in a fool's paradise",
+        "(a) To believe wrongly that your situation is good",
+        "(b) To be fooled by someone",
+        "(c) To live in luxuriously after fooling someone",
+        "(d) To live in a world of imagination",
+        "DIRECTIONS (21-25): Choose the word which best expresses the meaning of the given words.",
+        "21. Timid",
+        "(a) bold",
+        "(b) shy",
+      ].join("\n"),
+      "parentheses",
+      11,
+      "20",
+    );
+
+    expect(question?.number).toBe("20");
+    expect(question?.stem).toBe("Living in a fool's paradise");
+    expect(question?.options.map((option) => option.text)).toEqual([
+      "To believe wrongly that your situation is good",
+      "To be fooled by someone",
+      "To live in luxuriously after fooling someone",
+      "To live in a world of imagination",
+    ]);
+    expect(question?.instructions ?? "").not.toContain("DIRECTIONS");
+  });
+
   test("a single letter marker stays in the question", () => {
     const question = structureCropText("See note A. The capital is Paris.", "letters", 0, "1");
 
