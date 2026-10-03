@@ -7,6 +7,26 @@ export type SolutionAudience = {
   notes?: string | null;
 };
 
+/** System message sent with every hint/solution request. */
+export const SOLUTION_SYSTEM_PROMPT = `You are an expert exam tutor. Given one structured question (already reviewed by a human), you write a learner hint and a full solution.
+
+RULES
+1. HINT: a short nudge only. Point toward the method or a key idea. NEVER state the final answer, correct option letter, numeric result, or true/false value.
+2. EXPLANATION (solution): a full worked solution with clear reasoning suited to the exam audience (school / board / competitive as indicated). Use step-by-step language a student can follow. End with the final answer clearly labelled.
+3. Mathematics, chemistry and logic notation MUST be LaTeX: inline $...$ and display $$...$$.
+4. Use every relevant context provided (passage for comprehension, assertion/reason, options, figure descriptions, match columns). Do not invent a different question.
+5. Fill missing answer fields when you can determine them:
+   - MCQ / multi_select: answer_keys (option keys) and options[].is_correct
+   - true_false: answer_boolean
+   - fill_blank: blanks[] in order
+   - short_answer / long_answer / numerical: answer_text
+   - match_the_following: match_pairs with completed right sides when solvable
+6. If the stem or options look OCR-garbled, still solve the intended question from context, but do NOT return a rewritten stem — the human editor owns the text.
+7. Return ONLY JSON. No prose, no markdown fences.
+
+OUTPUT SHAPE
+{"hint":"...","explanation":"...","answer_keys":["A"],"answer_text":null,"answer_boolean":null,"options":[{"key":"A","text":"...","is_correct":true}],"blanks":[],"match_pairs":[{"left":"...","right":"..."}]}`;
+
 /**
  * Build the typed prompt payload for hint/solution generation.
  * Comprehension subs must receive the shared passage via `parentPassage`.
@@ -114,6 +134,74 @@ export function buildQuestionPromptPayload(
   return lines.join("\n").trim();
 }
 
+/** User message for one hint/solution request. Includes the question details. */
+export function buildSolutionUserPrompt(
+  question: Question,
+  options: { parentPassage?: string | null; audience?: SolutionAudience; force?: boolean } = {},
+): string {
+  const verb = options.force ? "Regenerate" : "Generate";
+  const payload = buildQuestionPromptPayload(question, {
+    ...(options.parentPassage !== undefined ? { parentPassage: options.parentPassage } : {}),
+    ...(options.audience ? { audience: options.audience } : {}),
+  });
+  return `${verb} hint and solution for this question.\n\n${payload}`;
+}
+
+/** True when the question has a determined right answer. A passage set needs every sub-question. */
+export function questionHasAnswer(question: Question): boolean {
+  switch (question.type) {
+    case "true_false":
+      return question.answer_boolean != null;
+    case "fill_blank":
+      return question.blanks.some((blank) => blank.trim().length > 0);
+    case "match_the_following":
+      return (
+        question.match_pairs.length > 0 &&
+        question.match_pairs.every((pair) => pair.right.trim().length > 0)
+      );
+    case "short_answer":
+    case "long_answer":
+    case "numerical":
+      return Boolean(question.answer_text?.trim());
+    case "comprehension":
+      return (
+        question.sub_questions.length > 0 &&
+        question.sub_questions.every((sub) => questionHasAnswer(sub))
+      );
+    case "mcq":
+    case "multi_select":
+    case "assertion_reason":
+      return (
+        question.answer_keys.some((key) => key.trim().length > 0) ||
+        question.options.some((option) => option.is_correct === true)
+      );
+    default:
+      return (
+        question.answer_keys.some((key) => key.trim().length > 0) ||
+        question.options.some((option) => option.is_correct === true) ||
+        Boolean(question.answer_text?.trim()) ||
+        question.answer_boolean != null
+      );
+  }
+}
+
+/** Ids that still have no right answer. Comprehension returns the incomplete sub-questions. */
+export function missingAnswerIds(question: Question | undefined): string[] {
+  if (!question) return [];
+  if (question.type === "comprehension" && question.sub_questions.length) {
+    return question.sub_questions.flatMap((sub) => missingAnswerIds(sub));
+  }
+  return questionHasAnswer(question) ? [] : [question.id];
+}
+
+/** True when a hint, a solution, or a right answer is still missing. */
+export function solutionIncomplete(question: Question): boolean {
+  if (question.type === "comprehension" && question.sub_questions.length) {
+    return question.sub_questions.some((sub) => solutionIncomplete(sub));
+  }
+  return !question.hint?.trim() || !question.explanation?.trim() || !questionHasAnswer(question);
+}
+
 /** Questions that should receive their own hint/solution when a parent is approved. */
 export function targetsForHintSolution(question: Question): Array<{
   question: Question;
@@ -128,10 +216,7 @@ export function targetsForHintSolution(question: Question): Array<{
   return [{ question }];
 }
 
-/** True when hint or solution still needs an AI fill (missing only). */
+/** True when hint, solution, or a right answer still needs an AI fill. */
 export function needsHintOrSolution(question: Question): boolean {
-  if (question.type === "comprehension" && question.sub_questions.length) {
-    return question.sub_questions.some((sub) => !sub.hint?.trim() || !sub.explanation?.trim());
-  }
-  return !question.hint?.trim() || !question.explanation?.trim();
+  return solutionIncomplete(question);
 }

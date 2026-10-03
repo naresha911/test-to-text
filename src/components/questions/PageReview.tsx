@@ -1,11 +1,16 @@
 import { CheckCircle2, Image as ImageIcon } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useRef, useState, type MutableRefObject } from "react";
 
 import { AddQuestionForm, type NewQuestionInput } from "@/components/questions/AddQuestionForm";
 import { QuestionCard } from "@/components/questions/QuestionCard";
+import { SolutionUiContext, type SolutionUiValue } from "@/components/questions/solution-ui";
 import { Badge } from "@/components/ui/badge";
+import type { SolutionPromptReveal } from "@/hooks/useSolutionGeneration";
 import { sortQuestions } from "@/lib/question-order";
+import type { SolutionAudience } from "@/lib/question-context";
 import type { Question } from "@/lib/question-schema";
+
+const EMPTY_QUEUED = new Set<string>();
 
 type Props = {
   questions: Question[];
@@ -15,9 +20,18 @@ type Props = {
   showImages?: boolean | undefined;
   pageUrls?: Array<string | undefined> | undefined;
   resolveFigure?: ((path: string) => string | undefined) | undefined;
-  onApprovalChange?: ((questionId: string, approved: boolean) => void) | undefined;
+  onApprovalChange?:
+    | ((questionId: string, approved: boolean, options?: { userPrompt?: string }) => void)
+    | undefined;
   onQuestionChange?: ((question: Question) => void) | undefined;
-  onRegenerate?: ((questionId: string) => void) | undefined;
+  onRegenerate?:
+    | ((questionId: string, options?: { userPrompt?: string }) => void)
+    | undefined;
+  solutionAudience?: SolutionAudience | undefined;
+  queuedIds?: Set<string> | undefined;
+  promptReveal?: SolutionPromptReveal | null | undefined;
+  /** Latest edited prompt for each question, shared with solution generation. */
+  promptStore?: MutableRefObject<Map<string, string>> | undefined;
   onDelete?: ((questionId: string) => void) | undefined;
   onAddQuestion?: ((input: NewQuestionInput) => string | void) | undefined;
   onReviewGenerated?: ((questionId: string, status: "reviewed" | "rejected") => void) | undefined;
@@ -41,8 +55,23 @@ export function PageReview({
   onRegenerateGenerated,
   onRegenerateFigure,
   generatingIds,
+  solutionAudience,
+  queuedIds,
+  promptReveal,
+  promptStore,
 }: Props) {
   const [focusId, setFocusId] = useState<string | null>(null);
+  const fallbackPrompts = useRef(new Map<string, string>());
+  const prompts = promptStore ?? fallbackPrompts;
+  const solutionUi = useMemo<SolutionUiValue>(
+    () => ({
+      ...(solutionAudience ? { audience: solutionAudience } : {}),
+      queuedIds: queuedIds ?? EMPTY_QUEUED,
+      promptReveal: promptReveal ?? null,
+      prompts,
+    }),
+    [solutionAudience, queuedIds, promptReveal, prompts],
+  );
   const sorted = sortQuestions(questions);
 
   function handleAdd(input: NewQuestionInput) {
@@ -51,6 +80,7 @@ export function PageReview({
   }
 
   return (
+    <SolutionUiContext.Provider value={solutionUi}>
     <div className="space-y-4">
       {onAddQuestion ? (
         <AddQuestionForm questions={numberingQuestions ?? questions} onAdd={handleAdd} />
@@ -122,7 +152,8 @@ export function PageReview({
               {...(resolveFigure ? { resolve: resolveFigure } : {})}
               {...(onApprovalChange
                 ? {
-                    onApprovalChange: (next) => onApprovalChange(question.id, next),
+                    onApprovalChange: (next, options) =>
+                      onApprovalChange(question.id, next, options),
                   }
                 : {})}
               {...(onQuestionChange ? { onChange: onQuestionChange } : {})}
@@ -137,5 +168,6 @@ export function PageReview({
         );
       })}
     </div>
+    </SolutionUiContext.Provider>
   );
 }

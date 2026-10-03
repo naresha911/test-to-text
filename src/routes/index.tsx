@@ -7,7 +7,6 @@ import {
   ImagePlus,
   Loader2,
   Sparkles,
-  Trash2,
   X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -31,8 +30,8 @@ import {
   type PageRecord,
 } from "@/lib/document-types";
 import { extractPage } from "@/lib/extract.functions";
-import { generateForApprovedQuestion } from "@/lib/hint-solution-client";
 import { generateHintSolution } from "@/lib/hint-solution.functions";
+import { useSolutionGeneration } from "@/hooks/useSolutionGeneration";
 import {
   cropFigure,
   OCR_SPACE_MAX_BYTES,
@@ -47,7 +46,6 @@ import {
   getLocalDocument,
   markLocalPageOcr,
   removeLocalPage,
-  resetLocalDocumentPageReads,
   saveLocalDocument,
   saveLocalFigure,
 } from "@/lib/local-store.functions";
@@ -67,7 +65,7 @@ import type { ContentMode } from "@/lib/reading/mode";
 import {
   planPageRead,
   reindexQuestionsAfterPageRemoval,
-  replaceQuestionsForPage,
+  addReadQuestions,
 } from "@/lib/reading/read-plan";
 import { cn } from "@/lib/utils";
 
@@ -126,7 +124,6 @@ function HomePage() {
   const runRemovePage = useServerFn(removeLocalPage);
   const runSaveFigure = useServerFn(saveLocalFigure);
   const runMarkOcr = useServerFn(markLocalPageOcr);
-  const runResetReads = useServerFn(resetLocalDocumentPageReads);
   const runCatalog = useServerFn(getLocalCatalog);
   const runExport = useServerFn(exportLocalDocument);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -152,7 +149,6 @@ function HomePage() {
   const [selectedPageIds, setSelectedPageIds] = useState<Set<string>>(() => new Set());
   const [forceRead, setForceRead] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
-  const [generatingIds, setGeneratingIds] = useState<Set<string>>(() => new Set());
   const [loadingDoc, setLoadingDoc] = useState(!!searchId);
   const questionsRef = useRef(questions);
   questionsRef.current = questions;
@@ -382,6 +378,17 @@ function HomePage() {
     [catalog.subjects, meta.subject_id, meta.exam, meta.notes],
   );
 
+  const solution = useSolutionGeneration({
+    questionsRef,
+    setQuestions,
+    runGenerate: runHintSolution,
+    audience,
+    save: (next) => {
+      const id = documentIdRef.current;
+      if (id) void persist(id, next, undefined, { immediate: true });
+    },
+  });
+
   function patchMeta(partial: Partial<typeof meta>) {
     setMeta((current) => {
       const next = { ...current, ...partial };
@@ -444,54 +451,6 @@ function HomePage() {
     });
   }
 
-  async function runGeneration(questionId: string, force = false) {
-    let requested: string[] = [];
-    try {
-      const result = await generateForApprovedQuestion({
-        questions: questionsRef.current,
-        questionId,
-        force,
-        audience,
-        runGenerate: runHintSolution,
-        onProgress: (ids) => {
-          requested = ids;
-          setGeneratingIds((current) => {
-            const next = new Set(current);
-            for (const id of ids) next.add(id);
-            return next;
-          });
-        },
-      });
-      if (result.generatedIds.length) {
-        setQuestions(result.questions);
-        if (documentId) persist(documentId, result.questions, undefined, { immediate: true });
-        toast.success(force ? "Hint and solution regenerated." : "Hint and solution ready.");
-      }
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not generate hint and solution.");
-    } finally {
-      if (requested.length) {
-        setGeneratingIds((current) => {
-          const next = new Set(current);
-          for (const id of requested) next.delete(id);
-          return next;
-        });
-      }
-    }
-  }
-
-  function setApproved(questionId: string, approved: boolean) {
-    setQuestions((current) => {
-      const updated = updateQuestionById(current, questionId, (question) => ({
-        ...question,
-        approved,
-      }));
-      if (documentId) persist(documentId, updated);
-      return updated;
-    });
-    if (approved) void runGeneration(questionId, false);
-  }
-
   const addFiles = useCallback(
     async (list: FileList | null) => {
       if (!list?.length) return;
@@ -516,33 +475,58 @@ function HomePage() {
     [runAppendPage],
   );
 
-  async function removeUploadedPage(page: PageRecord) {
+  async function removeSelectedPages() {
     if (progress) return;
-    try {
-      await runRemovePage({ data: { pageId: page.id } });
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not remove that page.");
+    const selected = pages
+      .filter((page) => selectedPageIds.has(page.id))
+      .sort((a, b) => b.page_index - a.page_index);
+    if (!selected.length) return;
+    const label =
+      selected.length === 1
+        ? `page ${selected[0]!.page_index + 1}`
+        : `${selected.length} pages`;
+    if (
+      !window.confirm(
+        `Remove ${label} from the image viewer? The recognized questions stay. A question is removed only when you use its delete button.`,
+      )
+    ) {
       return;
     }
-    const removedIndex = page.page_index;
+
+    const removedIds = new Set<string>();
+    let nextQuestions = questionsRef.current;
+    for (const page of selected) {
+      try {
+        await runRemovePage({ data: { pageId: page.id } });
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Could not remove that page.");
+        break;
+      }
+      removedIds.add(page.id);
+      nextQuestions = reindexQuestionsAfterPageRemoval(nextQuestions, page.page_index);
+    }
+    if (!removedIds.size) return;
+
     setSelectedPageIds((current) => {
-      if (!current.has(page.id)) return current;
       const next = new Set(current);
-      next.delete(page.id);
+      for (const id of removedIds) next.delete(id);
       return next;
     });
     setPages((current) =>
       current
-        .filter((item) => item.id !== page.id)
+        .filter((item) => !removedIds.has(item.id))
         .sort((a, b) => a.page_index - b.page_index)
         .map((item, index) => ({ ...item, page_index: index })),
     );
-    setQuestions((current) => {
-      const next = reindexQuestionsAfterPageRemoval(current, removedIndex);
-      if (documentId) persist(documentId, next);
-      return next;
-    });
-    toast.success(`Removed page ${removedIndex + 1}.`);
+    questionsRef.current = nextQuestions;
+    setQuestions(nextQuestions);
+    const savedId = documentIdRef.current;
+    if (savedId) persist(savedId, nextQuestions, undefined, { immediate: true });
+    toast.success(
+      removedIds.size === 1
+        ? "Removed that page from the viewer. Questions were kept."
+        : `Removed ${removedIds.size} pages from the viewer. Questions were kept.`,
+    );
   }
 
   function togglePageSelected(pageId: string) {
@@ -552,29 +536,6 @@ function HomePage() {
       else next.add(pageId);
       return next;
     });
-  }
-
-  async function clearAllQuestions() {
-    const savedId = documentIdRef.current;
-    if (savedId) {
-      try {
-        await runResetReads({ data: { documentId: savedId } });
-      } catch (error) {
-        toast.error(
-          error instanceof Error
-            ? error.message
-            : "Could not reset page read status. Questions were kept.",
-        );
-        return;
-      }
-      setPages((current) =>
-        current.map((page) => ({ ...page, ocr_status: "pending", read_mode: null })),
-      );
-    }
-    const cleared: Question[] = [];
-    questionsRef.current = cleared;
-    setQuestions(cleared);
-    if (savedId) await persist(savedId, cleared, undefined, { immediate: true });
   }
 
   async function handleExtract() {
@@ -597,8 +558,8 @@ function HomePage() {
           plan.usedAllUnread
             ? forceRead
               ? "Every page is already read. Select the pages to read them again."
-              : "Every page is already read. Select pages and turn on Force read to replace their questions."
-            : "Selected pages are already read. Turn on Force read to replace their questions.",
+              : "Every page is already read. Select pages and turn on Force read to read them again. Existing questions stay."
+            : "Selected pages are already read. Turn on Force read to read them again. Existing questions stay.",
         );
       } else if (!plan.skippedRead.length && !plan.missingImage.length) {
         toast.error("Select pages that have not been read.");
@@ -701,7 +662,7 @@ function HomePage() {
             }
           }
 
-          collected = replaceQuestionsForPage(collected, page.page_index, result.questions);
+          collected = addReadQuestions(collected, result.questions);
           const sorted = sortQuestions(collected);
           collected = sorted;
           setQuestions(sorted);
@@ -758,7 +719,7 @@ function HomePage() {
           : ` Skipped ${plan.skippedRead.length} already read.`
         : "";
       const replacedNote = replaced
-        ? ` Replaced the previous questions on ${replaced} page${replaced === 1 ? "" : "s"}.`
+        ? ` Added another read of ${replaced} page${replaced === 1 ? "" : "s"}. Earlier questions were kept.`
         : "";
       const failedNote = failed ? ` ${failed} page(s) could not be read.` : "";
       toast.success(
@@ -969,15 +930,6 @@ function HomePage() {
                           </span>
                         ) : null}
                       </button>
-                      <button
-                        type="button"
-                        aria-label={`Remove page ${page.page_index + 1}`}
-                        disabled={!!progress}
-                        onClick={() => void removeUploadedPage(page)}
-                        className="absolute -top-1.5 -right-1.5 z-10 rounded-full bg-destructive p-0.5 text-destructive-foreground disabled:opacity-50"
-                      >
-                        <X className="h-3 w-3" aria-hidden="true" />
-                      </button>
                     </li>
                   );
                 })}
@@ -1049,6 +1001,21 @@ function HomePage() {
                   Force read
                 </label>
               </div>
+              {selectedPageIds.size ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="h-9"
+                  disabled={!!progress}
+                  onClick={() => void removeSelectedPages()}
+                >
+                  <X className="h-4 w-4" aria-hidden="true" />
+                  {selectedPageIds.size === 1
+                    ? "Remove page from viewer"
+                    : `Remove ${selectedPageIds.size} pages from viewer`}
+                </Button>
+              ) : null}
               <p className="text-xs text-muted-foreground">
                 {contentMode === "text"
                   ? "Words only. Diagrams are not cropped."
@@ -1302,15 +1269,6 @@ function HomePage() {
                     <Download className="h-4 w-4" aria-hidden="true" />
                     Download JSON
                   </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={!!progress}
-                    onClick={() => void clearAllQuestions()}
-                  >
-                    <Trash2 className="h-4 w-4" aria-hidden="true" />
-                    Clear
-                  </Button>
                 </div>
 
                 <div className="flex flex-wrap gap-2">
@@ -1335,7 +1293,8 @@ function HomePage() {
                 <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
                   Create a past paper or practice test, add images, then select pages and read them.
                   With none selected, Read pages reads every page that has not been read. Select a
-                  page and turn on Force read to read it again and replace its questions. Or add a
+                  page and turn on Force read to read it again. Existing questions stay until you delete
+                  them. Or add a
                   question yourself — cards line up by question number. Work stays in local SQLite
                   until you download exam-prep JSON.
                 </p>
@@ -1348,12 +1307,16 @@ function HomePage() {
                 numberingQuestions={questions}
                 showImages={false}
                 resolveFigure={(path) => figureUrls[path]}
-                onApprovalChange={setApproved}
+                onApprovalChange={solution.approve}
                 onQuestionChange={patchQuestion}
                 onDelete={deleteQuestion}
                 onAddQuestion={addQuestion}
-                onRegenerate={(questionId) => void runGeneration(questionId, true)}
-                generatingIds={generatingIds}
+                onRegenerate={solution.regenerate}
+                generatingIds={solution.generatingIds}
+                queuedIds={solution.queuedIds}
+                promptReveal={solution.promptReveal}
+                promptStore={solution.prompts}
+                solutionAudience={audience}
               />
             </div>
           </section>
@@ -1366,13 +1329,13 @@ function HomePage() {
 function readScopeNote(forceRead: boolean, selectedCount: number, alreadyRead: number): string {
   if (forceRead) {
     if (!selectedCount) {
-      return "Select an already-read page to read it again and replace its questions.";
+      return "Select an already-read page to read it again. Existing questions stay.";
     }
     if (alreadyRead === 1) {
-      return `${selectedCount} selected. 1 already read, so that page's questions will be replaced.`;
+      return `${selectedCount} selected. 1 already read, so it will be read again. Existing questions stay.`;
     }
     if (alreadyRead) {
-      return `${selectedCount} selected. ${alreadyRead} already read, so their questions will be replaced.`;
+      return `${selectedCount} selected. ${alreadyRead} already read, so they will be read again. Existing questions stay.`;
     }
     return `${selectedCount} selected. None have been read yet.`;
   }

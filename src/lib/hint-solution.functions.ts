@@ -8,7 +8,9 @@ import {
   omniroutersApiKey,
 } from "@/lib/generation/chat-provider";
 import {
-  buildQuestionPromptPayload,
+  buildSolutionUserPrompt,
+  questionHasAnswer,
+  SOLUTION_SYSTEM_PROMPT,
   type SolutionAudience,
 } from "@/lib/question-context";
 import { type HintSolutionResult } from "@/lib/hint-solution";
@@ -70,6 +72,8 @@ const InputSchema = z.object({
   parentPassage: z.string().max(20000).nullable().optional(),
   /** When true, overwrite existing hint and explanation. */
   force: z.boolean().optional().default(false),
+  /** Replaces the generated user message. The fixed instructions are still sent. */
+  userPrompt: z.string().max(80_000).optional(),
   audience: z
     .object({
       subject: z.string().max(200).nullable().optional(),
@@ -79,25 +83,6 @@ const InputSchema = z.object({
     .optional(),
   model: z.string().min(2).max(120).optional(),
 });
-
-const SYSTEM_PROMPT = `You are an expert exam tutor. Given one structured question (already reviewed by a human), you write a learner hint and a full solution.
-
-RULES
-1. HINT: a short nudge only. Point toward the method or a key idea. NEVER state the final answer, correct option letter, numeric result, or true/false value.
-2. EXPLANATION (solution): a full worked solution with clear reasoning suited to the exam audience (school / board / competitive as indicated). Use step-by-step language a student can follow. End with the final answer clearly labelled.
-3. Mathematics, chemistry and logic notation MUST be LaTeX: inline $...$ and display $$...$$.
-4. Use every relevant context provided (passage for comprehension, assertion/reason, options, figure descriptions, match columns). Do not invent a different question.
-5. Fill missing answer fields when you can determine them:
-   - MCQ / multi_select: answer_keys (option keys) and options[].is_correct
-   - true_false: answer_boolean
-   - fill_blank: blanks[] in order
-   - short_answer / long_answer / numerical: answer_text
-   - match_the_following: match_pairs with completed right sides when solvable
-6. If the stem or options look OCR-garbled, still solve the intended question from context, but do NOT return a rewritten stem — the human editor owns the text.
-7. Return ONLY JSON. No prose, no markdown fences.
-
-OUTPUT SHAPE
-{"hint":"...","explanation":"...","answer_keys":["A"],"answer_text":null,"answer_boolean":null,"options":[{"key":"A","text":"...","is_correct":true}],"blanks":[],"match_pairs":[{"left":"...","right":"..."}]}`;
 
 function extractJson(text: string): unknown {
   const cleaned = text
@@ -285,7 +270,12 @@ export const generateHintSolution = createServerFn({ method: "POST" })
     }
 
     const question = asQuestion(data.question);
-    if (!data.force && question.hint?.trim() && question.explanation?.trim()) {
+    if (
+      !data.force &&
+      question.hint?.trim() &&
+      question.explanation?.trim() &&
+      questionHasAnswer(question)
+    ) {
       return {
         hint: question.hint,
         explanation: question.explanation,
@@ -309,17 +299,17 @@ export const generateHintSolution = createServerFn({ method: "POST" })
           notes: data.audience.notes ?? null,
         }
       : undefined;
-    const payload = buildQuestionPromptPayload(question, {
-      parentPassage: data.parentPassage ?? null,
-      ...(audience ? { audience } : {}),
-    });
+    const userContent =
+      data.userPrompt?.trim() ||
+      buildSolutionUserPrompt(question, {
+        parentPassage: data.parentPassage ?? null,
+        ...(audience ? { audience } : {}),
+        force: data.force,
+      });
 
     const messages = [
-      { role: "system" as const, content: SYSTEM_PROMPT },
-      {
-        role: "user" as const,
-        content: `${data.force ? "Regenerate" : "Generate"} hint and solution for this question.\n\n${payload}`,
-      },
+      { role: "system" as const, content: SOLUTION_SYSTEM_PROMPT },
+      { role: "user" as const, content: userContent },
     ];
 
     const text = await completeChatWithFallback(

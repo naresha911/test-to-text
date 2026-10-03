@@ -11,10 +11,11 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { MathText } from "@/components/MathText";
 import { MathFormatHelp } from "@/components/questions/MathFormatHelp";
+import { useSolutionUi } from "@/components/questions/solution-ui";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -22,6 +23,11 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  buildSolutionUserPrompt,
+  questionHasAnswer,
+  SOLUTION_SYSTEM_PROMPT,
+} from "@/lib/question-context";
 import { detachImagePath, questionWithoutOption } from "@/lib/question-images";
 import { READ_FLAG_LABELS } from "@/lib/reading/read-audit";
 import {
@@ -547,6 +553,7 @@ function TypeBody({
                       },
                     }
                   : {})}
+                parentPassage={question.passage ?? null}
                 {...(generatingIds ? { generatingIds } : {})}
                 {...(onRegenerate ? { onRegenerate } : {})}
                 {...(onDelete ? { onDelete } : {})}
@@ -601,16 +608,21 @@ function HintSolutionBlock({
   question,
   editing,
   generating,
+  queued,
   onChange,
   onRegenerate,
 }: {
   question: Question;
   editing: boolean;
   generating?: boolean | undefined;
+  queued?: boolean | undefined;
   onChange?: ((next: Question) => void) | undefined;
   onRegenerate?: (() => void) | undefined;
 }) {
-  const show = editing || generating || question.hint || question.explanation || onRegenerate;
+  const answerMissing =
+    !questionHasAnswer(question) && Boolean(question.hint?.trim() || question.explanation?.trim());
+  const show =
+    editing || generating || queued || question.hint || question.explanation || onRegenerate;
   if (!show) return null;
 
   return (
@@ -626,8 +638,15 @@ function HintSolutionBlock({
               <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
               Generating…
             </Badge>
+          ) : queued ? (
+            <Badge variant="outline">Queued</Badge>
           ) : null}
-          {onRegenerate && question.approved && !generating ? (
+          {answerMissing && !generating && !queued ? (
+            <Badge variant="outline" className="border-destructive/50 text-destructive">
+              No answer
+            </Badge>
+          ) : null}
+          {onRegenerate && !generating && !queued && (question.approved || answerMissing) ? (
             <Button
               type="button"
               variant="ghost"
@@ -640,6 +659,11 @@ function HintSolutionBlock({
             </Button>
           ) : null}
         </div>
+        {answerMissing && !generating && !queued ? (
+          <p className="text-destructive">
+            No right answer was found. Edit the AI prompt below and regenerate.
+          </p>
+        ) : null}
 
         <div>
           <FieldLabel>Hint</FieldLabel>
@@ -654,7 +678,11 @@ function HintSolutionBlock({
             <MathText value={question.hint} className="text-muted-foreground" />
           ) : (
             <p className="text-muted-foreground italic">
-              {generating ? "Writing a hint…" : "Approve this question to generate a hint."}
+              {generating
+                ? "Writing a hint…"
+                : queued
+                  ? "Waiting in the queue…"
+                  : "Approve this question to generate a hint."}
             </p>
           )}
         </div>
@@ -672,7 +700,11 @@ function HintSolutionBlock({
             <MathText value={question.explanation} className="text-muted-foreground" />
           ) : (
             <p className="text-muted-foreground italic">
-              {generating ? "Writing a solution…" : "Approve this question to generate a solution."}
+              {generating
+                ? "Writing a solution…"
+                : queued
+                  ? "Waiting in the queue…"
+                  : "Approve this question to generate a solution."}
             </p>
           )}
         </div>
@@ -774,11 +806,95 @@ function PrintedQuestion({
   );
 }
 
+function SolutionPrompt({
+  open,
+  onOpenChange,
+  value,
+  busy,
+  canReset,
+  answerMissing,
+  onChange,
+  onReset,
+  onRegenerate,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  value: string;
+  busy: boolean;
+  canReset: boolean;
+  answerMissing: boolean;
+  onChange: (value: string) => void;
+  onReset: () => void;
+  onRegenerate: () => void;
+}) {
+  return (
+    <Collapsible open={open} onOpenChange={onOpenChange} className="mt-3">
+      <CollapsibleTrigger className="flex flex-wrap items-center gap-2 text-sm font-medium text-foreground [&[data-state=open]>svg]:rotate-180">
+        <ChevronDown className="h-4 w-4 transition-transform" aria-hidden="true" />
+        AI prompt
+        {answerMissing ? (
+          <Badge variant="outline" className="border-destructive/50 text-destructive">
+            No answer
+          </Badge>
+        ) : null}
+      </CollapsibleTrigger>
+      <CollapsibleContent className="mt-2 space-y-3">
+        <p className="text-sm text-muted-foreground">
+          This message is sent when you approve or regenerate. It includes the question details.
+          The fixed instructions below go with it. Edit the message and regenerate if the model
+          did not find a right answer. Several approvals run one at a time, in the order you check
+          them.
+        </p>
+        <div>
+          <FieldLabel>Question message</FieldLabel>
+          <Textarea
+            value={value}
+            rows={12}
+            maxLength={80000}
+            spellCheck={false}
+            className="font-mono text-xs leading-relaxed"
+            aria-label="AI prompt for this question"
+            onChange={(event) => onChange(event.target.value)}
+          />
+        </div>
+        <div className="flex flex-wrap gap-2">
+          {canReset ? (
+            <Button type="button" variant="outline" size="sm" onClick={onReset}>
+              Reset to current question
+            </Button>
+          ) : null}
+          <Button
+            type="button"
+            size="sm"
+            disabled={busy || !value.trim()}
+            onClick={onRegenerate}
+          >
+            <RefreshCw className="h-3 w-3" aria-hidden="true" />
+            Regenerate
+          </Button>
+        </div>
+        <Collapsible>
+          <CollapsibleTrigger className="flex items-center gap-2 text-xs font-medium text-muted-foreground [&[data-state=open]>svg]:rotate-180">
+            <ChevronDown className="h-3 w-3 transition-transform" aria-hidden="true" />
+            Fixed instructions
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <pre className="mt-2 max-h-48 overflow-auto rounded-md bg-secondary/40 p-3 text-xs whitespace-pre-wrap text-muted-foreground">
+              {SOLUTION_SYSTEM_PROMPT}
+            </pre>
+          </CollapsibleContent>
+        </Collapsible>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 export function QuestionCard({
   question,
   index,
   nested = false,
   startEditing = false,
+  parentPassage,
   resolve,
   onApprovalChange,
   onChange,
@@ -793,10 +909,16 @@ export function QuestionCard({
   index: number;
   nested?: boolean;
   startEditing?: boolean;
+  /** Passage from a comprehension parent. Sub-questions do not store it themselves. */
+  parentPassage?: string | null;
   resolve?: Resolver | undefined;
-  onApprovalChange?: ((approved: boolean) => void) | undefined;
+  onApprovalChange?:
+    | ((approved: boolean, options?: { userPrompt?: string }) => void)
+    | undefined;
   onChange?: ((next: Question) => void) | undefined;
-  onRegenerate?: ((questionId: string) => void) | undefined;
+  onRegenerate?:
+    | ((questionId: string, options?: { userPrompt?: string }) => void)
+    | undefined;
   onDelete?: ((questionId: string) => void) | undefined;
   onReviewGenerated?: ((questionId: string, status: "reviewed" | "rejected") => void) | undefined;
   onRegenerateGenerated?: ((questionId: string) => void) | undefined;
@@ -805,13 +927,69 @@ export function QuestionCard({
 }) {
   const [editing, setEditing] = useState(startEditing);
   const articleRef = useRef<HTMLElement>(null);
+  const solutionUi = useSolutionUi();
   const generating = generatingIds?.has(question.id) === true;
+  const queued = solutionUi?.queuedIds.has(question.id) === true;
   const canEdit = !!onChange;
+  const showSolutionPrompt =
+    Boolean(onRegenerate) &&
+    !question.approval_status &&
+    (question.type !== "comprehension" || question.sub_questions.length === 0);
+  const audience = solutionUi?.audience;
+  const builtPrompt = useMemo(
+    () =>
+      buildSolutionUserPrompt(question, {
+        ...(parentPassage !== undefined ? { parentPassage } : {}),
+        ...(audience ? { audience } : {}),
+      }),
+    [question, parentPassage, audience],
+  );
+  const [prompt, setPrompt] = useState(builtPrompt);
+  const [promptDirty, setPromptDirty] = useState(false);
+  const answerMissing =
+    !questionHasAnswer(question) &&
+    Boolean(
+      question.hint?.trim() ||
+        question.explanation?.trim() ||
+        solutionUi?.promptReveal?.ids.includes(question.id),
+    );
+  const [promptOpen, setPromptOpen] = useState(false);
 
   useEffect(() => {
     if (!startEditing) return;
     articleRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [startEditing]);
+
+  useEffect(() => {
+    if (!promptDirty) setPrompt(builtPrompt);
+  }, [builtPrompt, promptDirty]);
+
+  useEffect(() => {
+    if (solutionUi?.promptReveal?.ids.includes(question.id)) setPromptOpen(true);
+  }, [solutionUi?.promptReveal, question.id]);
+
+  useEffect(() => {
+    if (!showSolutionPrompt) return;
+    const text = (promptDirty ? prompt : builtPrompt).trim();
+    if (text) solutionUi?.prompts.current.set(question.id, text);
+  }, [showSolutionPrompt, promptDirty, prompt, builtPrompt, question.id, solutionUi?.prompts]);
+
+  function promptText(): string {
+    return (promptDirty ? prompt : builtPrompt).trim();
+  }
+
+  function rememberPrompt(text: string) {
+    if (text) solutionUi?.prompts.current.set(question.id, text);
+    setPrompt(text);
+    setPromptDirty(true);
+  }
+
+  function submitRegenerate() {
+    const text = promptText();
+    if (!text || !onRegenerate) return;
+    rememberPrompt(text);
+    onRegenerate(question.id, { userPrompt: text });
+  }
 
   return (
     <article
@@ -889,6 +1067,12 @@ export function QuestionCard({
         ) : null}
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
+          {queued || generating ? (
+            <Badge variant="outline" className="gap-1">
+              {generating ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" /> : null}
+              {generating ? "Generating…" : "Queued"}
+            </Badge>
+          ) : null}
           {onDelete ? (
             <Button
               type="button"
@@ -970,10 +1154,21 @@ export function QuestionCard({
               ) : null}
             </>
           ) : !nested && onApprovalChange && !question.approval_status ? (
-            <label className="flex cursor-pointer items-center gap-2 text-sm font-medium text-foreground">
+            <label
+              className="flex cursor-pointer items-center gap-2 text-sm font-medium text-foreground"
+              title="Approvals run one at a time, in the order you check them."
+            >
               <Checkbox
                 checked={question.approved === true}
-                onCheckedChange={(checked) => onApprovalChange(checked === true)}
+                onCheckedChange={(checked) => {
+                  if (checked === true) {
+                    const text = showSolutionPrompt ? promptText() : "";
+                    if (text) rememberPrompt(text);
+                    onApprovalChange(true, text ? { userPrompt: text } : undefined);
+                  } else {
+                    onApprovalChange(false);
+                  }
+                }}
                 aria-label={`Mark question ${question.number ?? index + 1} approved`}
               />
               Approved
@@ -1173,15 +1368,35 @@ export function QuestionCard({
       />
 
       {question.type !== "comprehension" || !question.sub_questions.length ? (
-        <HintSolutionBlock
-          question={question}
-          editing={editing}
-          {...(generating ? { generating: true } : {})}
-          {...(onChange ? { onChange } : {})}
-          {...(onRegenerate && !question.approval_status
-            ? { onRegenerate: () => onRegenerate(question.id) }
-            : {})}
-        />
+        <>
+          <HintSolutionBlock
+            question={question}
+            editing={editing}
+            {...(generating ? { generating: true } : {})}
+            {...(queued ? { queued: true } : {})}
+            {...(onChange ? { onChange } : {})}
+            {...(showSolutionPrompt ? { onRegenerate: submitRegenerate } : {})}
+          />
+          {showSolutionPrompt ? (
+            <SolutionPrompt
+              open={promptOpen}
+              onOpenChange={setPromptOpen}
+              value={promptDirty ? prompt : builtPrompt}
+              busy={generating || queued}
+              canReset={promptDirty && prompt.trim() !== builtPrompt.trim()}
+              answerMissing={answerMissing}
+              onChange={(next) => {
+                setPrompt(next);
+                setPromptDirty(true);
+              }}
+              onReset={() => {
+                setPrompt(builtPrompt);
+                setPromptDirty(false);
+              }}
+              onRegenerate={submitRegenerate}
+            />
+          ) : null}
+        </>
       ) : null}
     </article>
   );

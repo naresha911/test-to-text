@@ -34,7 +34,7 @@ export function isPageRead(page: PageReadTarget): boolean {
  * Choose which pages this Read pages click should OCR.
  * A selection limits the click to those pages. An empty selection means every unread page.
  * Pages already marked read are skipped, unless Force read is on and those pages are selected.
- * A forced read replaces that page's previous questions when the new read finds questions.
+ * A forced read adds the new questions. Questions already recognized stay until the user deletes them.
  */
 export function planPageRead<T extends PageReadTarget>(
   pages: readonly T[],
@@ -65,15 +65,14 @@ export function planPageRead<T extends PageReadTarget>(
 }
 
 /**
- * Swap in a fresh read of one page. Questions from other pages, and manual
- * questions with no page, stay. A retry then replaces instead of duplicating.
+ * Add a fresh read beside questions already on the paper.
+ * Nothing already recognized is removed. The user deletes a question with its delete button.
  */
-export function replaceQuestionsForPage(
+export function addReadQuestions(
   questions: readonly Question[],
-  pageIndex: number,
   incoming: readonly Question[],
 ): Question[] {
-  return [...questions.filter((question) => question.page !== pageIndex), ...incoming];
+  return [...questions, ...incoming];
 }
 
 function shiftPage(page: number | null | undefined, removedIndex: number): number | null {
@@ -83,25 +82,20 @@ function shiftPage(page: number | null | undefined, removedIndex: number): numbe
 }
 
 /**
- * Drop questions that were read from the removed page, and close the gap in
- * later page numbers. A question with no page was typed by hand and stays.
+ * Close the gap in later page numbers after a page image is removed.
+ * Questions that were read from that page stay, with no page image attached.
  */
 export function reindexQuestionsAfterPageRemoval(
   questions: readonly Question[],
   removedIndex: number,
 ): Question[] {
-  return questions.flatMap((question) => {
-    if (question.page === removedIndex) return [];
-    return [
-      {
-        ...question,
-        page: shiftPage(question.page, removedIndex),
-        figures: question.figures.map((figure) => ({
-          ...figure,
-          page: shiftPage(figure.page, removedIndex),
-        })),
-        sub_questions: reindexQuestionsAfterPageRemoval(question.sub_questions, removedIndex),
-      },
-    ];
-  });
+  return questions.map((question) => ({
+    ...question,
+    page: shiftPage(question.page, removedIndex),
+    figures: question.figures.map((figure) => ({
+      ...figure,
+      page: shiftPage(figure.page, removedIndex),
+    })),
+    sub_questions: reindexQuestionsAfterPageRemoval(question.sub_questions, removedIndex),
+  }));
 }

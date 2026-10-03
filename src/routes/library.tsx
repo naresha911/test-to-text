@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { Columns2, Download, Loader2, Sparkles, Trash2, Upload } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { AppHeader } from "@/components/AppHeader";
@@ -25,11 +25,12 @@ import {
   isMockGenerationIncomplete,
   isPaperChangedError,
   mockGenerationTotal,
+  type Catalog,
   type DocumentMeta,
   type MockGenerationState,
 } from "@/lib/document-types";
-import { generateForApprovedQuestion } from "@/lib/hint-solution-client";
 import { generateHintSolution } from "@/lib/hint-solution.functions";
+import { useSolutionGeneration } from "@/hooks/useSolutionGeneration";
 import {
   createAiMockFromSource,
   deleteLocalDocument,
@@ -74,14 +75,25 @@ function PaperDetail({ id }: { id: string }) {
   const runGet = useServerFn(getLocalDocument);
   const runSave = useServerFn(saveLocalDocument);
   const runHintSolution = useServerFn(generateHintSolution);
+  const runCatalog = useServerFn(getLocalCatalog);
   const runRegenerateQuestion = useServerFn(regenerateMockQuestion);
   const runRegenerateFigure = useServerFn(regenerateMockFigure);
   const queryClient = useQueryClient();
   const [questions, setQuestions] = useState<Question[]>([]);
   const [pageUrls, setPageUrls] = useState<Array<string | undefined>>([]);
   const [figureUrls, setFigureUrls] = useState<Record<string, string>>({});
-  const [generatingIds, setGeneratingIds] = useState<Set<string>>(() => new Set());
   const [ready, setReady] = useState(false);
+  const [catalog, setCatalog] = useState<Catalog>({
+    standards: [],
+    subjects: [],
+    topics: [],
+    streams: [],
+  });
+  const [audienceMeta, setAudienceMeta] = useState({
+    exam: null as string | null,
+    notes: null as string | null,
+    subject_id: null as number | null,
+  });
   const questionsRef = useRef(questions);
   const questionsRevRef = useRef(0);
   const docRef = useRef<DocumentMeta | null>(null);
@@ -96,6 +108,11 @@ function PaperDetail({ id }: { id: string }) {
       if (cancelled || !loaded) return;
       const sorted = sortQuestions(loaded.questions);
       questionsRef.current = sorted;
+      setAudienceMeta({
+        exam: loaded.document.exam,
+        notes: loaded.document.notes,
+        subject_id: loaded.document.subject_id,
+      });
       docRef.current = loaded.document.generation
         ? {
             ...loaded.document,
@@ -118,6 +135,29 @@ function PaperDetail({ id }: { id: string }) {
       cancelled = true;
     };
   }, [id, runGet]);
+
+  useEffect(() => {
+    void runCatalog()
+      .then(setCatalog)
+      .catch(() => undefined);
+  }, [runCatalog]);
+
+  const audience = useMemo(
+    () => ({
+      subject: catalog.subjects.find((subject) => subject.id === audienceMeta.subject_id)?.name ?? null,
+      exam: audienceMeta.exam,
+      notes: audienceMeta.notes,
+    }),
+    [catalog.subjects, audienceMeta],
+  );
+
+  const solution = useSolutionGeneration({
+    questionsRef,
+    setQuestions,
+    runGenerate: runHintSolution,
+    audience,
+    save: (next) => persist(next),
+  });
 
   function persist(next: Question[], generation?: MockGenerationState) {
     questionsRef.current = next;
@@ -237,41 +277,6 @@ function PaperDetail({ id }: { id: string }) {
     });
   }
 
-  async function runGeneration(questionId: string, force = false) {
-    let requested: string[] = [];
-    try {
-      const result = await generateForApprovedQuestion({
-        questions: questionsRef.current,
-        questionId,
-        force,
-        runGenerate: runHintSolution,
-        onProgress: (ids) => {
-          requested = ids;
-          setGeneratingIds((current) => {
-            const next = new Set(current);
-            for (const qid of ids) next.add(qid);
-            return next;
-          });
-        },
-      });
-      if (result.generatedIds.length) {
-        setQuestions(result.questions);
-        persist(result.questions);
-        toast.success(force ? "Hint and solution regenerated." : "Hint and solution ready.");
-      }
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : "Could not generate hint and solution.");
-    } finally {
-      if (requested.length) {
-        setGeneratingIds((current) => {
-          const next = new Set(current);
-          for (const qid of requested) next.delete(qid);
-          return next;
-        });
-      }
-    }
-  }
-
   async function refreshFigures() {
     const loaded = await runGet({ data: { id } });
     if (loaded) {
@@ -337,22 +342,19 @@ function PaperDetail({ id }: { id: string }) {
         questions={questions}
         pageUrls={pageUrls}
         resolveFigure={(path) => figureUrls[path]}
-        onApprovalChange={(questionId, approved) => {
-          setQuestions((current) => {
-            const updated = updateQuestionById(current, questionId, (q) => ({ ...q, approved }));
-            persist(updated);
-            return updated;
-          });
-          if (approved) void runGeneration(questionId, false);
-        }}
+        onApprovalChange={solution.approve}
         onQuestionChange={patchQuestion}
         onDelete={deleteQuestion}
         onAddQuestion={addQuestion}
-        onRegenerate={(questionId) => void runGeneration(questionId, true)}
+        onRegenerate={solution.regenerate}
+        solutionAudience={audience}
+        queuedIds={solution.queuedIds}
+        promptReveal={solution.promptReveal}
+        promptStore={solution.prompts}
         onReviewGenerated={(questionId, status) => void reviewGenerated(questionId, status)}
         onRegenerateGenerated={(questionId) => void regenerateQuestion(questionId)}
         onRegenerateFigure={(questionId) => void regenerateFigure(questionId)}
-        generatingIds={generatingIds}
+        generatingIds={solution.generatingIds}
       />
     </div>
   );

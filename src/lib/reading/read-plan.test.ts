@@ -4,7 +4,7 @@ import { emptyQuestion } from "@/lib/question-schema";
 import {
   planPageRead,
   reindexQuestionsAfterPageRemoval,
-  replaceQuestionsForPage,
+  addReadQuestions,
   type PageReadTarget,
 } from "@/lib/reading/read-plan";
 
@@ -97,28 +97,30 @@ describe("planPageRead", () => {
   });
 });
 
-describe("replaceQuestionsForPage", () => {
-  test("replaces one page and keeps other pages and manual questions", () => {
+describe("addReadQuestions", () => {
+  test("adds a new read and keeps questions already recognized", () => {
     const manual = emptyQuestion({ id: "manual", page: null, stem: "typed" });
     const old = emptyQuestion({ id: "old", page: 0, stem: "first read" });
     const other = emptyQuestion({ id: "other", page: 1, stem: "page two" });
     const incoming = emptyQuestion({ id: "new", page: 0, stem: "second read" });
 
-    const next = replaceQuestionsForPage([manual, old, other], 0, [incoming]);
+    const next = addReadQuestions([manual, old, other], [incoming]);
 
-    expect(next.map((question) => question.id)).toEqual(["manual", "other", "new"]);
+    expect(next.map((question) => question.id)).toEqual(["manual", "old", "other", "new"]);
   });
 });
 
 describe("reindexQuestionsAfterPageRemoval", () => {
-  test("drops the removed page and keeps a handwritten question", () => {
+  test("keeps the removed page's questions and detaches them from the image", () => {
     const manual = emptyQuestion({ id: "manual", page: null, stem: "typed" });
     const removed = emptyQuestion({ id: "old", page: 0, number: "164", stem: "old read" });
     const later = emptyQuestion({ id: "later", page: 1, stem: "next page" });
 
     const next = reindexQuestionsAfterPageRemoval([manual, removed, later], 0);
 
-    expect(next.map((question) => question.id)).toEqual(["manual", "later"]);
-    expect(next[1]?.page).toBe(0);
+    expect(next.map((question) => question.id)).toEqual(["manual", "old", "later"]);
+    expect(next[1]?.page).toBeNull();
+    expect(next[1]?.stem).toBe("old read");
+    expect(next[2]?.page).toBe(0);
   });
 });
