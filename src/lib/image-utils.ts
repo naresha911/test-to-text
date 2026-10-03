@@ -11,6 +11,25 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
+export function fileToDataUrl(file: File | Blob): Promise<string> {
+  return readAsDataUrl(file);
+}
+
+/** Image on the clipboard, from a screenshot or a copied file. */
+export function clipboardImageFile(data: DataTransfer | null): File | null {
+  if (!data) return null;
+  for (const file of data.files) {
+    if (file.type.startsWith("image/")) return file;
+  }
+  for (const item of data.items) {
+    if (item.kind === "file" && item.type.startsWith("image/")) {
+      const file = item.getAsFile();
+      if (file) return file;
+    }
+  }
+  return null;
+}
+
 function readAsDataUrl(file: File | Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();

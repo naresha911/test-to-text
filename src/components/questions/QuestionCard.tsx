@@ -11,12 +11,25 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  memo,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type ReactNode,
+} from "react";
+import { toast } from "sonner";
 
 import { MathText } from "@/components/MathText";
 import { MathFormatHelp } from "@/components/questions/MathFormatHelp";
 import { QuestionCropDialog } from "@/components/questions/QuestionCropDialog";
 import { useSolutionUi } from "@/components/questions/solution-ui";
+import {
+  questionFamilyBusy,
+  useQuestionDraft,
+} from "@/components/questions/use-question-draft";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -29,11 +42,13 @@ import {
   questionHasAnswer,
   SOLUTION_SYSTEM_PROMPT,
 } from "@/lib/question-context";
-import { detachImagePath, questionWithoutOption } from "@/lib/question-images";
+import { clipboardImageFile } from "@/lib/image-utils";
+import { detachImagePath, questionWithoutOption, withPastedFigure } from "@/lib/question-images";
 import { applyCropReading, type CropLayout } from "@/lib/reading/crop-layout";
 import type { ContentMode } from "@/lib/reading/mode";
 import { READ_FLAG_LABELS } from "@/lib/reading/read-audit";
 import {
+  parseDisplayedPage,
   QUESTION_TYPE_LABELS,
   QUESTION_TYPES,
   withQuestionType,
@@ -352,6 +367,8 @@ function TypeBody({
   editing,
   onChange,
   generatingIds,
+  queuedIds,
+  onPasteFigure,
   onRegenerate,
   onDelete,
 }: {
@@ -360,6 +377,8 @@ function TypeBody({
   editing: boolean;
   onChange?: ((next: Question) => void) | undefined;
   generatingIds?: Set<string> | undefined;
+  queuedIds?: Set<string> | undefined;
+  onPasteFigure?: ((file: File) => Promise<string>) | undefined;
   onRegenerate?: ((questionId: string) => void) | undefined;
   onDelete?: ((questionId: string) => void) | undefined;
 }) {
@@ -546,6 +565,8 @@ function TypeBody({
                 question={sub}
                 index={index}
                 nested
+                generating={questionFamilyBusy(sub, generatingIds)}
+                queued={questionFamilyBusy(sub, queuedIds)}
                 {...(resolve ? { resolve } : {})}
                 {...(onChange
                   ? {
@@ -558,7 +579,7 @@ function TypeBody({
                     }
                   : {})}
                 parentPassage={question.passage ?? null}
-                {...(generatingIds ? { generatingIds } : {})}
+                {...(onPasteFigure ? { onPasteFigure } : {})}
                 {...(onRegenerate ? { onRegenerate } : {})}
                 {...(onDelete ? { onDelete } : {})}
               />
@@ -870,21 +891,73 @@ function SolutionPrompt({
   );
 }
 
-export function QuestionCard({
-  question,
+function EditablePage({
+  page,
+  onChange,
+}: {
+  page: number | null | undefined;
+  onChange: (page: number | null) => void;
+}) {
+  const [text, setText] = useState(page == null ? "" : String(page + 1));
+  const focused = useRef(false);
+
+  useEffect(() => {
+    if (!focused.current) setText(page == null ? "" : String(page + 1));
+  }, [page]);
+
+  function commit(field: HTMLInputElement) {
+    focused.current = false;
+    const parsed = parseDisplayedPage(text);
+    if (!parsed) {
+      setText(page == null ? "" : String(page + 1));
+      return;
+    }
+    if ((page ?? null) === parsed.page) return;
+    onChange(parsed.page);
+    requestAnimationFrame(() => {
+      field.closest("article")?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+  }
+
+  return (
+    <label className="flex items-center gap-1 text-xs text-muted-foreground">
+      Page
+      <Input
+        value={text}
+        inputMode="numeric"
+        placeholder="—"
+        aria-label="Page number"
+        className="h-7 w-16"
+        onFocus={() => {
+          focused.current = true;
+        }}
+        onChange={(event) => setText(event.target.value)}
+        onBlur={(event) => commit(event.currentTarget)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") event.currentTarget.blur();
+        }}
+      />
+    </label>
+  );
+}
+
+export const QuestionCard = memo(function QuestionCard({
+  question: source,
   index,
   nested = false,
   startEditing = false,
   parentPassage,
   resolve,
   onApprovalChange,
-  onChange,
+  onChange: publish,
   onRegenerate,
   onDelete,
   onReviewGenerated,
   onRegenerateGenerated,
   onRegenerateFigure,
-  generatingIds,
+  onPasteFigure,
+  generating = false,
+  queued = false,
   onReadCrop,
   contentMode = "text",
 }: {
@@ -896,7 +969,7 @@ export function QuestionCard({
   parentPassage?: string | null;
   resolve?: Resolver | undefined;
   onApprovalChange?:
-    | ((approved: boolean, options?: { userPrompt?: string }) => void)
+    | ((questionId: string, approved: boolean, options?: { userPrompt?: string }) => void)
     | undefined;
   onChange?: ((next: Question) => void) | undefined;
   onRegenerate?:
@@ -906,16 +979,20 @@ export function QuestionCard({
   onReviewGenerated?: ((questionId: string, status: "reviewed" | "rejected") => void) | undefined;
   onRegenerateGenerated?: ((questionId: string) => void) | undefined;
   onRegenerateFigure?: ((questionId: string) => void) | undefined;
-  generatingIds?: Set<string> | undefined;
-  onReadCrop?: ((layout: CropLayout) => Promise<Question>) | undefined;
+  /** Store a pasted image and return its path. Absent on screens that cannot keep figures. */
+  onPasteFigure?: ((file: File) => Promise<string>) | undefined;
+  /** This question, or one of its sub-questions, is generating. */
+  generating?: boolean;
+  queued?: boolean;
+  onReadCrop?: ((question: Question, layout: CropLayout) => Promise<Question>) | undefined;
   contentMode?: ContentMode | undefined;
 }) {
+  const { draft: question, draftRef, update, flush } = useQuestionDraft(source, publish);
+  const onChange = publish ? update : undefined;
   const [editing, setEditing] = useState(startEditing);
   const [cropOpen, setCropOpen] = useState(false);
   const articleRef = useRef<HTMLElement>(null);
   const solutionUi = useSolutionUi();
-  const generating = generatingIds?.has(question.id) === true;
-  const queued = solutionUi?.queuedIds.has(question.id) === true;
   const canEdit = !!onChange;
   const canRegenerateSolution =
     Boolean(onRegenerate) &&
@@ -980,20 +1057,44 @@ export function QuestionCard({
   }
 
   function submitRegenerate() {
+    flush();
     const text = promptText();
     if (!text || !onRegenerate) return;
     rememberPrompt(text);
     onRegenerate(question.id, { userPrompt: text });
   }
 
+  async function pasteStemImage(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const file = clipboardImageFile(event.clipboardData);
+    if (!file) return;
+    event.preventDefault();
+    if (!onPasteFigure) {
+      toast.error("Pasted images can be saved from the home screen or the library.");
+      return;
+    }
+    try {
+      const path = await onPasteFigure(file);
+      update(withPastedFigure(draftRef.current, path));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not paste that image.");
+    }
+  }
+
   return (
     <article
+      id={`question-${question.id}`}
       ref={articleRef}
+      data-question-number={question.number ?? undefined}
+      onBlur={(event) => {
+        const next = event.relatedTarget;
+        if (next instanceof Node && event.currentTarget.contains(next)) return;
+        flush();
+      }}
       className={cn(
         "text-card-foreground",
         nested
           ? "pt-1"
-          : "rounded-lg border border-border bg-card p-5 shadow-[var(--shadow-paper)]",
+          : "scroll-mt-4 rounded-lg border border-border bg-card p-5 shadow-[var(--shadow-paper)]",
         editing && "ring-1 ring-primary/30",
       )}
     >
@@ -1057,7 +1158,12 @@ export function QuestionCard({
             Check {question.validation.status.replaceAll("_", " ")}
           </Badge>
         ) : null}
-        {question.page != null ? (
+        {editing && onChange ? (
+          <EditablePage
+            page={question.page}
+            onChange={(page) => onChange({ ...question, page })}
+          />
+        ) : question.page != null ? (
           <span className="text-xs text-muted-foreground">Page {question.page + 1}</span>
         ) : null}
 
@@ -1105,7 +1211,10 @@ export function QuestionCard({
               size="icon"
               className="h-8 w-8"
               aria-label={editing ? "Done editing" : "Edit question"}
-              onClick={() => setEditing((value) => !value)}
+              onClick={() => {
+                if (editing) flush();
+                setEditing((value) => !value);
+              }}
             >
               {editing ? (
                 <X className="h-4 w-4" aria-hidden="true" />
@@ -1168,12 +1277,13 @@ export function QuestionCard({
               <Checkbox
                 checked={question.approved === true}
                 onCheckedChange={(checked) => {
+                  flush();
                   if (checked === true) {
                     const text = showSolutionPrompt ? promptText() : "";
                     if (text) rememberPrompt(text);
-                    onApprovalChange(true, text ? { userPrompt: text } : undefined);
+                    onApprovalChange(question.id, true, text ? { userPrompt: text } : undefined);
                   } else {
-                    onApprovalChange(false);
+                    onApprovalChange(question.id, false);
                   }
                 }}
                 aria-label={`Mark question ${question.number ?? index + 1} approved`}
@@ -1203,7 +1313,7 @@ export function QuestionCard({
           label={cropLabel}
           cropUrl={cropUrl}
           contentMode={contentMode}
-          onRun={onReadCrop}
+          onRun={(layout) => onReadCrop(question, layout)}
           onReplace={(reading) => {
             onChange?.(applyCropReading(question, reading, contentMode));
             setCropOpen(false);
@@ -1268,6 +1378,7 @@ export function QuestionCard({
             className="min-h-48"
             aria-label="Recognised question text"
             onChange={(event) => onChange({ ...question, stem: event.target.value })}
+            onPaste={(event) => void pasteStemImage(event)}
           />
         </div>
       ) : (
@@ -1396,7 +1507,13 @@ export function QuestionCard({
         editing={editing}
         {...(resolve ? { resolve } : {})}
         {...(onChange ? { onChange } : {})}
-        {...(generatingIds ? { generatingIds } : {})}
+        {...(solutionUi
+          ? {
+              generatingIds: solutionUi.generatingIdsRef.current,
+              queuedIds: solutionUi.queuedIdsRef.current,
+            }
+          : {})}
+        {...(onPasteFigure ? { onPasteFigure } : {})}
         {...(onRegenerate ? { onRegenerate } : {})}
         {...(onDelete ? { onDelete } : {})}
       />
@@ -1434,4 +1551,4 @@ export function QuestionCard({
       ) : null}
     </article>
   );
-}
+});

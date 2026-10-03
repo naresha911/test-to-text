@@ -5,9 +5,11 @@ import type { SolutionAudience } from "@/lib/question-context";
 
 export type SolutionUiValue = {
   audience?: SolutionAudience | undefined;
-  queuedIds: Set<string>;
   promptReveal: SolutionPromptReveal | null;
   prompts: MutableRefObject<Map<string, string>>;
+  /** Latest ids, read during render. Kept off the context value so queue updates do not re-render every card. */
+  generatingIdsRef: MutableRefObject<Set<string>>;
+  queuedIdsRef: MutableRefObject<Set<string>>;
 };
 
 export const SolutionUiContext = createContext<SolutionUiValue | null>(null);

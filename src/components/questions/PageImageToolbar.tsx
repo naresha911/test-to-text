@@ -32,65 +32,79 @@ export function PageImageToolbar({
   onRemove,
 }: Props) {
   const busy = activity !== "idle";
+  const status = activity === "reading" ? "Reading" : activity === "queued" ? "Queued" : read ? "Read" : "Not read";
 
   return (
     <header
       data-page-toolbar=""
-      className="flex cursor-auto items-center gap-2 px-0.5 text-xs"
+      className="cursor-auto rounded-md border border-border bg-card px-2 py-1.5 text-xs"
       onPointerDown={(event) => event.stopPropagation()}
     >
-      <span className="shrink-0 font-medium text-foreground">Page {pageNumber}</span>
-      <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground" title={filePath}>
-        {filePath}
-      </span>
-      <div
-        className="flex shrink-0 items-center"
-        role="group"
-        aria-label={`What page ${pageNumber} contains`}
-      >
-        {MODES.map(([mode, label, hint], index) => (
-          <button
-            key={mode}
-            type="button"
-            title={hint}
-            aria-pressed={contentMode === mode}
-            disabled={busy}
-            onClick={() => onContentModeChange(mode)}
-            className={cn(
-              "px-1.5 py-0.5 disabled:opacity-50",
-              index === 0 && "border-r border-border",
-              contentMode === mode
-                ? "font-medium text-foreground"
-                : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {label}
-          </button>
-        ))}
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 font-medium text-foreground">Page {pageNumber}</span>
+        <span
+          className={cn(
+            "shrink-0 rounded-full border border-border px-1.5 py-0.5",
+            activity === "reading" || read
+              ? "text-foreground"
+              : "text-muted-foreground",
+          )}
+        >
+          {activity === "reading" ? (
+            <Loader2 className="mr-1 inline h-3 w-3 animate-spin" aria-hidden="true" />
+          ) : null}
+          {status}
+        </span>
+        <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground" title={filePath}>
+          {filePath}
+        </span>
+        <button
+          type="button"
+          disabled={activity === "reading"}
+          aria-label={`Remove page ${pageNumber} from the viewer`}
+          onClick={onRemove}
+          className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-secondary hover:text-foreground disabled:opacity-50"
+        >
+          <X className="h-3.5 w-3.5" aria-hidden="true" />
+        </button>
       </div>
-      <span className={cn("shrink-0", read ? "text-foreground" : "text-muted-foreground")}>
-        {read ? "Read" : "Not read"}
-      </span>
-      <button
-        type="button"
-        disabled={busy}
-        onClick={onRead}
-        className="inline-flex shrink-0 items-center gap-1 px-1 py-0.5 font-medium text-primary disabled:text-muted-foreground"
-      >
-        {activity === "reading" ? (
-          <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
-        ) : null}
-        {activity === "reading" ? "Reading…" : activity === "queued" ? "Queued" : "Read page"}
-      </button>
-      <button
-        type="button"
-        disabled={activity === "reading"}
-        aria-label={`Remove page ${pageNumber} from the viewer`}
-        onClick={onRemove}
-        className="shrink-0 rounded p-0.5 text-muted-foreground hover:text-foreground disabled:opacity-50"
-      >
-        <X className="h-3.5 w-3.5" aria-hidden="true" />
-      </button>
+      <div className="mt-1.5 flex items-center gap-2">
+        <div
+          className="inline-flex overflow-hidden rounded-md border border-border"
+          role="group"
+          aria-label={`What page ${pageNumber} contains`}
+        >
+          {MODES.map(([mode, label, hint]) => (
+            <button
+              key={mode}
+              type="button"
+              title={hint}
+              aria-pressed={contentMode === mode}
+              disabled={busy}
+              onClick={() => onContentModeChange(mode)}
+              className={cn(
+                "px-2 py-1 disabled:opacity-50",
+                contentMode === mode
+                  ? "bg-secondary font-medium text-foreground"
+                  : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground",
+              )}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={onRead}
+          className="ml-auto inline-flex shrink-0 items-center gap-1 rounded-md border border-border bg-background px-2 py-1 font-medium text-primary hover:bg-secondary disabled:text-muted-foreground"
+        >
+          {activity === "reading" ? (
+            <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+          ) : null}
+          {activity === "reading" ? "Reading…" : activity === "queued" ? "Queued" : "Read page"}
+        </button>
+      </div>
     </header>
   );
 }

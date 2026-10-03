@@ -68,6 +68,7 @@
 }
 
 :root {
+  color-scheme: light;
   --radius: 0.5rem;
 
   --background: oklch(0.972 0.011 84);
@@ -123,6 +124,7 @@
 }
 
 .dark {
+  color-scheme: dark;
   --background: oklch(0.21 0.024 250);
   --foreground: oklch(0.945 0.01 88);
 
@@ -208,7 +210,11 @@
   text-underline-offset: 4px;
 }
 
-/* KaTeX inherits the surrounding ink color */
+/* KaTeX inherits the surrounding ink color. Its stylesheet paints glyphs black. */
 .katex {
   font-size: 1.05em;
+}
+
+.dark .katex {
+  color: var(--foreground);
 }

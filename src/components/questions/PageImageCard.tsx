@@ -22,7 +22,7 @@ export function PageImageCard({ page, onContentModeChange, onRead, onRemove }: P
   const pageNumber = page.pageIndex + 1;
 
   return (
-    <article className="space-y-1.5">
+    <article className="space-y-1.5" data-page-number={pageNumber}>
       <PageImageToolbar
         pageNumber={pageNumber}
         filePath={page.filePath}

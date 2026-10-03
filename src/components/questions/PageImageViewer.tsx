@@ -1,6 +1,10 @@
 import { Hand, Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import {
+  forwardRef,
+  memo,
   useCallback,
+  useEffect,
+  useImperativeHandle,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
@@ -23,16 +27,28 @@ type Props = {
   onContentModeChange: (id: string, mode: ContentMode) => void;
   onRead: (id: string) => void;
   onRemove: (id: string) => void;
+  /** 1-based page nearest the top of the viewport, or null when there are no pages. */
+  onVisiblePageChange?: ((pageNumber: number | null) => void) | undefined;
   className?: string | undefined;
 };
 
-export function PageImageViewer({
+export type PageImageViewerHandle = {
+  /** Scroll a 1-based page to the top of the image pane. */
+  scrollToPage: (pageNumber: number) => boolean;
+};
+
+export const PageImageViewer = memo(
+  forwardRef<PageImageViewerHandle, Props>(function PageImageViewer(
+{
   pages,
   onContentModeChange,
   onRead,
   onRemove,
+  onVisiblePageChange,
   className,
-}: Props) {
+},
+ref,
+) {
   const [zoom, setZoom] = useState(1);
   const [panMode, setPanMode] = useState(true);
   const dragRef = useRef<{
@@ -43,6 +59,55 @@ export function PageImageViewer({
     scrollTop: number;
   } | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
+  const lastVisible = useRef<number | null>(null);
+
+  const reportVisible = useCallback(() => {
+    if (!onVisiblePageChange) return;
+    const viewport = viewportRef.current;
+    const cards = viewport?.querySelectorAll<HTMLElement>("[data-page-number]");
+    if (!viewport || !cards?.length) {
+      if (lastVisible.current !== null) {
+        lastVisible.current = null;
+        onVisiblePageChange(null);
+      }
+      return;
+    }
+    const viewTop = viewport.getBoundingClientRect().top;
+    let bestPage = 1;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    cards.forEach((card) => {
+      const page = Number(card.dataset.pageNumber);
+      if (!Number.isFinite(page)) return;
+      const distance = Math.abs(card.getBoundingClientRect().top - viewTop);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestPage = page;
+      }
+    });
+    if (lastVisible.current === bestPage) return;
+    lastVisible.current = bestPage;
+    onVisiblePageChange(bestPage);
+  }, [onVisiblePageChange]);
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      scrollToPage(pageNumber: number) {
+        const viewport = viewportRef.current;
+        const card = viewport?.querySelector<HTMLElement>(`[data-page-number="${pageNumber}"]`);
+        if (!viewport || !card) return false;
+        const top =
+          card.getBoundingClientRect().top - viewport.getBoundingClientRect().top + viewport.scrollTop;
+        viewport.scrollTo({ top: Math.max(0, top - 8), behavior: "smooth" });
+        return true;
+      },
+    }),
+    [],
+  );
+
+  useEffect(() => {
+    reportVisible();
+  }, [pages, reportVisible]);
 
   const clampZoom = useCallback((value: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value)), []);
 
@@ -142,6 +207,7 @@ export function PageImageViewer({
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
         onWheel={onWheel}
+        onScroll={reportVisible}
         role="region"
         aria-label="Scrollable page images"
       >
@@ -159,4 +225,5 @@ export function PageImageViewer({
       </div>
     </div>
   );
-}
+}),
+);

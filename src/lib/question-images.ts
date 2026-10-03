@@ -1,5 +1,28 @@
 import type { Question } from "@/lib/question-schema";
 
+/** Filename the document loader will treat as a question figure. */
+export function pastedFigureFilename(mimeType: string): string {
+  const ext = mimeType === "image/jpeg" ? "jpg" : mimeType === "image/webp" ? "webp" : "png";
+  return `paste-fig-${crypto.randomUUID()}.${ext}`;
+}
+
+/** Attach a stored image under the stem, beside figures the reader already cropped. */
+export function withPastedFigure(question: Question, imagePath: string): Question {
+  return {
+    ...question,
+    figures: [
+      ...question.figures,
+      {
+        description: "Pasted image",
+        image_path: imagePath,
+        role: "question_figure",
+        generation_method: "uploaded",
+        page: question.page ?? null,
+      },
+    ],
+  };
+}
+
 const PATH_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const IMAGE_FILE = /\.(jpe?g|png|webp|svg)$/i;
 

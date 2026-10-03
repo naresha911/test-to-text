@@ -512,22 +512,38 @@ export function buildExport(meta: PaperMeta, questions: Question[], id?: string)
   };
 }
 
+/**
+ * 1-based page text from the reviewer. Empty means no page.
+ * Returns null when the text is not a whole number of 1 or more.
+ */
+export function parseDisplayedPage(value: string): { page: number | null } | null {
+  const trimmed = value.trim();
+  if (!trimmed) return { page: null };
+  if (!/^\d+$/.test(trimmed)) return null;
+  const displayed = Number(trimmed);
+  if (displayed < 1) return null;
+  return { page: displayed - 1 };
+}
+
 /** Deep-update a question (including nested sub_questions) by id. */
 export function updateQuestionById(
   list: Question[],
   id: string,
   updater: (question: Question) => Question,
 ): Question[] {
-  return list.map((question) => {
-    if (question.id === id) return updater(question);
-    if (question.sub_questions.length) {
-      return {
-        ...question,
-        sub_questions: updateQuestionById(question.sub_questions, id, updater),
-      };
+  let changed = false;
+  const next = list.map((question) => {
+    if (question.id === id) {
+      changed = true;
+      return updater(question);
     }
-    return question;
+    if (!question.sub_questions.length) return question;
+    const sub_questions = updateQuestionById(question.sub_questions, id, updater);
+    if (sub_questions === question.sub_questions) return question;
+    changed = true;
+    return { ...question, sub_questions };
   });
+  return changed ? next : list;
 }
 
 /** Remove a question by id, including nested comprehension sub-questions. */

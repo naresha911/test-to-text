@@ -29,6 +29,18 @@ export function sortQuestions(list: Question[]): Question[] {
     .sort(compareQuestions);
 }
 
+/** First question whose printed number matches, including nested sub-questions. */
+export function findQuestionByNumber(list: Question[], label: string): Question | undefined {
+  const needle = label.trim().toLowerCase();
+  if (!needle) return undefined;
+  for (const question of list) {
+    if ((question.number ?? "").trim().toLowerCase() === needle) return question;
+    const nested = findQuestionByNumber(question.sub_questions, label);
+    if (nested) return nested;
+  }
+  return undefined;
+}
+
 /** Next integer label after the highest printed question number, or "1" when none exist. */
 export function suggestNextQuestionNumber(list: Question[]): string {
   let max = 0;

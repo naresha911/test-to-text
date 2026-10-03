@@ -1,4 +1,12 @@
-import { useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import {
+  startTransition,
+  useCallback,
+  useRef,
+  useState,
+  type Dispatch,
+  type MutableRefObject,
+  type SetStateAction,
+} from "react";
 import { toast } from "sonner";
 
 import {
@@ -43,36 +51,40 @@ export function useSolutionGeneration(options: Options) {
     setPromptReveal({ tick: Date.now(), ids });
   }
 
-  function commit(recipe: (current: Question[]) => Question[]) {
-    let snapshot: Question[] | null = null;
-    optionsRef.current.setQuestions((current) => {
-      snapshot = recipe(current);
-      optionsRef.current.questionsRef.current = snapshot;
-      return snapshot;
-    });
-    if (snapshot) optionsRef.current.save(snapshot);
+  function commit(recipe: (current: Question[]) => Question[], transition = false) {
+    const apply = () => {
+      let snapshot: Question[] | null = null;
+      optionsRef.current.setQuestions((current) => {
+        snapshot = recipe(current);
+        optionsRef.current.questionsRef.current = snapshot;
+        return snapshot;
+      });
+      if (snapshot) optionsRef.current.save(snapshot);
+    };
+    if (transition) startTransition(apply);
+    else apply();
   }
 
   function dropQueued(ids: Iterable<string>) {
-    setQueuedIds((current) => {
+    startTransition(() => setQueuedIds((current) => {
       let changed = false;
       const next = new Set(current);
       for (const id of ids) {
         if (next.delete(id)) changed = true;
       }
       return changed ? next : current;
-    });
+    }));
   }
 
   function dropGenerating(ids: Iterable<string>) {
-    setGeneratingIds((current) => {
+    startTransition(() => setGeneratingIds((current) => {
       let changed = false;
       const next = new Set(current);
       for (const id of ids) {
         if (next.delete(id)) changed = true;
       }
       return changed ? next : current;
-    });
+    }));
   }
 
   async function runGeneration(
@@ -105,12 +117,14 @@ export function useSolutionGeneration(options: Options) {
         onProgress: (ids) => {
           requested = ids;
           dropQueued([questionId]);
-          setGeneratingIds((current) => {
-            const next = new Set(current);
-            next.add(questionId);
-            for (const id of ids) next.add(id);
-            return next;
-          });
+          startTransition(() =>
+            setGeneratingIds((current) => {
+              const next = new Set(current);
+              next.add(questionId);
+              for (const id of ids) next.add(id);
+              return next;
+            }),
+          );
         },
       });
 
@@ -135,7 +149,7 @@ export function useSolutionGeneration(options: Options) {
             ...question,
             approved: approvedNow,
           }));
-        });
+        }, true);
         if (!stillLatest) return;
         if (result.error) {
           toast.error(result.error);
@@ -147,16 +161,20 @@ export function useSolutionGeneration(options: Options) {
           toast.success(force ? "Hint and solution regenerated." : "Hint and solution ready.");
         }
       } else if (result.error && stillLatest) {
-        commit((current) =>
-          updateQuestionById(current, questionId, (question) => ({ ...question, approved: false })),
+        commit(
+          (current) =>
+            updateQuestionById(current, questionId, (question) => ({ ...question, approved: false })),
+          true,
         );
         toast.error(result.error);
         reveal([questionId]);
       }
     } catch (error) {
       if (epochs.current.get(questionId) === epoch) {
-        commit((current) =>
-          updateQuestionById(current, questionId, (question) => ({ ...question, approved: false })),
+        commit(
+          (current) =>
+            updateQuestionById(current, questionId, (question) => ({ ...question, approved: false })),
+          true,
         );
         toast.error(error instanceof Error ? error.message : "Could not generate hint and solution.");
         reveal([questionId]);
@@ -164,41 +182,48 @@ export function useSolutionGeneration(options: Options) {
     } finally {
       dropGenerating([questionId, ...requested]);
       if ((waiting.current.get(questionId) ?? 0) > 0) {
-        setQueuedIds((current) => {
-          if (current.has(questionId)) return current;
-          const next = new Set(current);
-          next.add(questionId);
-          return next;
-        });
+        startTransition(() =>
+          setQueuedIds((current) => {
+            if (current.has(questionId)) return current;
+            const next = new Set(current);
+            next.add(questionId);
+            return next;
+          }),
+        );
       }
     }
   }
 
-  function enqueue(questionId: string, force: boolean, userPrompt?: string) {
+  const runGenerationRef = useRef(runGeneration);
+  runGenerationRef.current = runGeneration;
+
+  const enqueue = useCallback((questionId: string, force: boolean, userPrompt?: string) => {
     waiting.current.set(questionId, (waiting.current.get(questionId) ?? 0) + 1);
     const epoch = (epochs.current.get(questionId) ?? 0) + 1;
     epochs.current.set(questionId, epoch);
-    setQueuedIds((current) => {
-      if (current.has(questionId)) return current;
-      const next = new Set(current);
-      next.add(questionId);
-      return next;
-    });
-    void queue(() => runGeneration(questionId, force, userPrompt, epoch));
-  }
+    startTransition(() =>
+      setQueuedIds((current) => {
+        if (current.has(questionId)) return current;
+        const next = new Set(current);
+        next.add(questionId);
+        return next;
+      }),
+    );
+    void queue(() => runGenerationRef.current(questionId, force, userPrompt, epoch));
+  }, [queue]);
 
-  function approve(questionId: string, approved: boolean, extra?: { userPrompt?: string }) {
+  const approve = useCallback((questionId: string, approved: boolean, extra?: { userPrompt?: string }) => {
     approvalIntent.current.set(questionId, approved);
     commit((current) =>
       updateQuestionById(current, questionId, (question) => ({ ...question, approved })),
     );
     if (approved) enqueue(questionId, false, extra?.userPrompt);
-  }
+  }, [enqueue]);
 
-  function regenerate(questionId: string, extra?: { userPrompt?: string }) {
+  const regenerate = useCallback((questionId: string, extra?: { userPrompt?: string }) => {
     approvalIntent.current.set(questionId, true);
     enqueue(questionId, true, extra?.userPrompt);
-  }
+  }, [enqueue]);
 
   return { generatingIds, queuedIds, promptReveal, prompts, approve, regenerate };
 }

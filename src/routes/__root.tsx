@@ -9,6 +9,7 @@ import {
 } from "@tanstack/react-router";
 import { useEffect, type ReactNode } from "react";
 
+import { THEME_INIT_SCRIPT, useResolvedTheme } from "@/components/theme";
 import { Toaster } from "@/components/ui/sonner";
 import { preferLoopbackHost } from "@/integrations/lovable/local-oauth";
 
@@ -118,8 +119,9 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
 
 function RootShell({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
         <HeadContent />
       </head>
       <body>
@@ -128,6 +130,11 @@ function RootShell({ children }: { children: ReactNode }) {
       </body>
     </html>
   );
+}
+
+function ThemedToaster() {
+  const theme = useResolvedTheme();
+  return <Toaster theme={theme} />;
 }
 
 function RootComponent() {
@@ -142,7 +149,7 @@ function RootComponent() {
     <QueryClientProvider client={queryClient}>
       {/* Required: nested routes render here. Removing <Outlet /> breaks all child routes. */}
       <Outlet />
-      <Toaster />
+      <ThemedToaster />
     </QueryClientProvider>
   );
 }

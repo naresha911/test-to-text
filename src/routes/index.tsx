@@ -11,8 +11,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { AppHeader } from "@/components/AppHeader";
-import { PageImageViewer } from "@/components/questions/PageImageViewer";
+import { type NewQuestionInput } from "@/components/questions/AddQuestionForm";
+import {
+  PageImageViewer,
+  type PageImageViewerHandle,
+} from "@/components/questions/PageImageViewer";
 import { PageReview } from "@/components/questions/PageReview";
+import { ReviewToolbar } from "@/components/questions/ReviewToolbar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -30,6 +35,7 @@ import { generateHintSolution } from "@/lib/hint-solution.functions";
 import { useSolutionGeneration } from "@/hooks/useSolutionGeneration";
 import {
   cropFigure,
+  fileToDataUrl,
   OCR_SPACE_MAX_BYTES,
   preparePageImage,
   shrinkJpegUnderBytes,
@@ -45,9 +51,10 @@ import {
   saveLocalDocument,
   saveLocalFigure,
 } from "@/lib/local-store.functions";
-import { droppedImagePaths } from "@/lib/question-images";
-import { sortQuestions } from "@/lib/question-order";
+import { droppedImagePaths, pastedFigureFilename } from "@/lib/question-images";
+import { findQuestionByNumber, sortQuestions } from "@/lib/question-order";
 import {
+  parseDisplayedPage,
   QUESTION_TYPE_LABELS,
   createManualQuestion,
   findQuestionById,
@@ -170,6 +177,22 @@ function HomePage() {
   } | null>(null);
   const inFlightSaveRef = useRef<Promise<void> | null>(null);
   const flushSaveRef = useRef<() => Promise<boolean>>(async () => true);
+  const ensureDocumentRef = useRef<() => Promise<string>>(async () => {
+    throw new Error("The paper is not ready yet.");
+  });
+  const enqueuePageReadRef = useRef<(pageId: string) => void>(() => undefined);
+  const removePagesRef = useRef<(pageIds: ReadonlySet<string>) => Promise<void>>(async () => undefined);
+  const readCropRef = useRef<(question: Question, layout: CropLayout) => Promise<Question>>(
+    async () => {
+      throw new Error("Crop reading is not ready.");
+    },
+  );
+  const viewerRef = useRef<PageImageViewerHandle>(null);
+  const filterRef = useRef(filter);
+  filterRef.current = filter;
+  const pendingQuestionScroll = useRef<string | null>(null);
+  const [visiblePage, setVisiblePage] = useState<number | null>(null);
+  const [focusQuestionId, setFocusQuestionId] = useState<string | null>(null);
 
   useEffect(() => {
     setReader(loadReaderSettings());
@@ -353,6 +376,147 @@ function HomePage() {
     persist(created.id, questionsRef.current, metaRef.current, { immediate: true });
     return created.id;
   }
+  ensureDocumentRef.current = ensureDocument;
+
+  const patchQuestion = useCallback(
+    (next: Question) => {
+      setQuestions((current) => {
+        const previous = findQuestionById(current, next.id);
+        const patched = updateQuestionById(current, next.id, () => next);
+        const numberChanged = (previous?.number ?? null) !== (next.number ?? null);
+        const pageChanged = (previous?.page ?? null) !== (next.page ?? null);
+        const updated = numberChanged || pageChanged ? sortQuestions(patched) : patched;
+        questionsRef.current = updated;
+        const savedId = documentIdRef.current;
+        const imagesRemoved = previous != null && droppedImagePaths([previous], [next]).length > 0;
+        if (savedId) {
+          persist(
+            savedId,
+            updated,
+            undefined,
+            numberChanged || pageChanged || imagesRemoved ? { immediate: true } : undefined,
+          );
+        }
+        return updated;
+      });
+    },
+    [persist],
+  );
+
+  const deleteQuestion = useCallback(
+    (questionId: string) => {
+      setQuestions((current) => {
+        const updated = removeQuestionById(current, questionId);
+        questionsRef.current = updated;
+        const savedId = documentIdRef.current;
+        if (savedId) persist(savedId, updated, undefined, { immediate: true });
+        return updated;
+      });
+      toast.success("Question deleted.");
+    },
+    [persist],
+  );
+
+  const addQuestion = useCallback(
+    (input: NewQuestionInput): string => {
+      const created = createManualQuestion({
+        number: input.number,
+        type: input.type,
+        ...(input.page != null ? { page: input.page } : {}),
+        marks: metaRef.current.default_marks,
+        negative_marks: metaRef.current.default_negative_marks,
+        difficulty: metaRef.current.difficulty,
+        subject_id: metaRef.current.subject_id,
+        standard_id: metaRef.current.standard_id,
+        stream_id: metaRef.current.stream_id,
+        year: metaRef.current.year,
+      });
+      const updated = sortQuestions([...questionsRef.current, created]);
+      questionsRef.current = updated;
+      setQuestions(updated);
+      setFilter("all");
+      const savedId = documentIdRef.current;
+      if (savedId) persist(savedId, updated, undefined, { immediate: true });
+      else void ensureDocumentRef.current();
+      toast.success(`Question ${created.number} added.`);
+      return created.id;
+    },
+    [persist],
+  );
+
+  const pasteFigure = useCallback(
+    async (file: File) => {
+      const id = await ensureDocumentRef.current();
+      const dataUrl = await fileToDataUrl(file);
+      const saved = await runSaveFigure({
+        data: { documentId: id, dataUrl, filename: pastedFigureFilename(file.type) },
+      });
+      setFigureUrls((current) => {
+        const urls = { ...current, [saved.path]: dataUrl };
+        figureUrlsRef.current = urls;
+        return urls;
+      });
+      return saved.path;
+    },
+    [runSaveFigure],
+  );
+
+  const resolveFigure = useCallback((path: string) => figureUrls[path], [figureUrls]);
+
+  const onVisiblePageChange = useCallback((page: number | null) => {
+    setVisiblePage((current) => (current === page ? current : page));
+  }, []);
+
+  const changePageMode = useCallback((pageId: string, mode: ContentMode) => {
+    setPageModes((current) => ({ ...current, [pageId]: mode }));
+  }, []);
+
+  const onReadPage = useCallback((pageId: string) => {
+    enqueuePageReadRef.current(pageId);
+  }, []);
+
+  const onRemovePage = useCallback((pageId: string) => {
+    void removePagesRef.current(new Set([pageId]));
+  }, []);
+
+  const scrollToPage = useCallback((label: string) => {
+    const parsed = parseDisplayedPage(label);
+    if (!parsed || parsed.page == null) {
+      toast.error("Enter a page number.");
+      return;
+    }
+    const displayed = parsed.page + 1;
+    const found = viewerRef.current?.scrollToPage(displayed) ?? false;
+    if (!found) toast.error(`Page ${displayed} is not in the viewer.`);
+  }, []);
+
+  const onReadCrop = useCallback((question: Question, layout: CropLayout) => {
+    return readCropRef.current(question, layout);
+  }, []);
+
+  const scrollToQuestion = useCallback((label: string) => {
+    const match = findQuestionByNumber(questionsRef.current, label);
+    if (!match) {
+      toast.error(`No question numbered ${label.trim()}.`);
+      return;
+    }
+    if (filterRef.current === "all") {
+      const node = document.getElementById(`question-${match.id}`);
+      if (node) {
+        node.scrollIntoView({ block: "start", behavior: "smooth" });
+        return;
+      }
+    }
+    pendingQuestionScroll.current = match.id;
+    setFilter("all");
+  }, []);
+
+  const addFromToolbar = useCallback(
+    (input: NewQuestionInput) => {
+      setFocusQuestionId(addQuestion(input));
+    },
+    [addQuestion],
+  );
 
   const counts = useMemo(() => {
     const map = new Map<QuestionType, number>();
@@ -364,6 +528,15 @@ function HomePage() {
     () => (filter === "all" ? questions : questions.filter((q) => q.type === filter)),
     [questions, filter],
   );
+
+  useEffect(() => {
+    const id = pendingQuestionScroll.current;
+    if (!id || filter !== "all") return;
+    const node = document.getElementById(`question-${id}`);
+    if (!node) return;
+    pendingQuestionScroll.current = null;
+    node.scrollIntoView({ block: "start", behavior: "smooth" });
+  }, [filter, visible]);
 
   const paperTotals = useMemo(() => {
     const marks = questions.reduce((sum, q) => sum + (q.marks ?? meta.default_marks ?? 1), 0);
@@ -378,6 +551,23 @@ function HomePage() {
     return pageModes[page.id] ?? page.read_mode ?? "text";
   }
   const readPageCount = pages.filter((page) => page.ocr_status === "done").length;
+  const viewerPages = useMemo(
+    () =>
+      pages.map((page) => ({
+        id: page.id,
+        pageIndex: page.page_index,
+        dataUrl: page.dataUrl,
+        filePath: page.file_path,
+        read: page.ocr_status === "done",
+        contentMode: (pageModes[page.id] ?? page.read_mode ?? "text") as ContentMode,
+        activity: (activeReadId === page.id
+          ? "reading"
+          : queuedReads.some((item) => item.pageId === page.id)
+            ? "queued"
+            : "idle") as "reading" | "queued" | "idle",
+      })),
+    [pages, pageModes, activeReadId, queuedReads],
+  );
 
   const audience = useMemo(
     () => ({
@@ -407,60 +597,6 @@ function HomePage() {
     });
   }
 
-  function deleteQuestion(questionId: string) {
-    setQuestions((current) => {
-      const updated = removeQuestionById(current, questionId);
-      questionsRef.current = updated;
-      const savedId = documentIdRef.current;
-      if (savedId) persist(savedId, updated, undefined, { immediate: true });
-      return updated;
-    });
-    toast.success("Question deleted.");
-  }
-
-  function addQuestion(input: { number: string; type: QuestionType }): string {
-    const created = createManualQuestion({
-      number: input.number,
-      type: input.type,
-      marks: metaRef.current.default_marks,
-      negative_marks: metaRef.current.default_negative_marks,
-      difficulty: metaRef.current.difficulty,
-      subject_id: metaRef.current.subject_id,
-      standard_id: metaRef.current.standard_id,
-      stream_id: metaRef.current.stream_id,
-      year: metaRef.current.year,
-    });
-    const updated = sortQuestions([...questionsRef.current, created]);
-    questionsRef.current = updated;
-    setQuestions(updated);
-    setFilter("all");
-    const savedId = documentIdRef.current;
-    if (savedId) persist(savedId, updated, undefined, { immediate: true });
-    else void ensureDocument();
-    toast.success(`Question ${created.number} added.`);
-    return created.id;
-  }
-
-  function patchQuestion(next: Question) {
-    setQuestions((current) => {
-      const previous = findQuestionById(current, next.id);
-      const updated = sortQuestions(updateQuestionById(current, next.id, () => next));
-      questionsRef.current = updated;
-      const savedId = documentIdRef.current;
-      const numberChanged = (previous?.number ?? null) !== (next.number ?? null);
-      const imagesRemoved = previous != null && droppedImagePaths([previous], [next]).length > 0;
-      if (savedId) {
-        persist(
-          savedId,
-          updated,
-          undefined,
-          numberChanged || imagesRemoved ? { immediate: true } : undefined,
-        );
-      }
-      return updated;
-    });
-  }
-
   async function readCrop(question: Question, layout: CropLayout): Promise<Question> {
     const path = question.source_block?.image_path;
     const cropDataUrl = path ? figureUrlsRef.current[path] : undefined;
@@ -486,6 +622,7 @@ function HomePage() {
     }
     return loaded.question;
   }
+  readCropRef.current = readCrop;
 
   const addFiles = useCallback(
     async (list: FileList | null) => {
@@ -591,6 +728,8 @@ function HomePage() {
       }
     });
   }
+  enqueuePageReadRef.current = enqueuePageRead;
+  removePagesRef.current = removePages;
 
   async function readPage(page: PageRecord, mode: ContentMode, epoch: number) {
     const plan = planPageRead(pagesRef.current, new Set([page.id]), {
@@ -1101,28 +1240,23 @@ function HomePage() {
           </CollapsibleContent>
         </Collapsible>
 
+        <ReviewToolbar
+          questions={questions}
+          suggestedPage={visiblePage}
+          onAdd={addFromToolbar}
+          onScrollToPage={scrollToPage}
+          onScrollToQuestion={scrollToQuestion}
+        />
+
         <div className="grid gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
           <aside className="flex h-[112.5vh] min-h-[840px] min-w-0 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-[var(--shadow-paper)]">
             <PageImageViewer
-              pages={pages.map((page) => ({
-                id: page.id,
-                pageIndex: page.page_index,
-                dataUrl: page.dataUrl,
-                filePath: page.file_path,
-                read: page.ocr_status === "done",
-                contentMode: contentModeFor(page),
-                activity:
-                  activeReadId === page.id
-                    ? "reading"
-                    : queuedReads.some((item) => item.pageId === page.id)
-                      ? "queued"
-                      : "idle",
-              }))}
-              onContentModeChange={(pageId, mode) =>
-                setPageModes((current) => ({ ...current, [pageId]: mode }))
-              }
-              onRead={enqueuePageRead}
-              onRemove={(pageId) => void removePages(new Set([pageId]))}
+              ref={viewerRef}
+              pages={viewerPages}
+              onContentModeChange={changePageMode}
+              onRead={onReadPage}
+              onRemove={onRemovePage}
+              onVisiblePageChange={onVisiblePageChange}
               className="h-full min-h-0 min-w-0"
             />
           </aside>
@@ -1185,18 +1319,19 @@ function HomePage() {
                 questions={visible}
                 numberingQuestions={questions}
                 showImages={false}
-                resolveFigure={(path) => figureUrls[path]}
+                resolveFigure={resolveFigure}
                 onApprovalChange={solution.approve}
                 onQuestionChange={patchQuestion}
                 onDelete={deleteQuestion}
-                onAddQuestion={addQuestion}
                 onRegenerate={solution.regenerate}
+                onPasteFigure={pasteFigure}
+                focusQuestionId={focusQuestionId}
                 generatingIds={solution.generatingIds}
                 queuedIds={solution.queuedIds}
                 promptReveal={solution.promptReveal}
                 promptStore={solution.prompts}
                 solutionAudience={audience}
-                onReadCrop={readCrop}
+                onReadCrop={onReadCrop}
                 contentModeForPage={(page) => {
                   const record = pages.find((item) => item.page_index === page);
                   return record ? contentModeFor(record) : "text";

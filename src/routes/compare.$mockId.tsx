@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { AppHeader } from "@/components/AppHeader";
-import { AddQuestionForm } from "@/components/questions/AddQuestionForm";
+import { AddQuestionForm, type NewQuestionInput } from "@/components/questions/AddQuestionForm";
 import { QuestionCard } from "@/components/questions/QuestionCard";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -32,7 +32,6 @@ import {
   updateQuestionById,
   withGeneratedStatus,
   type Question,
-  type QuestionType,
 } from "@/lib/question-schema";
 
 export const Route = createFileRoute("/compare/$mockId")({
@@ -196,11 +195,12 @@ function ComparePage() {
     );
   }
 
-  function addQuestion(input: { number: string; type: QuestionType }): string {
+  function addQuestion(input: NewQuestionInput): string {
     const doc = mockDocRef.current;
     const created = createManualQuestion({
       number: input.number,
       type: input.type,
+      ...(input.page != null ? { page: input.page } : {}),
       marks: doc?.default_marks ?? null,
       negative_marks: doc?.default_negative_marks ?? null,
       difficulty: doc?.difficulty ?? null,
@@ -250,8 +250,10 @@ function ComparePage() {
   function patchMockQuestion(next: Question) {
     const current = mockQuestionsRef.current;
     const previous = findQuestionById(current, next.id);
-    const updated = sortQuestions(updateQuestionById(current, next.id, () => next));
+    const patched = updateQuestionById(current, next.id, () => next);
     const numberChanged = (previous?.number ?? null) !== (next.number ?? null);
+    const pageChanged = (previous?.page ?? null) !== (next.page ?? null);
+    const updated = numberChanged || pageChanged ? sortQuestions(patched) : patched;
     const generation = mockDocRef.current?.generation ?? null;
     saveMock(updated, numberChanged ? generation : undefined);
     if (numberChanged && generation) {

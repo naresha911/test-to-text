@@ -2,10 +2,11 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
 import { Columns2, Download, Loader2, Sparkles, Trash2, Upload } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { AppHeader } from "@/components/AppHeader";
+import { type NewQuestionInput } from "@/components/questions/AddQuestionForm";
 import { PageReview } from "@/components/questions/PageReview";
 import {
   AlertDialog,
@@ -44,12 +45,14 @@ import {
   saveLocalDocument,
   saveLocalFigure,
 } from "@/lib/local-store.functions";
+import { fileToDataUrl } from "@/lib/image-utils";
 import { resumeMockPaperGeneration } from "@/lib/mock-paper-client";
 import {
   generateMockQuestion,
   regenerateMockFigure,
   regenerateMockQuestion,
 } from "@/lib/mock-paper.functions";
+import { pastedFigureFilename } from "@/lib/question-images";
 import { sortMockPairs, sortQuestions } from "@/lib/question-order";
 import { readStoredCrop } from "@/lib/reading/crop-client";
 import type { CropLayout } from "@/lib/reading/crop-layout";
@@ -60,7 +63,6 @@ import {
   updateQuestionById,
   withGeneratedStatus,
   type Question,
-  type QuestionType,
 } from "@/lib/question-schema";
 
 export const Route = createFileRoute("/library")({
@@ -240,11 +242,12 @@ function PaperDetail({ id }: { id: string }) {
     toast.success("Question deleted.");
   }
 
-  function addQuestion(input: { number: string; type: QuestionType }): string {
+  function addQuestion(input: NewQuestionInput): string {
     const doc = docRef.current;
     const created = createManualQuestion({
       number: input.number,
       type: input.type,
+      ...(input.page != null ? { page: input.page } : {}),
       marks: doc?.default_marks ?? null,
       negative_marks: doc?.default_negative_marks ?? null,
       difficulty: doc?.difficulty ?? null,
@@ -274,8 +277,10 @@ function PaperDetail({ id }: { id: string }) {
   function patchQuestion(next: Question) {
     setQuestions((current) => {
       const previous = findQuestionById(current, next.id);
-      const updated = sortQuestions(updateQuestionById(current, next.id, () => next));
+      const patched = updateQuestionById(current, next.id, () => next);
       const numberChanged = (previous?.number ?? null) !== (next.number ?? null);
+      const pageChanged = (previous?.page ?? null) !== (next.page ?? null);
+      const updated = numberChanged || pageChanged ? sortQuestions(patched) : patched;
       const generation =
         numberChanged && docRef.current?.generation
           ? {
@@ -365,6 +370,67 @@ function PaperDetail({ id }: { id: string }) {
     }
   }
 
+  const pasteFigure = useCallback(
+    async (file: File) => {
+      const dataUrl = await fileToDataUrl(file);
+      const saved = await runSaveFigure({
+        data: { documentId: id, dataUrl, filename: pastedFigureFilename(file.type) },
+      });
+      setFigureUrls((current) => {
+        const urls = { ...current, [saved.path]: dataUrl };
+        figureUrlsRef.current = urls;
+        return urls;
+      });
+      return saved.path;
+    },
+    [id, runSaveFigure],
+  );
+
+  const live = useRef({
+    patchQuestion,
+    deleteQuestion,
+    addQuestion,
+    readCrop,
+    reviewGenerated,
+    regenerateQuestion,
+    regenerateFigure,
+  });
+  live.current = {
+    patchQuestion,
+    deleteQuestion,
+    addQuestion,
+    readCrop,
+    reviewGenerated,
+    regenerateQuestion,
+    regenerateFigure,
+  };
+
+  const onQuestionChange = useCallback((next: Question) => {
+    live.current.patchQuestion(next);
+  }, []);
+  const onDeleteQuestion = useCallback((questionId: string) => {
+    live.current.deleteQuestion(questionId);
+  }, []);
+  const onAddQuestion = useCallback((input: NewQuestionInput) => {
+    return live.current.addQuestion(input);
+  }, []);
+  const onReadCrop = useCallback((question: Question, layout: CropLayout) => {
+    return live.current.readCrop(question, layout);
+  }, []);
+  const onReviewGenerated = useCallback(
+    (questionId: string, status: "reviewed" | "rejected") => {
+      void live.current.reviewGenerated(questionId, status);
+    },
+    [],
+  );
+  const onRegenerateGenerated = useCallback((questionId: string) => {
+    void live.current.regenerateQuestion(questionId);
+  }, []);
+  const onRegenerateFigure = useCallback((questionId: string) => {
+    void live.current.regenerateFigure(questionId);
+  }, []);
+  const resolveFigure = useCallback((path: string) => figureUrls[path], [figureUrls]);
+
   if (!ready) {
     return (
       <div className="mt-4 flex justify-center">
@@ -378,21 +444,22 @@ function PaperDetail({ id }: { id: string }) {
       <PageReview
         questions={questions}
         pageUrls={pageUrls}
-        resolveFigure={(path) => figureUrls[path]}
+        resolveFigure={resolveFigure}
         onApprovalChange={solution.approve}
-        onQuestionChange={patchQuestion}
-        onDelete={deleteQuestion}
-        onAddQuestion={addQuestion}
+        onQuestionChange={onQuestionChange}
+        onDelete={onDeleteQuestion}
+        onAddQuestion={onAddQuestion}
         onRegenerate={solution.regenerate}
+        onPasteFigure={pasteFigure}
         solutionAudience={audience}
         queuedIds={solution.queuedIds}
         promptReveal={solution.promptReveal}
         promptStore={solution.prompts}
-        onReviewGenerated={(questionId, status) => void reviewGenerated(questionId, status)}
-        onRegenerateGenerated={(questionId) => void regenerateQuestion(questionId)}
-        onRegenerateFigure={(questionId) => void regenerateFigure(questionId)}
+        onReviewGenerated={onReviewGenerated}
+        onRegenerateGenerated={onRegenerateGenerated}
+        onRegenerateFigure={onRegenerateFigure}
         generatingIds={solution.generatingIds}
-        onReadCrop={readCrop}
+        onReadCrop={onReadCrop}
         contentModeForPage={(page) =>
           pagesRef.current.find((item) => item.page_index === page)?.read_mode ?? "text"
         }

@@ -4,6 +4,7 @@ import { useMemo, useRef, useState, type MutableRefObject } from "react";
 import { AddQuestionForm, type NewQuestionInput } from "@/components/questions/AddQuestionForm";
 import { QuestionCard } from "@/components/questions/QuestionCard";
 import { SolutionUiContext, type SolutionUiValue } from "@/components/questions/solution-ui";
+import { questionFamilyBusy } from "@/components/questions/use-question-draft";
 import { Badge } from "@/components/ui/badge";
 import type { SolutionPromptReveal } from "@/hooks/useSolutionGeneration";
 import { sortQuestions } from "@/lib/question-order";
@@ -36,6 +37,10 @@ type Props = {
   promptStore?: MutableRefObject<Map<string, string>> | undefined;
   onDelete?: ((questionId: string) => void) | undefined;
   onAddQuestion?: ((input: NewQuestionInput) => string | void) | undefined;
+  /** Paste a clipboard image into storage and return its path. */
+  onPasteFigure?: ((file: File) => Promise<string>) | undefined;
+  /** Open this question for editing, usually one the toolbar just added. */
+  focusQuestionId?: string | null | undefined;
   onReviewGenerated?: ((questionId: string, status: "reviewed" | "rejected") => void) | undefined;
   onRegenerateGenerated?: ((questionId: string) => void) | undefined;
   onRegenerateFigure?: ((questionId: string) => void) | undefined;
@@ -55,6 +60,8 @@ export function PageReview({
   onRegenerate,
   onDelete,
   onAddQuestion,
+  onPasteFigure,
+  focusQuestionId,
   onReviewGenerated,
   onRegenerateGenerated,
   onRegenerateFigure,
@@ -69,14 +76,19 @@ export function PageReview({
   const [focusId, setFocusId] = useState<string | null>(null);
   const fallbackPrompts = useRef(new Map<string, string>());
   const prompts = promptStore ?? fallbackPrompts;
+  const generatingIdsRef = useRef(generatingIds ?? EMPTY_QUEUED);
+  generatingIdsRef.current = generatingIds ?? EMPTY_QUEUED;
+  const queuedIdsRef = useRef(queuedIds ?? EMPTY_QUEUED);
+  queuedIdsRef.current = queuedIds ?? EMPTY_QUEUED;
   const solutionUi = useMemo<SolutionUiValue>(
     () => ({
       ...(solutionAudience ? { audience: solutionAudience } : {}),
-      queuedIds: queuedIds ?? EMPTY_QUEUED,
       promptReveal: promptReveal ?? null,
       prompts,
+      generatingIdsRef,
+      queuedIdsRef,
     }),
-    [solutionAudience, queuedIds, promptReveal, prompts],
+    [solutionAudience, promptReveal, prompts, generatingIdsRef, queuedIdsRef],
   );
   const sorted = sortQuestions(questions);
 
@@ -154,24 +166,21 @@ export function PageReview({
             <QuestionCard
               question={question}
               index={index}
-              startEditing={question.id === focusId}
+              startEditing={question.id === focusId || question.id === focusQuestionId}
+              generating={questionFamilyBusy(question, generatingIds)}
+              queued={questionFamilyBusy(question, queuedIds)}
               {...(resolveFigure ? { resolve: resolveFigure } : {})}
-              {...(onApprovalChange
-                ? {
-                    onApprovalChange: (next, options) =>
-                      onApprovalChange(question.id, next, options),
-                  }
-                : {})}
+              {...(onApprovalChange ? { onApprovalChange } : {})}
               {...(onQuestionChange ? { onChange: onQuestionChange } : {})}
               {...(onRegenerate ? { onRegenerate } : {})}
               {...(onDelete ? { onDelete } : {})}
               {...(onReviewGenerated ? { onReviewGenerated } : {})}
               {...(onRegenerateGenerated ? { onRegenerateGenerated } : {})}
               {...(onRegenerateFigure ? { onRegenerateFigure } : {})}
-              {...(generatingIds ? { generatingIds } : {})}
+              {...(onPasteFigure ? { onPasteFigure } : {})}
               {...(onReadCrop
                 ? {
-                    onReadCrop: (layout: CropLayout) => onReadCrop(question, layout),
+                    onReadCrop,
                     contentMode: contentModeForPage?.(question.page) ?? "text",
                   }
                 : {})}
