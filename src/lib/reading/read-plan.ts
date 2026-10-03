@@ -20,10 +20,11 @@ export type ReadPlan<T extends PageReadTarget> = {
 
 export type ReadPlanOptions = {
   /**
-   * Read selected pages again even when they were read before.
-   * An empty selection still means unread pages only.
+   * Selected pages in this set are read again even when they were read before.
+   * An empty selection still means unread pages only. A page in this set that
+   * is not selected is left out.
    */
-  force?: boolean;
+  forceIds?: ReadonlySet<string>;
 };
 
 export function isPageRead(page: PageReadTarget): boolean {
@@ -33,7 +34,7 @@ export function isPageRead(page: PageReadTarget): boolean {
 /**
  * Choose which pages this Read pages click should OCR.
  * A selection limits the click to those pages. An empty selection means every unread page.
- * Pages already marked read are skipped, unless Force read is on and those pages are selected.
+ * Pages already marked read are skipped, unless that page is selected and listed in `forceIds`.
  * A forced read adds the new questions. Questions already recognized stay until the user deletes them.
  */
 export function planPageRead<T extends PageReadTarget>(
@@ -41,7 +42,6 @@ export function planPageRead<T extends PageReadTarget>(
   selectedIds: ReadonlySet<string>,
   options?: ReadPlanOptions,
 ): ReadPlan<T> {
-  const force = options?.force === true;
   const usedAllUnread = selectedIds.size === 0;
   const candidates = usedAllUnread ? pages : pages.filter((page) => selectedIds.has(page.id));
 
@@ -50,7 +50,8 @@ export function planPageRead<T extends PageReadTarget>(
   const missingImage: T[] = [];
 
   for (const page of candidates) {
-    if (isPageRead(page) && !(force && !usedAllUnread)) {
+    const forced = !usedAllUnread && (options?.forceIds?.has(page.id) ?? false);
+    if (isPageRead(page) && !forced) {
       skippedRead.push(page);
       continue;
     }

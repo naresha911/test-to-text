@@ -65,7 +65,7 @@ describe("planPageRead", () => {
   });
 
   test("force read includes selected pages that were already read", () => {
-    const plan = planPageRead(pages, new Set(["p1", "p2"]), { force: true });
+    const plan = planPageRead(pages, new Set(["p1", "p2"]), { forceIds: new Set(["p1", "p2"]) });
 
     expect(plan.usedAllUnread).toBe(false);
     expect(plan.toRead.map((item) => item.id)).toEqual(["p1", "p2"]);
@@ -73,14 +73,28 @@ describe("planPageRead", () => {
   });
 
   test("force read of only already-read pages still reads them", () => {
-    const plan = planPageRead(pages, new Set(["p1", "p3"]), { force: true });
+    const plan = planPageRead(pages, new Set(["p1", "p3"]), { forceIds: new Set(["p1", "p3"]) });
 
     expect(plan.toRead.map((item) => item.id)).toEqual(["p1", "p3"]);
     expect(plan.skippedRead).toEqual([]);
   });
 
+  test("only the selected pages with force read are read again", () => {
+    const plan = planPageRead(pages, new Set(["p1", "p3"]), { forceIds: new Set(["p1"]) });
+
+    expect(plan.toRead.map((item) => item.id)).toEqual(["p1"]);
+    expect(plan.skippedRead.map((item) => item.id)).toEqual(["p3"]);
+  });
+
+  test("force read on an unselected page does not include it", () => {
+    const plan = planPageRead(pages, new Set(["p2"]), { forceIds: new Set(["p1"]) });
+
+    expect(plan.toRead.map((item) => item.id)).toEqual(["p2"]);
+    expect(plan.skippedRead).toEqual([]);
+  });
+
   test("force read with nothing selected still skips pages that were already read", () => {
-    const plan = planPageRead(pages, new Set(), { force: true });
+    const plan = planPageRead(pages, new Set(), { forceIds: new Set(["p1", "p3"]) });
 
     expect(plan.usedAllUnread).toBe(true);
     expect(plan.toRead.map((item) => item.id)).toEqual(["p2", "p4"]);
@@ -89,7 +103,7 @@ describe("planPageRead", () => {
 
   test("a selected read page with no image is not sent to OCR", () => {
     const plan = planPageRead([page("p1", "done", { image: false })], new Set(["p1"]), {
-      force: true,
+      forceIds: new Set(["p1"]),
     });
 
     expect(plan.toRead).toEqual([]);

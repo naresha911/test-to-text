@@ -2,10 +2,12 @@ import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 
 import {
+  assistantTextFromChatBody,
   chatCompletionBody,
   completeChatWithFallback,
   generationChatTargets,
   omniroutersApiKey,
+  providerFailureMessage,
 } from "@/lib/generation/chat-provider";
 import {
   buildSolutionUserPrompt,
@@ -41,9 +43,7 @@ const QuestionInputSchema = z.object({
   reason: z.string().nullable().optional(),
   options: z.array(OptionSchema).default([]),
   blanks: z.array(z.string()).default([]),
-  match_pairs: z
-    .array(z.object({ left: z.string(), right: z.string() }))
-    .default([]),
+  match_pairs: z.array(z.object({ left: z.string(), right: z.string() })).default([]),
   sub_questions: z.array(z.unknown()).default([]),
   answer_keys: z.array(z.string()).default([]),
   answer_text: z.string().nullable().optional(),
@@ -125,19 +125,14 @@ async function callChat(options: {
         models: options.models,
         messages: options.messages,
         maxTokens: 4000,
+        stream: false,
       }),
     ),
   });
 
-  if (!response.ok || !response.body) {
+  if (!response.ok) {
     const body = await response.text().catch(() => "");
-    let message = body;
-    try {
-      const parsed = JSON.parse(body) as { error?: { message?: string }; message?: string };
-      message = parsed.error?.message ?? parsed.message ?? body;
-    } catch {
-      /* keep raw */
-    }
+    const message = providerFailureMessage(body, response.status, options.label);
     if (response.status === 429) {
       throw new Error(`${options.label} is busy or rate limited. Wait a moment and try again.`);
     }
@@ -145,41 +140,12 @@ async function callChat(options: {
       throw new Error(`${options.label} rejected the API key. Check the key in Settings.`);
     }
     if (response.status === 402 || response.status === 403) {
-      throw new Error(
-        `AI_CREDITS: ${message || `${options.label} has no credits left.`}`,
-      );
+      throw new Error(`AI_CREDITS: ${message}`);
     }
-    throw new Error(message || `${options.label} failed (${response.status}).`);
+    throw new Error(message);
   }
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let text = "";
-
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("data:")) continue;
-      const payload = trimmed.slice(5).trim();
-      if (!payload || payload === "[DONE]") continue;
-      try {
-        const chunk = JSON.parse(payload) as {
-          choices?: { delta?: { content?: string } }[];
-        };
-        text += chunk.choices?.[0]?.delta?.content ?? "";
-      } catch {
-        /* ignore keep-alive */
-      }
-    }
-  }
-
-  return text;
+  return assistantTextFromChatBody(await response.text());
 }
 
 function asQuestion(raw: z.infer<typeof QuestionInputSchema>): Question {
@@ -244,7 +210,9 @@ function parseResult(raw: unknown, source: Question): HintSolutionResult {
     answer_text: str(r["answer_text"]),
     answer_boolean:
       typeof r["answer_boolean"] === "boolean" ? (r["answer_boolean"] as boolean) : null,
-    options: options.length ? options : source.options.map((o) => ({ ...o, is_correct: o.is_correct ?? null })),
+    options: options.length
+      ? options
+      : source.options.map((o) => ({ ...o, is_correct: o.is_correct ?? null })),
     blanks: arr(r["blanks"]).map((b) => (typeof b === "string" ? b : "")),
     match_pairs: arr(r["match_pairs"]).map((p, i) => {
       const pp = (p ?? {}) as Record<string, unknown>;

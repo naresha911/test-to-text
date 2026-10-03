@@ -1,11 +1,13 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  assistantTextFromChatBody,
   chatCompletionBody,
   completeChatWithFallback,
   generationChatTargets,
   OMNIROUTERS_AUTO_MODEL,
   omniroutersApiKey,
+  providerFailureMessage,
   resolveOmniroutersModel,
 } from "@/lib/generation/chat-provider";
 
@@ -56,9 +58,9 @@ describe("generation chat providers", () => {
 
   test("either env name supplies the OmniRouters key", () => {
     expect(omniroutersApiKey({ OMNIROUTER_API_KEY: " from-alias " })).toBe("from-alias");
-    expect(omniroutersApiKey({ OMNIROUTERS_API_KEY: "official", OMNIROUTER_API_KEY: "alias" })).toBe(
-      "official",
-    );
+    expect(
+      omniroutersApiKey({ OMNIROUTERS_API_KEY: "official", OMNIROUTER_API_KEY: "alias" }),
+    ).toBe("official");
   });
 
   test("the auto selector is sent and a missing model is omitted", () => {
@@ -78,6 +80,66 @@ describe("generation chat providers", () => {
     ).not.toHaveProperty("model");
   });
 
+  test("hint requests can ask for one JSON response instead of a stream", () => {
+    expect(
+      chatCompletionBody({
+        model: "auto",
+        messages: [],
+        maxTokens: 100,
+        stream: false,
+      }).stream,
+    ).toBe(false);
+    expect(chatCompletionBody({ model: "auto", messages: [], maxTokens: 100 }).stream).toBe(true);
+  });
+
+  test("a normal completion is read from message content, not the reasoning trace", () => {
+    const text = assistantTextFromChatBody(
+      JSON.stringify({
+        choices: [
+          {
+            message: {
+              content: '{"hint":"Look at word order.","explanation":"Option B."}',
+              reasoning_content: "The model thought for a while.",
+            },
+          },
+        ],
+      }),
+    );
+    expect(text).toContain('"hint":"Look at word order."');
+    expect(text).not.toContain("thought for a while");
+  });
+
+  test("a stream that only sends reasoning is kept when it holds the solution JSON", () => {
+    const text = assistantTextFromChatBody(
+      [
+        `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: '{"hint":"nudge",' } }] })}`,
+        `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: '"explanation":"done"}' } }] })}`,
+        "data: [DONE]",
+      ].join("\n"),
+    );
+    expect(text).toContain('"explanation":"done"');
+  });
+
+  test("an echoed instruction block is not shown as the error", () => {
+    const prompt = `You are an expert exam tutor. ${"rule ".repeat(80)}`;
+    expect(
+      providerFailureMessage(JSON.stringify({ error: { message: prompt } }), 500, "OmniRouters"),
+    ).toBe("OmniRouters failed (500). Try again.");
+    expect(
+      providerFailureMessage(
+        JSON.stringify({ error: { message: "Model is overloaded." } }),
+        503,
+        "OmniRouters",
+      ),
+    ).toBe("Model is overloaded.");
+  });
+
+  test("a stream error is raised instead of an empty answer", () => {
+    expect(() =>
+      assistantTextFromChatBody('data: {"error":{"message":"Model is overloaded."}}\n'),
+    ).toThrow("Model is overloaded.");
+  });
+
   test("the next provider is used when OmniRouters fails", async () => {
     const targets = generationChatTargets({
       ...shared,
@@ -85,11 +147,15 @@ describe("generation chat providers", () => {
       openRouterKey: "or-key",
     });
     const used: string[] = [];
-    const text = await completeChatWithFallback(targets, async (target) => {
-      used.push(target.provider);
-      if (target.provider === "omnirouters") throw new Error("busy");
-      return "ok";
-    }, "missing");
+    const text = await completeChatWithFallback(
+      targets,
+      async (target) => {
+        used.push(target.provider);
+        if (target.provider === "omnirouters") throw new Error("busy");
+        return "ok";
+      },
+      "missing",
+    );
     expect(text).toBe("ok");
     expect(used).toEqual(["omnirouters", "openrouter"]);
   });

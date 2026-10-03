@@ -7,25 +7,32 @@ import {
   type WheelEvent as ReactWheelEvent,
 } from "react";
 
+import { PageImageCard, type PageImage } from "@/components/questions/PageImageCard";
 import { Button } from "@/components/ui/button";
+import type { ContentMode } from "@/lib/reading/mode";
 import { cn } from "@/lib/utils";
+
+export type { PageImage };
 
 const MIN_ZOOM = 0.5;
 const MAX_ZOOM = 3;
 const ZOOM_STEP = 0.25;
 
-export type PageImage = {
-  id: string;
-  pageIndex: number;
-  dataUrl?: string | undefined;
-};
-
 type Props = {
   pages: PageImage[];
+  onContentModeChange: (id: string, mode: ContentMode) => void;
+  onRead: (id: string) => void;
+  onRemove: (id: string) => void;
   className?: string | undefined;
 };
 
-export function PageImageViewer({ pages, className }: Props) {
+export function PageImageViewer({
+  pages,
+  onContentModeChange,
+  onRead,
+  onRemove,
+  className,
+}: Props) {
   const [zoom, setZoom] = useState(1);
   const [panMode, setPanMode] = useState(true);
   const dragRef = useRef<{
@@ -48,6 +55,8 @@ export function PageImageViewer({ pages, className }: Props) {
 
   const onPointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!panMode || event.button !== 0) return;
+    const target = event.target;
+    if (target instanceof Element && target.closest("[data-page-toolbar]")) return;
     const viewport = viewportRef.current;
     if (!viewport) return;
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -69,9 +78,7 @@ export function PageImageViewer({ pages, className }: Props) {
   };
 
   const endDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (dragRef.current?.pointerId === event.pointerId) {
-      dragRef.current = null;
-    }
+    if (dragRef.current?.pointerId === event.pointerId) dragRef.current = null;
   };
 
   const onWheel = (event: ReactWheelEvent<HTMLDivElement>) => {
@@ -140,22 +147,13 @@ export function PageImageViewer({ pages, className }: Props) {
       >
         <div className="space-y-4 p-3" style={{ width: `${zoom * 100}%` }}>
           {pages.map((page) => (
-            <figure key={page.id} className="space-y-1">
-              <figcaption className="text-xs text-muted-foreground">Page {page.pageIndex + 1}</figcaption>
-              {page.dataUrl ? (
-                <img
-                  src={page.dataUrl}
-                  alt={`Original uploaded question paper page ${page.pageIndex + 1}`}
-                  className="block h-auto max-w-none rounded border border-border bg-background object-contain select-none"
-                  style={{ width: "100%" }}
-                  draggable={false}
-                />
-              ) : (
-                <div className="flex h-40 items-center justify-center rounded border border-dashed border-border text-sm text-muted-foreground">
-                  Page {page.pageIndex + 1} image unavailable
-                </div>
-              )}
-            </figure>
+            <PageImageCard
+              key={page.id}
+              page={page}
+              onContentModeChange={onContentModeChange}
+              onRead={onRead}
+              onRemove={onRemove}
+            />
           ))}
         </div>
       </div>
