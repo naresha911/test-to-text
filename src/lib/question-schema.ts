@@ -68,6 +68,27 @@ export const FIGURE_ROLES = [
 
 export type FigureRole = (typeof FIGURE_ROLES)[number];
 
+export const READ_FLAGS = [
+  "options_in_stem",
+  "missing_options",
+  "broken_math",
+  "suspicious_currency",
+  "partial_stem",
+  "number_gap",
+] as const;
+
+export type ReadFlag = (typeof READ_FLAGS)[number];
+
+/** Printed region for one question, plus the checks that still fail. */
+export type SourceBlock = {
+  /** [x, y, width, height] on the source page, 0..1. Null when the lines had no boxes. */
+  bbox: [number, number, number, number] | null;
+  image_path?: string | null;
+  flags: ReadFlag[];
+  /** 1 after the page read, then one per repair attempt, up to 3. */
+  passes: number;
+};
+
 export const GENERATION_METHODS = ["cropped", "svg", "canvas", "image_model", "uploaded"] as const;
 
 export type GenerationMethod = (typeof GENERATION_METHODS)[number];
@@ -162,6 +183,8 @@ export type Question = {
   /** Reader that produced this extraction. Absent on older papers. */
   reader_id?: string | null;
   reader_version?: string | null;
+  /** Crop of the printed question. Absent on older papers and on generated questions. */
+  source_block?: SourceBlock | null;
 };
 
 export type PaperMeta = {
@@ -449,6 +472,30 @@ export function normalizeQuestion(raw: unknown, page: number): Question {
     source: str(r["source"]),
     reader_id: str(r["reader_id"]),
     reader_version: str(r["reader_version"]),
+    ...sourceBlockFields(r["source_block"], bbox),
+  };
+}
+
+function sourceBlockFields(
+  value: unknown,
+  bbox: (value: unknown) => Figure["bbox"],
+): { source_block: SourceBlock } | Record<string, never> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const row = value as Record<string, unknown>;
+  const flags = (Array.isArray(row["flags"]) ? row["flags"] : []).filter((flag): flag is ReadFlag =>
+    READ_FLAGS.includes(flag as ReadFlag),
+  );
+  const passes =
+    typeof row["passes"] === "number" && Number.isFinite(row["passes"])
+      ? Math.min(3, Math.max(1, Math.round(row["passes"])))
+      : 1;
+  return {
+    source_block: {
+      bbox: bbox(row["bbox"]) ?? null,
+      image_path: localAssetPath(row["image_path"]),
+      flags,
+      passes,
+    },
   };
 }
 

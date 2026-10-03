@@ -52,8 +52,11 @@ function splitFigures(figures: ReaderBlock[]): { question: ReaderBlock[]; option
   }
   let optionIndex = 0;
   let most = 0;
+  // Answer figures sit under the series. A 3-figure series plus its blank box
+  // has the same count as four choices, so a tie belongs to the lower row.
+  // A longer row still wins: one question figure above four choices stays the question.
   grouped.forEach((row, index) => {
-    if (row.length > most) {
+    if (row.length >= most) {
       most = row.length;
       optionIndex = index;
     }

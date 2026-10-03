@@ -1,5 +1,6 @@
 import {
   CheckCircle2,
+  ChevronDown,
   CircleDot,
   Image as ImageIcon,
   ListChecks,
@@ -13,13 +14,16 @@ import {
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import { MathText } from "@/components/MathText";
+import { MathFormatHelp } from "@/components/questions/MathFormatHelp";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { detachImagePath, questionWithoutOption } from "@/lib/question-images";
+import { READ_FLAG_LABELS } from "@/lib/reading/read-audit";
 import {
   QUESTION_TYPE_LABELS,
   QUESTION_TYPES,
@@ -722,6 +726,54 @@ function EditableNumber({
   );
 }
 
+function PrintedQuestion({
+  question,
+  resolve,
+}: {
+  question: Question;
+  resolve?: Resolver | undefined;
+}) {
+  const block = question.source_block;
+  if (!block) return null;
+  const flags = block.flags ?? [];
+  const flagged = flags.length > 0;
+  const url = block.image_path ? resolve?.(block.image_path) : undefined;
+  if (!url && !flagged) return null;
+  const label = question.number ? `question ${question.number}` : "this question";
+
+  return (
+    <Collapsible defaultOpen={flagged} className="mt-3">
+      <CollapsibleTrigger className="flex items-center gap-2 text-sm font-medium text-foreground [&[data-state=open]>svg]:rotate-180">
+        <ChevronDown className="h-4 w-4 transition-transform" aria-hidden="true" />
+        Printed question
+        {flagged ? <Badge variant="outline">{flags.length} to check</Badge> : null}
+      </CollapsibleTrigger>
+      <CollapsibleContent className="mt-2 space-y-2">
+        {flagged ? (
+          <div className="flex flex-wrap gap-1">
+            {flags.map((flag) => (
+              <Badge key={flag} variant="secondary">
+                {READ_FLAG_LABELS[flag]}
+              </Badge>
+            ))}
+          </div>
+        ) : null}
+        {url ? (
+          <img
+            src={url}
+            alt={`Printed ${label} from the paper`}
+            className="max-h-80 w-auto max-w-full rounded border border-border bg-secondary/40 object-contain"
+          />
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            The printed question image is unavailable.
+          </p>
+        )}
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
 export function QuestionCard({
   question,
   index,
@@ -935,6 +987,8 @@ export function QuestionCard({
         </div>
       </header>
 
+      <PrintedQuestion question={question} {...(resolve ? { resolve } : {})} />
+
       {question.validation?.checks.length ? (
         <div className="mt-3 rounded-md border border-border bg-secondary/30 px-3 py-2 text-sm">
           <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
@@ -973,7 +1027,12 @@ export function QuestionCard({
 
       {editing && onChange ? (
         <div className="mt-3">
-          <FieldLabel>Stem</FieldLabel>
+          <div className="mb-1 flex items-center justify-between gap-2">
+            <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+              Stem
+            </p>
+            <MathFormatHelp />
+          </div>
           <Textarea
             value={question.stem}
             rows={8}

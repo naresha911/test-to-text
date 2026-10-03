@@ -54,6 +54,24 @@ describe("question image cleanup", () => {
     ]);
   });
 
+  test("collects and detaches the printed question crop", () => {
+    const original = question({
+      id: "q",
+      source_block: {
+        bbox: [0.1, 0.2, 0.6, 0.15],
+        image_path: "doc/p1-q1-block.jpg",
+        flags: ["missing_options"],
+        passes: 2,
+      },
+    });
+
+    expect([...collectQuestionsImagePaths([original])]).toEqual(["doc/p1-q1-block.jpg"]);
+    const next = detachImagePath(original, "doc/p1-q1-block.jpg");
+    expect(next.source_block?.image_path).toBeNull();
+    expect(next.source_block?.flags).toEqual(["missing_options"]);
+    expect(original.source_block?.image_path).toBe("doc/p1-q1-block.jpg");
+  });
+
   test("detaching an image removes the figure row and the option link", () => {
     const original = question({
       id: "q",

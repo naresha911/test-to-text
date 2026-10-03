@@ -1,5 +1,7 @@
 import { readOpenOcrPage } from "@/lib/reader/openocr";
+import type { ReaderBlock } from "@/lib/reader/types";
 import type { TextLineBox } from "@/lib/reader/parse-blocks";
+import type { PlacedWord } from "@/lib/reading/math-text";
 
 /** OCR.space free tier: one image, at most 1 MB, plain text only. */
 const OCR_SPACE_MAX_BYTES = 1_000_000;
@@ -7,10 +9,21 @@ const OCR_SPACE_MAX_BYTES = 1_000_000;
 export type PageTranscript = {
   text: string;
   lines: TextLineBox[];
+  /** Word boxes from OCR.space, used to rebuild stacked fractions. */
+  words?: PlacedWord[];
   source: string;
   /** Image the words were read from. Layout uses the same pixels. */
   imageDataUrl: string;
 };
+
+function transcriptLine(block: Pick<ReaderBlock, "type" | "text" | "latex">): string {
+  const latex = block.latex?.trim() ?? "";
+  const text = block.text?.trim() ?? "";
+  if ((block.type === "formula" && latex) || (!text && latex)) {
+    return latex.startsWith("$") ? latex : `$${latex}$`;
+  }
+  return text;
+}
 
 /**
  * Read printed words. OCR.space, then Optiic, then the local text service.
@@ -23,6 +36,7 @@ export async function readPrintedText(options: {
 }): Promise<PageTranscript> {
   let image = options.imageDataUrl;
   let localText = "";
+  let localLines: TextLineBox[] = [];
   let localError: Error | null = null;
   let size: { width: number; height: number } | undefined;
 
@@ -32,9 +46,10 @@ export async function readPrintedText(options: {
     const width = local.jpeg_width || local.page_width || 0;
     const height = local.jpeg_height || local.page_height || 0;
     if (width > 0 && height > 0) size = { width, height };
+    localLines = lineBoxes(local.blocks);
     localText = local.blocks
       .filter((block) => block.type === "text" || block.type === "formula")
-      .map((block) => block.text?.trim() || block.latex?.trim() || "")
+      .map(transcriptLine)
       .filter(Boolean)
       .join("\n");
   } catch (error) {
@@ -46,7 +61,13 @@ export async function readPrintedText(options: {
   if (options.ocrSpaceKey) {
     try {
       const reading = await ocrSpaceText(options.ocrSpaceKey, image, size);
-      return { text: reading.text, lines: reading.lines, source: "ocrspace", imageDataUrl: image };
+      return {
+        text: reading.text,
+        lines: reading.lines.length ? reading.lines : localLines,
+        words: reading.words,
+        source: "ocrspace",
+        imageDataUrl: image,
+      };
     } catch (error) {
       textError = error instanceof Error ? error : new Error(String(error));
     }
@@ -60,7 +81,7 @@ export async function readPrintedText(options: {
     }
   }
   if (localText.trim()) {
-    return { text: localText, lines: [], source: "local", imageDataUrl: image };
+    return { text: localText, lines: localLines, source: "local", imageDataUrl: image };
   }
 
   throw new Error(
@@ -74,7 +95,7 @@ export async function ocrSpaceText(
   apiKey: string,
   imageDataUrl: string,
   size?: { width: number; height: number },
-): Promise<{ text: string; lines: TextLineBox[] }> {
+): Promise<{ text: string; lines: TextLineBox[]; words: PlacedWord[] }> {
   const blob = dataUrlToBlob(imageDataUrl);
   if (blob.size > OCR_SPACE_MAX_BYTES) {
     throw new Error("This page is over the OCR.space free limit of 1 MB.");
@@ -95,7 +116,13 @@ export async function ocrSpaceText(
   });
 
   const body = await response.text();
-  type OcrSpaceWord = { Left?: number; Top?: number; Width?: number; Height?: number };
+  type OcrSpaceWord = {
+    WordText?: string;
+    Left?: number;
+    Top?: number;
+    Width?: number;
+    Height?: number;
+  };
   type OcrSpaceLine = { LineText?: string; Words?: OcrSpaceWord[] };
   type OcrSpaceResult = {
     ParsedText?: string;
@@ -167,23 +194,37 @@ export async function ocrSpaceText(
   const width = size?.width ?? 0;
   const height = size?.height ?? 0;
   const lines: TextLineBox[] = [];
+  const words: PlacedWord[] = [];
   if (width > 0 && height > 0) {
     for (const result of payload?.ParsedResults ?? []) {
       for (const line of result.TextOverlay?.Lines ?? []) {
-        const words = line.Words ?? [];
-        if (!words.length) continue;
-        const left = Math.min(...words.map((word) => word.Left ?? 0));
-        const top = Math.min(...words.map((word) => word.Top ?? 0));
-        const right = Math.max(...words.map((word) => (word.Left ?? 0) + (word.Width ?? 0)));
-        const bottom = Math.max(...words.map((word) => (word.Top ?? 0) + (word.Height ?? 0)));
+        const lineWords = line.Words ?? [];
+        if (!lineWords.length) continue;
+        const left = Math.min(...lineWords.map((word) => word.Left ?? 0));
+        const top = Math.min(...lineWords.map((word) => word.Top ?? 0));
+        const right = Math.max(...lineWords.map((word) => (word.Left ?? 0) + (word.Width ?? 0)));
+        const bottom = Math.max(...lineWords.map((word) => (word.Top ?? 0) + (word.Height ?? 0)));
         lines.push({
           text: line.LineText ?? "",
           bbox: [left / width, top / height, (right - left) / width, (bottom - top) / height],
         });
+        for (const word of lineWords) {
+          const label = word.WordText?.trim();
+          if (!label) continue;
+          const wordLeft = word.Left ?? 0;
+          const wordTop = word.Top ?? 0;
+          const wordWidth = word.Width ?? 0;
+          const wordHeight = word.Height ?? 0;
+          if (wordWidth <= 0 || wordHeight <= 0) continue;
+          words.push({
+            text: label,
+            bbox: [wordLeft / width, wordTop / height, wordWidth / width, wordHeight / height],
+          });
+        }
       }
     }
   }
-  return { text, lines };
+  return { text, lines, words };
 }
 
 export async function optiicText(apiKey: string, imageDataUrl: string): Promise<string> {
@@ -224,6 +265,15 @@ export async function optiicText(apiKey: string, imageDataUrl: string): Promise<
   const text = payload?.text ?? "";
   if (!text.trim()) throw new Error("Optiic found no text on this page.");
   return text;
+}
+
+function lineBoxes(blocks: ReaderBlock[]): TextLineBox[] {
+  return blocks.flatMap((block) => {
+    const text = transcriptLine(block).trim();
+    if (!text || !block.bbox) return [];
+    if (block.type !== "text" && block.type !== "formula") return [];
+    return [{ text, bbox: block.bbox }];
+  });
 }
 
 function ocrMessage(value: string | string[] | null | undefined): string {

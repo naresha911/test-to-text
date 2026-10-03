@@ -54,6 +54,11 @@ const SYSTEM_PROMPT = `You are an exam-paper digitiser. You read a scanned or ph
 RULES
 1. Transcribe faithfully. Never invent questions, options or answers that are not printed on the page.
 2. Mathematics, chemistry and logic notation MUST be LaTeX: inline as $...$ and display as $$...$$. Example: "Solve $x^2 - 5x + 6 = 0$". Never describe an equation in words when it is printed as notation.
+   - Stacked fraction: $\\frac{2}{3}$. Mixed number: $2\\frac{1}{3}$ (the whole number sits beside the fraction).
+   - Operators are \\times and \\div.
+   - Degree: $90^{\\circ}$. Square unit: $3600\\text{ cm}^{2}$.
+   - A percent in a sentence stays 25%. A percent inside a formula is $25\\%$.
+   Never write 2 1/3, cm2, or a bare number when the page prints a degree or a superscript.
 3. Figures, shapes, matrices-as-pictures, graphs, circuit diagrams, pattern/sequence puzzles: add an entry to "figures" with a precise "description" a person could redraw from, and a "bbox" as [x, y, width, height] normalised 0..1 relative to the whole page, tightly around the figure.
 4. Classify each question's "type" as exactly one of: mcq, multi_select, true_false, fill_blank, assertion_reason, comprehension, match_the_following, short_answer, long_answer, numerical, diagram, unknown.
    - mcq: one correct option. multi_select: more than one correct option.
@@ -161,6 +166,50 @@ async function structurePlainText(
     if (!(error instanceof Error)) throw error;
   }
   return { questions: structureOcrTextOffline(pageText, options.page) };
+}
+
+/** Read the page image when plain OCR has already dropped fraction bars. */
+async function digitisePageImage(
+  imageDataUrl: string,
+  options: {
+    page: number;
+    hint?: string | undefined;
+    omniroutersKey?: string | undefined;
+    openRouterKey?: string | undefined;
+    lovableKey?: string | undefined;
+    model?: string | undefined;
+  },
+): Promise<Question[] | null> {
+  const omniroutersModel = process.env["OMNIROUTERS_MODEL"];
+  const omniroutersBaseUrl = process.env["OMNIROUTERS_BASE_URL"];
+  const targets = generationChatTargets({
+    openRouterModel: options.model?.trim() || DEFAULT_OPENROUTER_MODEL,
+    openRouterFallbacks: [],
+    lovableModel: "google/gemini-3.8-flash",
+    ...(options.omniroutersKey ? { omniroutersKey: options.omniroutersKey } : {}),
+    ...(options.openRouterKey ? { openRouterKey: options.openRouterKey } : {}),
+    ...(options.lovableKey ? { lovableKey: options.lovableKey } : {}),
+    ...(options.model ? { requestedModel: options.model } : {}),
+    ...(omniroutersModel ? { omniroutersModel } : {}),
+    ...(omniroutersBaseUrl ? { omniroutersBaseUrl } : {}),
+  });
+  if (targets.length === 0) return null;
+  const text = await completeChatWithFallback(
+    targets,
+    (target) =>
+      callChat({
+        url: target.url,
+        headers: target.headers,
+        model: target.model,
+        ...(target.models ? { models: target.models } : {}),
+        messages: visionMessages(imageDataUrl, options.hint),
+        label: target.label,
+        maxTokens: 12000,
+      }),
+    "No AI key is configured to read this page.",
+  );
+  const questions = questionsFromText(text, options.page);
+  return questions.length ? questions : null;
 }
 
 type ChatMessage = {
@@ -350,6 +399,15 @@ export const extractPage = createServerFn({ method: "POST" })
           });
           return resolvedQuestions(structured, pageText, data.page).questions;
         },
+        digitisePage: (imageDataUrl) =>
+          digitisePageImage(imageDataUrl, {
+            page: data.page,
+            ...(data.hint ? { hint: data.hint } : {}),
+            ...(omniroutersKey ? { omniroutersKey } : {}),
+            ...(effectiveOpenRouterKey ? { openRouterKey: effectiveOpenRouterKey } : {}),
+            ...(lovableKey ? { lovableKey } : {}),
+            ...(data.model ? { model: data.model } : {}),
+          }),
       });
     }
 

@@ -142,6 +142,36 @@ describe("OpenOCR blocks", () => {
     expect(question?.stem).not.toMatch(/we'll add a figure/i);
   });
 
+  test("a series of three figures plus a blank stays on the question, not the choices", () => {
+    const questions = questionsFromBlocks(
+      result([
+        {
+          id: "t1",
+          type: "text",
+          text: "132. Select the option figure that will replace the interrogation mark in the following series.",
+        },
+        { id: "t2", type: "text", text: "Question Figures" },
+        { id: "t3", type: "text", text: "Answer Figures" },
+        { id: "q1", type: "figure", bbox: [0.08, 0.18, 0.12, 0.16] },
+        { id: "q2", type: "figure", bbox: [0.24, 0.18, 0.12, 0.16] },
+        { id: "q3", type: "figure", bbox: [0.4, 0.18, 0.12, 0.16] },
+        { id: "blank", type: "figure", bbox: [0.56, 0.18, 0.12, 0.16] },
+        { id: "a", type: "figure", bbox: [0.08, 0.48, 0.12, 0.16] },
+        { id: "b", type: "figure", bbox: [0.24, 0.48, 0.12, 0.16] },
+        { id: "c", type: "figure", bbox: [0.4, 0.48, 0.12, 0.16] },
+        { id: "d", type: "figure", bbox: [0.56, 0.48, 0.12, 0.16] },
+      ]),
+      0,
+    );
+    const question = questions[0];
+    const series = question?.figures.filter((figure) => figure.role === "question_figure") ?? [];
+    const choices = question?.figures.filter((figure) => figure.role === "option_figure") ?? [];
+    expect(series.map((figure) => figure.bbox?.[0])).toEqual([0.08, 0.24, 0.4, 0.56]);
+    expect(choices.map((figure) => figure.caption)).toEqual(["A", "B", "C", "D"]);
+    expect(choices.every((figure) => (figure.bbox?.[1] ?? 0) > 0.4)).toBe(true);
+    expect(question?.options.map((option) => option.key)).toEqual(["A", "B", "C", "D"]);
+  });
+
   test("a missing option letter is still given a figure slot", () => {
     const questions = questionsFromBlocks(
       result([

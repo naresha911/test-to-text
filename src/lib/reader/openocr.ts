@@ -69,6 +69,52 @@ export async function openOcrHealthy(timeoutMs = 800): Promise<boolean> {
   }
 }
 
+/** Crop one normalised question box and return an upscaled JPEG data URL. */
+export async function cropOpenOcrRegion(
+  imageDataUrl: string,
+  bbox: [number, number, number, number],
+  options: { pad?: number; scale?: number; timeoutMs?: number } = {},
+): Promise<string> {
+  const timeoutMs = options.timeoutMs ?? 20_000;
+  let response: Response;
+  try {
+    response = await fetch(`${openOcrUrl()}/crop`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        image_base64: imageDataUrl,
+        bbox,
+        pad: options.pad ?? 0.02,
+        scale: options.scale ?? 2,
+      }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "the request failed";
+    throw new Error(
+      `OpenOCR is not reachable at ${openOcrUrl()} (${reason}). Start it with npm run ocr.`,
+    );
+  }
+  const body = await response.text();
+  let payload: unknown = null;
+  try {
+    payload = JSON.parse(body) as unknown;
+  } catch {
+    payload = null;
+  }
+  const row = payload && typeof payload === "object" ? (payload as Record<string, unknown>) : null;
+  if (!response.ok) {
+    const message =
+      (typeof row?.["detail"] === "string" && row["detail"]) ||
+      (typeof row?.["error"] === "string" && row["error"]) ||
+      `OpenOCR could not crop this question (${response.status}).`;
+    throw new Error(message);
+  }
+  const jpeg = typeof row?.["jpeg_base64"] === "string" ? row["jpeg_base64"] : "";
+  if (!jpeg) throw new Error("OpenOCR returned an empty question crop.");
+  return `data:image/jpeg;base64,${jpeg}`;
+}
+
 export async function readOpenOcrPage(
   imageDataUrl: string,
   timeoutMs = 25_000,

@@ -35,11 +35,19 @@ export function cleanPage(input: {
   regions: ReaderBlock[];
   reader: { reader_id: string; reader_version: string };
   modelQuestions?: Question[] | null;
+  /** When OCR math is smashed, a vision reading replaces the offline split. */
+  preferModel?: boolean;
 }): Question[] {
   let questions = structureOcrText(input.pageText, input.page);
-  if (!usableStems(questions).length && input.modelQuestions?.length) {
-    const modeled = usableStems(input.modelQuestions);
-    if (modeled.length) questions = modeled;
+  const modeled = input.modelQuestions?.length ? usableStems(input.modelQuestions) : [];
+  const offlineCount = usableStems(questions).length;
+  // A vision reading may repair fractions. It must not replace a fuller split
+  // with a shorter one that dropped printed question numbers.
+  if (
+    modeled.length > 0 &&
+    (offlineCount === 0 || (input.preferModel && modeled.length >= offlineCount))
+  ) {
+    questions = modeled;
   }
   questions = stripFigures(questions);
 

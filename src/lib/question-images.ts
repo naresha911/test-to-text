@@ -36,6 +36,7 @@ export function collectQuestionImagePaths(
   into: Set<string> = new Set(),
 ): Set<string> {
   if (!question || typeof question !== "object") return into;
+  addPath(into, question.source_block?.image_path);
   for (const figure of objectList<{ image_path?: string | null }>(question.figures)) {
     addPath(into, figure.image_path);
   }
@@ -88,11 +89,23 @@ export function detachImagePath(question: Question, imagePath: string): Question
   );
   const sub_questions = currentSubs.map((sub) => detachImagePath(sub, target));
 
+  const source_block =
+    question.source_block && normalizeStoredImagePath(question.source_block.image_path) === target
+      ? { ...question.source_block, image_path: null }
+      : question.source_block;
+  const blockChanged = source_block !== question.source_block;
+
   const figuresChanged = figures.length !== currentFigures.length;
   const optionsChanged = options.some((option, index) => option !== currentOptions[index]);
   const subsChanged = sub_questions.some((sub, index) => sub !== currentSubs[index]);
-  if (!figuresChanged && !optionsChanged && !subsChanged) return question;
-  return { ...question, figures, options, sub_questions };
+  if (!figuresChanged && !optionsChanged && !subsChanged && !blockChanged) return question;
+  return {
+    ...question,
+    figures,
+    options,
+    sub_questions,
+    ...(blockChanged ? { source_block } : {}),
+  };
 }
 
 /** Drop a choice and its option-only crop when no remaining choice still uses that file. */

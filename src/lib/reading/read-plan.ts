@@ -8,14 +8,22 @@ export type PageReadTarget = {
 };
 
 export type ReadPlan<T extends PageReadTarget> = {
-  /** Unread pages that have an image and should be sent to OCR. */
+  /** Pages that have an image and should be sent to OCR. */
   toRead: T[];
   /** Already-read pages in the candidate set. They are not sent to OCR. */
   skippedRead: T[];
-  /** Unread candidates with no image. */
+  /** Candidates with no image. */
   missingImage: T[];
   /** True when nothing was selected, so every page was a candidate. */
   usedAllUnread: boolean;
+};
+
+export type ReadPlanOptions = {
+  /**
+   * Read selected pages again even when they were read before.
+   * An empty selection still means unread pages only.
+   */
+  force?: boolean;
 };
 
 export function isPageRead(page: PageReadTarget): boolean {
@@ -25,12 +33,15 @@ export function isPageRead(page: PageReadTarget): boolean {
 /**
  * Choose which pages this Read pages click should OCR.
  * A selection limits the click to those pages. An empty selection means every unread page.
- * Pages already marked read are never included.
+ * Pages already marked read are skipped, unless Force read is on and those pages are selected.
+ * A forced read replaces that page's previous questions when the new read finds questions.
  */
 export function planPageRead<T extends PageReadTarget>(
   pages: readonly T[],
   selectedIds: ReadonlySet<string>,
+  options?: ReadPlanOptions,
 ): ReadPlan<T> {
+  const force = options?.force === true;
   const usedAllUnread = selectedIds.size === 0;
   const candidates = usedAllUnread ? pages : pages.filter((page) => selectedIds.has(page.id));
 
@@ -39,7 +50,7 @@ export function planPageRead<T extends PageReadTarget>(
   const missingImage: T[] = [];
 
   for (const page of candidates) {
-    if (isPageRead(page)) {
+    if (isPageRead(page) && !(force && !usedAllUnread)) {
       skippedRead.push(page);
       continue;
     }
@@ -63,4 +74,34 @@ export function replaceQuestionsForPage(
   incoming: readonly Question[],
 ): Question[] {
   return [...questions.filter((question) => question.page !== pageIndex), ...incoming];
+}
+
+function shiftPage(page: number | null | undefined, removedIndex: number): number | null {
+  if (page == null || page < removedIndex) return page ?? null;
+  if (page === removedIndex) return null;
+  return page - 1;
+}
+
+/**
+ * Drop questions that were read from the removed page, and close the gap in
+ * later page numbers. A question with no page was typed by hand and stays.
+ */
+export function reindexQuestionsAfterPageRemoval(
+  questions: readonly Question[],
+  removedIndex: number,
+): Question[] {
+  return questions.flatMap((question) => {
+    if (question.page === removedIndex) return [];
+    return [
+      {
+        ...question,
+        page: shiftPage(question.page, removedIndex),
+        figures: question.figures.map((figure) => ({
+          ...figure,
+          page: shiftPage(figure.page, removedIndex),
+        })),
+        sub_questions: reindexQuestionsAfterPageRemoval(question.sub_questions, removedIndex),
+      },
+    ];
+  });
 }

@@ -66,10 +66,12 @@ export function PageReview({
         const pageNumber = question.page ?? null;
         const previousPage = index === 0 ? undefined : (sorted[index - 1]?.page ?? null);
         const showPage = showImages && pageNumber != null && pageNumber !== previousPage;
-        const pageQuestions = showPage
-          ? sorted.filter((item) => item.page === pageNumber)
-          : [];
+        const pageQuestions = showPage ? sorted.filter((item) => item.page === pageNumber) : [];
         const approved = pageQuestions.filter((item) => item.approved === true).length;
+        const checked = pageQuestions.filter((item) => item.source_block);
+        const passedChecks = checked.filter(
+          (item) => (item.source_block?.flags.length ?? 0) === 0,
+        ).length;
         const sourceUrl = pageNumber == null ? undefined : pageUrls[pageNumber];
         const headingId = `page-${pageNumber ?? "none"}-${question.id}`;
 
@@ -81,10 +83,17 @@ export function PageReview({
                   <h2 id={headingId} className="text-2xl">
                     Page {pageNumber + 1}
                   </h2>
-                  <Badge variant="outline" className="ml-auto gap-1">
-                    <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
-                    {approved}/{pageQuestions.length} approved
-                  </Badge>
+                  <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+                    {checked.length ? (
+                      <Badge variant="outline">
+                        {passedChecks} of {checked.length} passed checks
+                      </Badge>
+                    ) : null}
+                    <Badge variant="outline" className="gap-1">
+                      <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
+                      {approved}/{pageQuestions.length} approved
+                    </Badge>
+                  </div>
                 </div>
                 {sourceUrl ? (
                   <figure className="overflow-hidden rounded-lg border border-border bg-secondary/30 p-3">

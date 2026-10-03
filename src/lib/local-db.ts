@@ -17,6 +17,7 @@ import {
   droppedImagePaths,
   normalizeStoredImagePath,
 } from "@/lib/question-images";
+import { pageImageFilePath, pagesWithLostImage } from "@/lib/page-image-path";
 import type { Question } from "@/lib/question-schema";
 import { CONTENT_MODES, type ContentMode } from "@/lib/reading/mode";
 
@@ -666,12 +667,39 @@ export async function listDocuments(): Promise<DocumentListItem[]> {
   });
 }
 
+/** Point a page that lost its photo at an empty unique file, and leave the shared file alone. */
+async function detachLostPageImages(documentId: string): Promise<void> {
+  const db = await getDb();
+  const rows = queryAll(
+    db,
+    "SELECT id, page_index, file_path FROM pp_pages WHERE document_id = ? ORDER BY page_index ASC",
+    [documentId],
+  );
+  const lost = pagesWithLostImage(
+    rows.map((row) => ({
+      id: String(row["id"]),
+      page_index: Number(row["page_index"] ?? 0),
+      file_path: String(row["file_path"] ?? ""),
+    })),
+  );
+  if (!lost.length) return;
+  await withWrite((writeDb) => {
+    for (const page of lost) {
+      writeDb.run(
+        "UPDATE pp_pages SET file_path = ?, ocr_status = 'pending', read_mode = NULL WHERE id = ?",
+        [pageImageFilePath(documentId, page.id), page.id],
+      );
+    }
+  });
+}
+
 export async function getDocument(id: string): Promise<{
   document: DocumentMeta;
   questions: Question[];
   pages: PageRecord[];
   figureUrls: Record<string, string>;
 } | null> {
+  await detachLostPageImages(id);
   const db = await getDb();
   const row = queryOne(db, "SELECT * FROM pp_documents WHERE id = ?", [id]);
   if (!row) return null;
@@ -862,10 +890,9 @@ export async function appendPage(input: {
       input.documentId,
     ]);
     const page_index = Number(countRow?.["c"] ?? 0);
-    const file_path = `${input.documentId}/page-${page_index + 1}.jpg`;
-    await writeImage(file_path, input.dataUrl);
-
     const id = uuid();
+    const file_path = pageImageFilePath(input.documentId, id);
+    await writeImage(file_path, input.dataUrl);
     const created = nowIso();
     db.run(
       `INSERT INTO pp_pages (id, document_id, page_index, file_path, original_name, ocr_status, created_at)

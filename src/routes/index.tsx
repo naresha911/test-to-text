@@ -18,6 +18,7 @@ import { PageImageViewer } from "@/components/questions/PageImageViewer";
 import { PageReview } from "@/components/questions/PageReview";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -63,7 +64,11 @@ import {
 } from "@/lib/question-schema";
 import { DEFAULT_READER_SETTINGS, READER_LABELS, loadReaderSettings } from "@/lib/reader-settings";
 import type { ContentMode } from "@/lib/reading/mode";
-import { planPageRead, replaceQuestionsForPage } from "@/lib/reading/read-plan";
+import {
+  planPageRead,
+  reindexQuestionsAfterPageRemoval,
+  replaceQuestionsForPage,
+} from "@/lib/reading/read-plan";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({
@@ -145,6 +150,7 @@ function HomePage() {
   const [reader, setReader] = useState(DEFAULT_READER_SETTINGS);
   const [contentMode, setContentMode] = useState<ContentMode>("text");
   const [selectedPageIds, setSelectedPageIds] = useState<Set<string>>(() => new Set());
+  const [forceRead, setForceRead] = useState(false);
   const [configOpen, setConfigOpen] = useState(false);
   const [generatingIds, setGeneratingIds] = useState<Set<string>>(() => new Set());
   const [loadingDoc, setLoadingDoc] = useState(!!searchId);
@@ -173,6 +179,7 @@ function HomePage() {
 
   useEffect(() => {
     setSelectedPageIds(new Set());
+    setForceRead(false);
     if (!searchId) {
       setLoadingDoc(false);
       return;
@@ -356,7 +363,9 @@ function HomePage() {
     const marks = questions.reduce((sum, q) => sum + (q.marks ?? meta.default_marks ?? 1), 0);
     const sections = [...new Set(questions.map((q) => q.section?.trim() || "General"))];
     const approved = questions.filter((q) => q.approved).length;
-    return { marks, sections, approved };
+    const checked = questions.filter((q) => q.source_block);
+    const passedChecks = checked.filter((q) => (q.source_block?.flags.length ?? 0) === 0).length;
+    return { marks, sections, approved, checked: checked.length, passedChecks };
   }, [questions, meta.default_marks]);
 
   const selectedAlreadyRead = pages.filter(
@@ -573,7 +582,7 @@ function HomePage() {
       toast.error("Add at least one page image first.");
       return;
     }
-    const plan = planPageRead(pages, selectedPageIds);
+    const plan = planPageRead(pages, selectedPageIds, { force: forceRead });
     if (plan.missingImage.length) {
       const first = plan.missingImage[0]!;
       toast.error(
@@ -585,7 +594,11 @@ function HomePage() {
     if (!plan.toRead.length) {
       if (plan.skippedRead.length && !plan.missingImage.length) {
         toast.success(
-          plan.usedAllUnread ? "Every page is already read." : "Selected pages are already read.",
+          plan.usedAllUnread
+            ? forceRead
+              ? "Every page is already read. Select the pages to read them again."
+              : "Every page is already read. Select pages and turn on Force read to replace their questions."
+            : "Selected pages are already read. Turn on Force read to replace their questions.",
         );
       } else if (!plan.skippedRead.length && !plan.missingImage.length) {
         toast.error("Select pages that have not been read.");
@@ -601,6 +614,7 @@ function HomePage() {
     const urls = { ...figureUrls };
     let failed = 0;
     let readCount = 0;
+    let replaced = 0;
     let aborted = false;
 
     for (let i = 0; i < plan.toRead.length; i += 1) {
@@ -632,7 +646,9 @@ function HomePage() {
         if (!result.questions.length) {
           failed += 1;
           toast.error(
-            `Page ${page.page_index + 1} was read, but no questions could be built from the text.`,
+            page.ocr_status === "done"
+              ? `Page ${page.page_index + 1} was read again, but no questions could be built. The previous questions were kept.`
+              : `Page ${page.page_index + 1} was read, but no questions could be built from the text.`,
           );
         } else {
           for (const [questionIndex, question] of result.questions.entries()) {
@@ -666,6 +682,23 @@ function HomePage() {
                 if (option) option.image_path = saved.path;
               }
             }
+
+            const block = question.source_block;
+            if (block?.bbox && page.dataUrl) {
+              const crop = await cropFigure(page.dataUrl, block.bbox);
+              if (crop) {
+                const dataUrl = await blobToDataUrl(crop);
+                const saved = await runSaveFigure({
+                  data: {
+                    documentId: id,
+                    dataUrl,
+                    filename: `p${page.page_index + 1}-q${questionIndex + 1}-block.jpg`,
+                  },
+                });
+                block.image_path = saved.path;
+                urls[saved.path] = dataUrl;
+              }
+            }
           }
 
           collected = replaceQuestionsForPage(collected, page.page_index, result.questions);
@@ -689,6 +722,7 @@ function HomePage() {
             ),
           );
           readCount += 1;
+          if (page.ocr_status === "done") replaced += 1;
         }
       } catch (error) {
         failed += 1;
@@ -719,11 +753,16 @@ function HomePage() {
 
     if (readCount) {
       const skippedNote = plan.skippedRead.length
-        ? ` Skipped ${plan.skippedRead.length} already read.`
+        ? forceRead
+          ? ` Skipped ${plan.skippedRead.length} already read. Select them to read again.`
+          : ` Skipped ${plan.skippedRead.length} already read.`
+        : "";
+      const replacedNote = replaced
+        ? ` Replaced the previous questions on ${replaced} page${replaced === 1 ? "" : "s"}.`
         : "";
       const failedNote = failed ? ` ${failed} page(s) could not be read.` : "";
       toast.success(
-        `Read ${readCount} page${readCount === 1 ? "" : "s"} as ${modeLabel}.${skippedNote}${failedNote}`,
+        `Read ${readCount} page${readCount === 1 ? "" : "s"} as ${modeLabel}.${replacedNote}${skippedNote}${failedNote}`,
       );
     } else {
       toast.error(collected.length ? "No new pages were read." : "No questions were found.");
@@ -985,17 +1024,36 @@ function HomePage() {
                 ) : (
                   <Sparkles className="h-4 w-4" aria-hidden="true" />
                 )}
-                {progress ? `Reading ${progress.done + 1}/${progress.total}` : "Read pages"}
+                {progress
+                  ? `Reading ${progress.done + 1}/${progress.total}`
+                  : forceRead
+                    ? "Force read"
+                    : "Read pages"}
               </Button>
+              <div
+                className={cn(
+                  "flex h-9 items-center gap-2 rounded-md border border-border px-3 text-sm",
+                  progress && "opacity-50",
+                )}
+              >
+                <Checkbox
+                  id="force-read"
+                  checked={forceRead}
+                  disabled={!!progress}
+                  onCheckedChange={(checked) => setForceRead(checked === true)}
+                />
+                <label
+                  htmlFor="force-read"
+                  className={progress ? "cursor-not-allowed" : "cursor-pointer"}
+                >
+                  Force read
+                </label>
+              </div>
               <p className="text-xs text-muted-foreground">
                 {contentMode === "text"
                   ? "Words only. Diagrams are not cropped."
                   : "Words, plus diagram crops."}{" "}
-                {selectedPageIds.size
-                  ? `${selectedPageIds.size} selected${
-                      selectedAlreadyRead ? `, ${selectedAlreadyRead} already read` : ""
-                    }.`
-                  : "No pages selected, so this reads every page that has not been read."}
+                {readScopeNote(forceRead, selectedPageIds.size, selectedAlreadyRead)}
               </p>
             </div>
 
@@ -1231,6 +1289,9 @@ function HomePage() {
                       {questions.length} question{questions.length === 1 ? "" : "s"}
                     </p>
                     <p className="mt-1 text-xs text-muted-foreground">
+                      {paperTotals.checked
+                        ? `${paperTotals.passedChecks} of ${paperTotals.checked} passed checks · `
+                        : ""}
                       {paperTotals.approved} approved · {paperTotals.marks} marks ·{" "}
                       {paperTotals.sections.join(", ")}
                       {meta.duration_minutes ? ` · ${meta.duration_minutes} min` : ""}
@@ -1273,7 +1334,8 @@ function HomePage() {
                 <h2 className="mt-4 text-2xl">Your parsed paper appears here</h2>
                 <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
                   Create a past paper or practice test, add images, then select pages and read them.
-                  With none selected, Read pages reads every page that has not been read. Or add a
+                  With none selected, Read pages reads every page that has not been read. Select a
+                  page and turn on Force read to read it again and replace its questions. Or add a
                   question yourself — cards line up by question number. Work stays in local SQLite
                   until you download exam-prep JSON.
                 </p>
@@ -1301,29 +1363,30 @@ function HomePage() {
   );
 }
 
+function readScopeNote(forceRead: boolean, selectedCount: number, alreadyRead: number): string {
+  if (forceRead) {
+    if (!selectedCount) {
+      return "Select an already-read page to read it again and replace its questions.";
+    }
+    if (alreadyRead === 1) {
+      return `${selectedCount} selected. 1 already read, so that page's questions will be replaced.`;
+    }
+    if (alreadyRead) {
+      return `${selectedCount} selected. ${alreadyRead} already read, so their questions will be replaced.`;
+    }
+    return `${selectedCount} selected. None have been read yet.`;
+  }
+  if (selectedCount) {
+    return `${selectedCount} selected${alreadyRead ? `, ${alreadyRead} already read` : ""}.`;
+  }
+  return "No pages selected, so this reads every page that has not been read.";
+}
+
 function pageReadBadge(page: PageRecord): string | null {
   if (page.ocr_status !== "done") return null;
   if (page.read_mode === "text") return "Read · Text";
   if (page.read_mode === "graphics") return "Read · Graphics";
   return "Read";
-}
-
-function reindexQuestionsAfterPageRemoval(questions: Question[], removedIndex: number): Question[] {
-  const shift = (page: number | null | undefined): number | null => {
-    if (page == null || page < removedIndex) return page ?? null;
-    if (page === removedIndex) return null;
-    return page - 1;
-  };
-
-  return questions.map((question) => ({
-    ...question,
-    page: shift(question.page),
-    figures: question.figures.map((figure) => ({
-      ...figure,
-      page: shift(figure.page),
-    })),
-    sub_questions: reindexQuestionsAfterPageRemoval(question.sub_questions, removedIndex),
-  }));
 }
 
 function blobToDataUrl(blob: Blob): Promise<string> {
