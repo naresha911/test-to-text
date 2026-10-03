@@ -47,6 +47,8 @@ type Props = {
   generatingIds?: Set<string> | undefined;
   onReadCrop?: ((question: Question, layout: CropLayout) => Promise<Question>) | undefined;
   contentModeForPage?: ((page: number | null | undefined) => ContentMode) | undefined;
+  /** Scroll the image viewer to this 1-based page. */
+  onOpenPage?: ((displayedPage: number) => void) | undefined;
 };
 
 export function PageReview({
@@ -72,6 +74,7 @@ export function PageReview({
   promptStore,
   onReadCrop,
   contentModeForPage,
+  onOpenPage,
 }: Props) {
   const [focusId, setFocusId] = useState<string | null>(null);
   const fallbackPrompts = useRef(new Map<string, string>());
@@ -178,6 +181,7 @@ export function PageReview({
               {...(onRegenerateGenerated ? { onRegenerateGenerated } : {})}
               {...(onRegenerateFigure ? { onRegenerateFigure } : {})}
               {...(onPasteFigure ? { onPasteFigure } : {})}
+              {...(onOpenPage ? { onOpenPage } : {})}
               {...(onReadCrop
                 ? {
                     onReadCrop,

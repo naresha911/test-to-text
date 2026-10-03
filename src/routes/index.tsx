@@ -17,7 +17,7 @@ import {
   type PageImageViewerHandle,
 } from "@/components/questions/PageImageViewer";
 import { PageReview } from "@/components/questions/PageReview";
-import { ReviewToolbar } from "@/components/questions/ReviewToolbar";
+import { ReviewToolbar, type ApprovalFilter } from "@/components/questions/ReviewToolbar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -150,6 +150,7 @@ function HomePage() {
     streams: [],
   });
   const [filter, setFilter] = useState<QuestionType | "all">("all");
+  const [approvalFilter, setApprovalFilter] = useState<ApprovalFilter>("all");
   const [reader, setReader] = useState(DEFAULT_READER_SETTINGS);
   const [pageModes, setPageModes] = useState<Record<string, ContentMode>>({});
   const [activeReadId, setActiveReadId] = useState<string | null>(null);
@@ -188,8 +189,6 @@ function HomePage() {
     },
   );
   const viewerRef = useRef<PageImageViewerHandle>(null);
-  const filterRef = useRef(filter);
-  filterRef.current = filter;
   const pendingQuestionScroll = useRef<string | null>(null);
   const [visiblePage, setVisiblePage] = useState<number | null>(null);
   const [focusQuestionId, setFocusQuestionId] = useState<string | null>(null);
@@ -435,6 +434,7 @@ function HomePage() {
       questionsRef.current = updated;
       setQuestions(updated);
       setFilter("all");
+      setApprovalFilter("all");
       const savedId = documentIdRef.current;
       if (savedId) persist(savedId, updated, undefined, { immediate: true });
       else void ensureDocumentRef.current();
@@ -500,15 +500,14 @@ function HomePage() {
       toast.error(`No question numbered ${label.trim()}.`);
       return;
     }
-    if (filterRef.current === "all") {
-      const node = document.getElementById(`question-${match.id}`);
-      if (node) {
-        node.scrollIntoView({ block: "start", behavior: "smooth" });
-        return;
-      }
+    const node = document.getElementById(`question-${match.id}`);
+    if (node) {
+      node.scrollIntoView({ block: "start", behavior: "smooth" });
+      return;
     }
     pendingQuestionScroll.current = match.id;
     setFilter("all");
+    setApprovalFilter("all");
   }, []);
 
   const addFromToolbar = useCallback(
@@ -525,18 +524,24 @@ function HomePage() {
   }, [questions]);
 
   const visible = useMemo(
-    () => (filter === "all" ? questions : questions.filter((q) => q.type === filter)),
-    [questions, filter],
+    () =>
+      questions.filter((question) => {
+        if (filter !== "all" && question.type !== filter) return false;
+        if (approvalFilter === "approved") return question.approved === true;
+        if (approvalFilter === "unapproved") return question.approved !== true;
+        return true;
+      }),
+    [questions, filter, approvalFilter],
   );
 
   useEffect(() => {
     const id = pendingQuestionScroll.current;
-    if (!id || filter !== "all") return;
+    if (!id || filter !== "all" || approvalFilter !== "all") return;
     const node = document.getElementById(`question-${id}`);
     if (!node) return;
     pendingQuestionScroll.current = null;
     node.scrollIntoView({ block: "start", behavior: "smooth" });
-  }, [filter, visible]);
+  }, [filter, approvalFilter, visible]);
 
   const paperTotals = useMemo(() => {
     const marks = questions.reduce((sum, q) => sum + (q.marks ?? meta.default_marks ?? 1), 0);
@@ -1243,6 +1248,8 @@ function HomePage() {
         <ReviewToolbar
           questions={questions}
           suggestedPage={visiblePage}
+          approvalFilter={approvalFilter}
+          onApprovalFilterChange={setApprovalFilter}
           onAdd={addFromToolbar}
           onScrollToPage={scrollToPage}
           onScrollToQuestion={scrollToQuestion}
@@ -1315,28 +1322,33 @@ function HomePage() {
             )}
 
             <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain break-words p-4">
-              <PageReview
-                questions={visible}
-                numberingQuestions={questions}
-                showImages={false}
-                resolveFigure={resolveFigure}
-                onApprovalChange={solution.approve}
-                onQuestionChange={patchQuestion}
-                onDelete={deleteQuestion}
-                onRegenerate={solution.regenerate}
-                onPasteFigure={pasteFigure}
-                focusQuestionId={focusQuestionId}
-                generatingIds={solution.generatingIds}
-                queuedIds={solution.queuedIds}
-                promptReveal={solution.promptReveal}
-                promptStore={solution.prompts}
-                solutionAudience={audience}
-                onReadCrop={onReadCrop}
-                contentModeForPage={(page) => {
-                  const record = pages.find((item) => item.page_index === page);
-                  return record ? contentModeFor(record) : "text";
-                }}
-              />
+              {questions.length > 0 && visible.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No questions match this filter.</p>
+              ) : (
+                <PageReview
+                  questions={visible}
+                  numberingQuestions={questions}
+                  showImages={false}
+                  resolveFigure={resolveFigure}
+                  onApprovalChange={solution.approve}
+                  onQuestionChange={patchQuestion}
+                  onDelete={deleteQuestion}
+                  onRegenerate={solution.regenerate}
+                  onPasteFigure={pasteFigure}
+                  focusQuestionId={focusQuestionId}
+                  generatingIds={solution.generatingIds}
+                  queuedIds={solution.queuedIds}
+                  promptReveal={solution.promptReveal}
+                  promptStore={solution.prompts}
+                  solutionAudience={audience}
+                  onReadCrop={onReadCrop}
+                  onOpenPage={(displayedPage) => scrollToPage(String(displayedPage))}
+                  contentModeForPage={(page) => {
+                    const record = pages.find((item) => item.page_index === page);
+                    return record ? contentModeFor(record) : "text";
+                  }}
+                />
+              )}
             </div>
           </section>
         </div>

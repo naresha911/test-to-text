@@ -5,10 +5,15 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { Question } from "@/lib/question-schema";
+import { cn } from "@/lib/utils";
+
+export type ApprovalFilter = "all" | "approved" | "unapproved";
 
 type Props = {
   questions: Question[];
   suggestedPage: number | null;
+  approvalFilter: ApprovalFilter;
+  onApprovalFilterChange: (filter: ApprovalFilter) => void;
   onAdd: (input: NewQuestionInput) => void;
   onScrollToPage: (label: string) => void;
   onScrollToQuestion: (label: string) => void;
@@ -17,6 +22,8 @@ type Props = {
 export function ReviewToolbar({
   questions,
   suggestedPage,
+  approvalFilter,
+  onApprovalFilterChange,
   onAdd,
   onScrollToPage,
   onScrollToQuestion,
@@ -31,6 +38,61 @@ export function ReviewToolbar({
       />
       <JumpField label="Go to page" placeholder="Page" onGo={onScrollToPage} />
       <JumpField label="Go to question" placeholder="Number" onGo={onScrollToQuestion} />
+      <ApprovalFilterControl
+        questions={questions}
+        value={approvalFilter}
+        onChange={onApprovalFilterChange}
+      />
+    </div>
+  );
+}
+
+function ApprovalFilterControl({
+  questions,
+  value,
+  onChange,
+}: {
+  questions: Question[];
+  value: ApprovalFilter;
+  onChange: (filter: ApprovalFilter) => void;
+}) {
+  const labelId = useId();
+  const approved = questions.filter((question) => question.approved === true).length;
+  const options: Array<{ value: ApprovalFilter; label: string; count: number }> = [
+    { value: "all", label: "All", count: questions.length },
+    { value: "approved", label: "Approved", count: approved },
+    { value: "unapproved", label: "Unapproved", count: questions.length - approved },
+  ];
+
+  return (
+    <div className="space-y-1">
+      <Label id={labelId}>Status</Label>
+      <div
+        role="group"
+        aria-labelledby={labelId}
+        className="inline-flex h-9 overflow-hidden rounded-md border border-border bg-background"
+      >
+        {options.map((option, index) => {
+          const selected = value === option.value;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              aria-pressed={selected}
+              className={cn(
+                "px-3 text-xs font-medium transition-colors",
+                index > 0 && "border-l border-border",
+                selected
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+              )}
+              onClick={() => onChange(option.value)}
+            >
+              {option.label} {option.count}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }

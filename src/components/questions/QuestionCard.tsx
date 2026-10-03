@@ -1,4 +1,5 @@
 import {
+  Check,
   CheckCircle2,
   ChevronDown,
   CircleDot,
@@ -9,7 +10,6 @@ import {
   Plus,
   RefreshCw,
   Trash2,
-  X,
 } from "lucide-react";
 import {
   memo,
@@ -371,6 +371,7 @@ function TypeBody({
   onPasteFigure,
   onRegenerate,
   onDelete,
+  onOpenPage,
 }: {
   question: Question;
   resolve?: Resolver | undefined;
@@ -381,6 +382,7 @@ function TypeBody({
   onPasteFigure?: ((file: File) => Promise<string>) | undefined;
   onRegenerate?: ((questionId: string) => void) | undefined;
   onDelete?: ((questionId: string) => void) | undefined;
+  onOpenPage?: ((displayedPage: number) => void) | undefined;
 }) {
   switch (question.type) {
     case "assertion_reason":
@@ -582,6 +584,7 @@ function TypeBody({
                 {...(onPasteFigure ? { onPasteFigure } : {})}
                 {...(onRegenerate ? { onRegenerate } : {})}
                 {...(onDelete ? { onDelete } : {})}
+                {...(onOpenPage ? { onOpenPage } : {})}
               />
             ))}
           </div>
@@ -960,6 +963,7 @@ export const QuestionCard = memo(function QuestionCard({
   queued = false,
   onReadCrop,
   contentMode = "text",
+  onOpenPage,
 }: {
   question: Question;
   index: number;
@@ -986,6 +990,8 @@ export const QuestionCard = memo(function QuestionCard({
   queued?: boolean;
   onReadCrop?: ((question: Question, layout: CropLayout) => Promise<Question>) | undefined;
   contentMode?: ContentMode | undefined;
+  /** Scroll the image viewer to this 1-based page. Absent where there is no viewer. */
+  onOpenPage?: ((displayedPage: number) => void) | undefined;
 }) {
   const { draft: question, draftRef, update, flush } = useQuestionDraft(source, publish);
   const onChange = publish ? update : undefined;
@@ -1164,7 +1170,21 @@ export const QuestionCard = memo(function QuestionCard({
             onChange={(page) => onChange({ ...question, page })}
           />
         ) : question.page != null ? (
-          <span className="text-xs text-muted-foreground">Page {question.page + 1}</span>
+          onOpenPage ? (
+            <button
+              type="button"
+              className="text-xs text-muted-foreground underline-offset-2 hover:underline"
+              aria-label={`Show page ${question.page + 1} in the image viewer`}
+              onClick={() => {
+                if (question.page == null) return;
+                onOpenPage(question.page + 1);
+              }}
+            >
+              Page {question.page + 1}
+            </button>
+          ) : (
+            <span className="text-xs text-muted-foreground">Page {question.page + 1}</span>
+          )
         ) : null}
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
@@ -1207,7 +1227,7 @@ export const QuestionCard = memo(function QuestionCard({
           {canEdit ? (
             <Button
               type="button"
-              variant="ghost"
+              variant={editing ? "default" : "ghost"}
               size="icon"
               className="h-8 w-8"
               aria-label={editing ? "Done editing" : "Edit question"}
@@ -1217,7 +1237,7 @@ export const QuestionCard = memo(function QuestionCard({
               }}
             >
               {editing ? (
-                <X className="h-4 w-4" aria-hidden="true" />
+                <Check className="h-4 w-4" aria-hidden="true" />
               ) : (
                 <Pencil className="h-4 w-4" aria-hidden="true" />
               )}
@@ -1516,6 +1536,7 @@ export const QuestionCard = memo(function QuestionCard({
         {...(onPasteFigure ? { onPasteFigure } : {})}
         {...(onRegenerate ? { onRegenerate } : {})}
         {...(onDelete ? { onDelete } : {})}
+        {...(onOpenPage ? { onOpenPage } : {})}
       />
 
       {question.type !== "comprehension" || !question.sub_questions.length ? (
