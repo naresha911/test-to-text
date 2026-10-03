@@ -144,6 +144,36 @@ describe("structureOcrText", () => {
     expect(question21?.options.map((option) => option.text)).toEqual(["bold", "shy"]);
   });
 
+  test("a stem after a choice row starts the next question when its number was missed", () => {
+    const questions = structureOcrText(
+      [
+        "86. ______ is the smallest bone in the human body.",
+        "(a) Rib cage (b) Scapula",
+        "(c) Stapes (d) Coxal bone",
+        "The world's largest lake is ______.",
+        "(a) Baikal Lake (b) Lake Victoria",
+        "(c) Dead Sea (d) Caspian Sea",
+      ].join("\n"),
+      40,
+    );
+
+    expect(questions.map((question) => question.number)).toEqual(["86", null]);
+    expect(questions[0]?.options.map((option) => option.text)).toEqual([
+      "Rib cage",
+      "Scapula",
+      "Stapes",
+      "Coxal bone",
+    ]);
+    expect(questions[1]?.stem).toBe("The world's largest lake is ____.");
+    expect(questions[1]?.options.map((option) => option.key)).toEqual(["A", "B", "C", "D"]);
+    expect(questions[1]?.options.map((option) => option.text)).toEqual([
+      "Baikal Lake",
+      "Lake Victoria",
+      "Dead Sea",
+      "Caspian Sea",
+    ]);
+  });
+
   test("still splits a numbered question", () => {
     const questions = structureOcrText(
       "1. The cat sat on the mat.\n(a) chair (b) mat (c) tree (d) sky",

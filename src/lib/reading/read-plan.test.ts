@@ -4,7 +4,7 @@ import { emptyQuestion } from "@/lib/question-schema";
 import {
   planPageRead,
   reindexQuestionsAfterPageRemoval,
-  addReadQuestions,
+  replacePageQuestions,
   type PageReadTarget,
 } from "@/lib/reading/read-plan";
 
@@ -111,16 +111,17 @@ describe("planPageRead", () => {
   });
 });
 
-describe("addReadQuestions", () => {
-  test("adds a new read and keeps questions already recognized", () => {
+describe("replacePageQuestions", () => {
+  test("drops questions on the re-read page and keeps the rest", () => {
     const manual = emptyQuestion({ id: "manual", page: null, stem: "typed" });
     const old = emptyQuestion({ id: "old", page: 0, stem: "first read" });
+    const sibling = emptyQuestion({ id: "sibling", page: 0, stem: "also page one" });
     const other = emptyQuestion({ id: "other", page: 1, stem: "page two" });
     const incoming = emptyQuestion({ id: "new", page: 0, stem: "second read" });
 
-    const next = addReadQuestions([manual, old, other], [incoming]);
+    const next = replacePageQuestions([manual, old, sibling, other], [incoming], 0);
 
-    expect(next.map((question) => question.id)).toEqual(["manual", "old", "other", "new"]);
+    expect(next.map((question) => question.id)).toEqual(["manual", "other", "new"]);
   });
 });
 

@@ -90,6 +90,16 @@ function endsSentence(line: string): boolean {
   return /[.?!]["']?$/.test(line);
 }
 
+/** A stem that follows a finished choice row. A wrapped choice continues in lowercase. */
+function startsNewStem(line: string, current: Draft): boolean {
+  const trimmed = line.trim();
+  if (/^\([A-Ha-h]\)/.test(trimmed)) return false;
+  const optionMarks = current.lines.join(" ").match(/\([A-Ha-h]\)/g)?.length ?? 0;
+  if (optionMarks < 2) return false;
+  if (!/^[A-Z_]/.test(trimmed) && !/_{2,}/.test(trimmed)) return false;
+  return trimmed.length >= 12 || /_{2,}|\?/.test(trimmed);
+}
+
 /**
  * Sentence-rearrangement pages print the number in the margin. OCR often drops it,
  * leaving a slash-separated stem and (a)–(d) under a directions line.
@@ -129,7 +139,7 @@ function groupUnnumberedChoices(rawLines: string[]): Draft[] {
 
     if (phase === "options" && current) {
       const previous = current.lines[current.lines.length - 1] ?? "";
-      if (!endsSentence(previous) && !isJumble(line)) {
+      if (!endsSentence(previous) && !isJumble(line) && !startsNewStem(line, current)) {
         current.lines.push(line);
         continue;
       }
@@ -253,6 +263,16 @@ export function structureOcrText(pageText: string, page: number): Question[] {
     }
 
     if (current) {
+      if (startsNewStem(line, current)) {
+        current = {
+          number: null,
+          section,
+          instructions: instructionsFor(null),
+          lines: [line],
+        };
+        drafts.push(current);
+        continue;
+      }
       current.lines.push(line);
       continue;
     }

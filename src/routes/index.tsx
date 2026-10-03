@@ -70,7 +70,7 @@ import type { ContentMode } from "@/lib/reading/mode";
 import {
   planPageRead,
   reindexQuestionsAfterPageRemoval,
-  addReadQuestions,
+  replacePageQuestions,
 } from "@/lib/reading/read-plan";
 import { createSerialQueue } from "@/lib/reading/read-queue";
 import { cn } from "@/lib/utils";
@@ -709,6 +709,14 @@ function HomePage() {
       toast.error(`Page ${page.page_index + 1} has no image to read.`);
       return;
     }
+    if (
+      page.ocr_status === "done" &&
+      !window.confirm(
+        `Page ${page.page_index + 1} is already read. Read it again? Questions from this page will be replaced by the new reading.`,
+      )
+    ) {
+      return;
+    }
     const mode = contentModeFor(page);
     const epoch = readEpoch.current;
     const ticket = readTicket.current + 1;
@@ -833,7 +841,9 @@ function HomePage() {
       }
 
       if (readEpoch.current !== epoch) return;
-      collected = sortQuestions(addReadQuestions(collected, result.questions));
+      collected = sortQuestions(
+        replacePageQuestions(collected, result.questions, target.page_index),
+      );
       questionsRef.current = collected;
       figureUrlsRef.current = urls;
       setQuestions(collected);
@@ -853,7 +863,7 @@ function HomePage() {
       const modeLabel = mode === "text" ? "Text" : "Graphics";
       toast.success(
         target.ocr_status === "done"
-          ? `Read page ${target.page_index + 1} again as ${modeLabel}. Earlier questions were kept.`
+          ? `Read page ${target.page_index + 1} again as ${modeLabel}. Questions on that page were replaced.`
           : `Read page ${target.page_index + 1} as ${modeLabel}.`,
       );
     } catch (error) {
@@ -1306,7 +1316,7 @@ function HomePage() {
                 <p className="mx-auto mt-2 max-w-md text-sm text-muted-foreground">
                   Create a past paper or practice test, add images, then choose Text or Graphics
                   on a page and read it. Reads run one at a time, in the order you start them.
-                  Reading a page again keeps the questions already found. Or add a question
+                  Reading a page again replaces the questions from that page. Or add a question
                   yourself — cards line up by question number. Work stays in local SQLite until
                   you download exam-prep JSON.
                 </p>

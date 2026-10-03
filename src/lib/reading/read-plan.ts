@@ -35,7 +35,7 @@ export function isPageRead(page: PageReadTarget): boolean {
  * Choose which pages this Read pages click should OCR.
  * A selection limits the click to those pages. An empty selection means every unread page.
  * Pages already marked read are skipped, unless that page is selected and listed in `forceIds`.
- * A forced read adds the new questions. Questions already recognized stay until the user deletes them.
+ * A forced read replaces the questions already stored for that page.
  */
 export function planPageRead<T extends PageReadTarget>(
   pages: readonly T[],
@@ -66,14 +66,16 @@ export function planPageRead<T extends PageReadTarget>(
 }
 
 /**
- * Add a fresh read beside questions already on the paper.
- * Nothing already recognized is removed. The user deletes a question with its delete button.
+ * Replace questions stored for one page with a fresh read.
+ * Questions on other pages, and questions with no page, stay.
  */
-export function addReadQuestions(
+export function replacePageQuestions(
   questions: readonly Question[],
   incoming: readonly Question[],
+  pageIndex: number,
 ): Question[] {
-  return [...questions, ...incoming];
+  const kept = questions.filter((question) => question.page !== pageIndex);
+  return [...kept, ...incoming];
 }
 
 function shiftPage(page: number | null | undefined, removedIndex: number): number | null {

@@ -35,10 +35,10 @@ export function ReviewToolbar({
   onScrollToQuestion,
 }: Props) {
   return (
-    <div className="sticky top-[4.25rem] z-10 flex flex-wrap items-end gap-x-4 gap-y-3 rounded-xl border border-border bg-card/95 px-3 py-3 shadow-[var(--shadow-paper)] backdrop-blur">
+    <div className="sticky top-[4.25rem] z-10 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-border bg-card/95 px-2 py-1 shadow-[var(--shadow-paper)] backdrop-blur">
       <AddQuestionButton questions={questions} onAdd={onAdd} />
-      <JumpField label="Go to page" placeholder="Page" onGo={onScrollToPage} />
-      <JumpField label="Go to question" placeholder="Number" onGo={onScrollToQuestion} />
+      <JumpField label="Go to page" onGo={onScrollToPage} />
+      <JumpField label="Go to question" onGo={onScrollToQuestion} />
       <ApprovalFilterControl
         questions={questions}
         value={approvalFilter}
@@ -59,8 +59,8 @@ function AddQuestionButton({
 
   return (
     <>
-      <Button type="button" size="sm" className="h-9" onClick={() => setOpen(true)}>
-        <Plus className="h-4 w-4" aria-hidden="true" />
+      <Button type="button" size="sm" className="h-7 px-2.5" onClick={() => setOpen(true)}>
+        <Plus className="h-3.5 w-3.5" aria-hidden="true" />
         Add question
       </Button>
       <Dialog open={open} onOpenChange={setOpen}>
@@ -108,12 +108,14 @@ function ApprovalFilterControl({
   ];
 
   return (
-    <div className="space-y-1">
-      <Label id={labelId}>Status</Label>
+    <div className="flex items-center gap-1.5">
+      <Label id={labelId} className="text-[11px] text-muted-foreground">
+        Status
+      </Label>
       <div
         role="group"
         aria-labelledby={labelId}
-        className="inline-flex h-9 overflow-hidden rounded-md border border-border bg-background"
+        className="inline-flex h-7 overflow-hidden rounded-md border border-border bg-background"
       >
         {options.map((option, index) => {
           const selected = value === option.value;
@@ -123,7 +125,7 @@ function ApprovalFilterControl({
               type="button"
               aria-pressed={selected}
               className={cn(
-                "px-3 text-xs font-medium transition-colors",
+                "px-2 text-[11px] font-medium transition-colors",
                 index > 0 && "border-l border-border",
                 selected
                   ? "bg-primary text-primary-foreground"
@@ -140,21 +142,13 @@ function ApprovalFilterControl({
   );
 }
 
-function JumpField({
-  label,
-  placeholder,
-  onGo,
-}: {
-  label: string;
-  placeholder: string;
-  onGo: (value: string) => void;
-}) {
+function JumpField({ label, onGo }: { label: string; onGo: (value: string) => void }) {
   const id = useId();
   const [value, setValue] = useState("");
 
   return (
     <form
-      className="flex items-end gap-2"
+      className="flex items-center gap-1.5"
       onSubmit={(event) => {
         event.preventDefault();
         const trimmed = value.trim();
@@ -162,17 +156,17 @@ function JumpField({
         onGo(trimmed);
       }}
     >
-      <div className="space-y-1">
-        <Label htmlFor={id}>{label}</Label>
-        <Input
-          id={id}
-          value={value}
-          placeholder={placeholder}
-          className="h-9 w-28"
-          onChange={(event) => setValue(event.target.value)}
-        />
-      </div>
-      <Button type="submit" size="sm" variant="outline" className="h-9">
+      <Label htmlFor={id} className="text-[11px] text-muted-foreground">
+        {label}
+      </Label>
+      <Input
+        id={id}
+        value={value}
+        inputMode="numeric"
+        className="h-7 w-12 px-1.5 text-center text-xs tabular-nums"
+        onChange={(event) => setValue(event.target.value)}
+      />
+      <Button type="submit" size="sm" variant="outline" className="h-7 px-2">
         Go
       </Button>
     </form>

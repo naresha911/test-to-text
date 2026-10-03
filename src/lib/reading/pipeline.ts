@@ -5,6 +5,7 @@ import type { ReaderBlock } from "@/lib/reader/types";
 import { cleanPage, usableStems } from "@/lib/reading/clean-page";
 import { readLayoutRegions } from "@/lib/reading/layout-reader";
 import { repairFlaggedQuestions, type RepairInput } from "@/lib/reading/repair-pass";
+import { orderedPageText } from "@/lib/reading/line-order";
 import { inlineStackedFractions, mathTranscriptIsSmashed } from "@/lib/reading/math-text";
 import type { ContentMode } from "@/lib/reading/mode";
 import { readPrintedText, type PageTranscript } from "@/lib/reading/text-reader";
@@ -48,14 +49,25 @@ export async function readExamPage(
   const regions = options.mode === "graphics" ? await readLayout(transcript.imageDataUrl) : [];
 
   const recovered = transcript.words?.length ? inlineStackedFractions(transcript.words) : null;
+  const ordered = orderedPageText(transcript.lines);
   // A thin word overlay must not replace a fuller plain-text read, and a
   // fraction repair must not erase question numbers the line read already found.
-  const pageText =
+  // Line boxes restore left-to-right choice rows and margin question numbers.
+  let pageText = transcript.text;
+  if (
+    ordered &&
+    ordered.length >= pageText.length * 0.6 &&
+    numberedHeads(ordered) >= numberedHeads(pageText)
+  ) {
+    pageText = ordered;
+  }
+  if (
     recovered &&
-    recovered.length >= transcript.text.length * 0.6 &&
-    numberedHeads(recovered) >= numberedHeads(transcript.text)
-      ? recovered
-      : transcript.text;
+    recovered.length >= pageText.length * 0.6 &&
+    numberedHeads(recovered) >= numberedHeads(pageText)
+  ) {
+    pageText = recovered;
+  }
   const smashed = mathTranscriptIsSmashed(pageText);
   const offline = structureOcrText(pageText, options.page);
   let modelQuestions: Question[] | null = null;
