@@ -12,7 +12,6 @@ export type PageReadActivity = "idle" | "queued" | "reading";
 
 type Props = {
   pageNumber: number;
-  filePath: string;
   contentMode: ContentMode;
   read: boolean;
   activity: PageReadActivity;
@@ -23,7 +22,6 @@ type Props = {
 
 export function PageImageToolbar({
   pageNumber,
-  filePath,
   contentMode,
   read,
   activity,
@@ -55,15 +53,12 @@ export function PageImageToolbar({
           ) : null}
           {status}
         </span>
-        <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground" title={filePath}>
-          {filePath}
-        </span>
         <button
           type="button"
           disabled={activity === "reading"}
           aria-label={`Remove page ${pageNumber} from the viewer`}
           onClick={onRemove}
-          className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-secondary hover:text-foreground disabled:opacity-50"
+          className="ml-auto shrink-0 rounded p-0.5 text-muted-foreground hover:bg-secondary hover:text-foreground disabled:opacity-50"
         >
           <X className="h-3.5 w-3.5" aria-hidden="true" />
         </button>

@@ -31,14 +31,28 @@ type Props = {
   suggestedPage?: number | null;
   /** Drop the dashed frame when the form sits inside another toolbar. */
   plain?: boolean;
+  /** Leave number, type, and page empty until the reviewer fills them in. */
+  prefill?: boolean;
+  /** Stack the fields for a dialog instead of a single toolbar row. */
+  stacked?: boolean;
 };
 
-export function AddQuestionForm({ questions, onAdd, suggestedPage = null, plain = false }: Props) {
+export function AddQuestionForm({
+  questions,
+  onAdd,
+  suggestedPage = null,
+  plain = false,
+  prefill = true,
+  stacked = false,
+}: Props) {
   const suggested = suggestNextQuestionNumber(questions);
-  const [number, setNumber] = useState(suggested);
-  const [type, setType] = useState<QuestionType>("mcq");
-  const [pageText, setPageText] = useState(suggestedPage != null ? String(suggestedPage) : "");
+  const [number, setNumber] = useState(prefill ? suggested : "");
+  const [type, setType] = useState<QuestionType | "">(prefill ? "mcq" : "");
+  const [pageText, setPageText] = useState(
+    prefill && suggestedPage != null ? String(suggestedPage) : "",
+  );
   const [pageInvalid, setPageInvalid] = useState(false);
+  const [typeInvalid, setTypeInvalid] = useState(false);
   const dirty = useRef(false);
   const pageDirty = useRef(false);
   const numberId = useId();
@@ -46,25 +60,30 @@ export function AddQuestionForm({ questions, onAdd, suggestedPage = null, plain 
   const pageId = useId();
 
   useEffect(() => {
-    if (!dirty.current) setNumber(suggested);
-  }, [suggested]);
+    if (!prefill || dirty.current) return;
+    setNumber(suggested);
+  }, [prefill, suggested]);
 
   useEffect(() => {
-    if (pageDirty.current) return;
+    if (!prefill || pageDirty.current) return;
     setPageText(suggestedPage != null ? String(suggestedPage) : "");
     setPageInvalid(false);
-  }, [suggestedPage]);
+  }, [prefill, suggestedPage]);
 
   return (
     <form
       className={cn(
-        "flex flex-wrap items-end gap-2",
-        !plain && "rounded-lg border border-dashed border-border bg-background/95 p-3",
+        stacked ? "grid gap-3" : "flex flex-wrap items-end gap-2",
+        !plain && !stacked && "rounded-lg border border-dashed border-border bg-background/95 p-3",
       )}
       onSubmit={(event) => {
         event.preventDefault();
         const trimmed = number.trim();
         if (!trimmed) return;
+        if (type === "") {
+          setTypeInvalid(true);
+          return;
+        }
         const parsed = parseDisplayedPage(pageText);
         if (!parsed) {
           setPageInvalid(true);
@@ -74,6 +93,7 @@ export function AddQuestionForm({ questions, onAdd, suggestedPage = null, plain 
         dirty.current = false;
         pageDirty.current = false;
         setPageInvalid(false);
+        setTypeInvalid(false);
       }}
     >
       <div className="space-y-1">
@@ -84,7 +104,7 @@ export function AddQuestionForm({ questions, onAdd, suggestedPage = null, plain 
           required
           maxLength={40}
           placeholder="e.g. 5"
-          className="h-9 w-28"
+          className={cn("h-9", stacked ? "w-full" : "w-28")}
           aria-label="New question number"
           onChange={(event) => {
             dirty.current = true;
@@ -96,17 +116,30 @@ export function AddQuestionForm({ questions, onAdd, suggestedPage = null, plain 
         <Label htmlFor={typeId}>Type</Label>
         <select
           id={typeId}
-          className="h-9 rounded-md border border-input bg-background px-2 text-sm"
+          className={cn(
+            "h-9 rounded-md border border-input bg-background px-2 text-sm",
+            stacked && "w-full",
+          )}
           value={type}
           aria-label="New question type"
-          onChange={(event) => setType(event.target.value as QuestionType)}
+          aria-invalid={typeInvalid}
+          onChange={(event) => {
+            setTypeInvalid(false);
+            setType(event.target.value as QuestionType | "");
+          }}
         >
+          {prefill ? null : (
+            <option value="" disabled>
+              Select type
+            </option>
+          )}
           {QUESTION_TYPES.map((option) => (
             <option key={option} value={option}>
               {QUESTION_TYPE_LABELS[option]}
             </option>
           ))}
         </select>
+        {typeInvalid ? <p className="text-xs text-destructive">Choose a question type.</p> : null}
       </div>
       <div className="space-y-1">
         <Label htmlFor={pageId}>Page number</Label>
@@ -115,7 +148,7 @@ export function AddQuestionForm({ questions, onAdd, suggestedPage = null, plain 
           value={pageText}
           inputMode="numeric"
           placeholder="e.g. 2"
-          className="h-9 w-24"
+          className={cn("h-9", stacked ? "w-full" : "w-24")}
           aria-label="New question page number"
           aria-invalid={pageInvalid}
           onChange={(event) => {
@@ -128,7 +161,7 @@ export function AddQuestionForm({ questions, onAdd, suggestedPage = null, plain 
           <p className="text-xs text-destructive">Use a page number of 1 or more.</p>
         ) : null}
       </div>
-      <Button type="submit" size="sm" className="h-9">
+      <Button type="submit" size="sm" className={cn("h-9", stacked && "justify-self-end")}>
         <Plus className="h-4 w-4" aria-hidden="true" />
         Add question
       </Button>

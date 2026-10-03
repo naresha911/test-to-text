@@ -5,7 +5,6 @@ export type PageImage = {
   id: string;
   pageIndex: number;
   dataUrl?: string | undefined;
-  filePath: string;
   read: boolean;
   contentMode: ContentMode;
   activity: PageReadActivity;
@@ -25,7 +24,6 @@ export function PageImageCard({ page, onContentModeChange, onRead, onRemove }: P
     <article className="space-y-1.5" data-page-number={pageNumber}>
       <PageImageToolbar
         pageNumber={pageNumber}
-        filePath={page.filePath}
         contentMode={page.contentMode}
         read={page.read}
         activity={page.activity}

@@ -1,7 +1,15 @@
+import { Plus } from "lucide-react";
 import { useId, useState } from "react";
 
 import { AddQuestionForm, type NewQuestionInput } from "@/components/questions/AddQuestionForm";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import type { Question } from "@/lib/question-schema";
@@ -11,7 +19,6 @@ export type ApprovalFilter = "all" | "approved" | "unapproved";
 
 type Props = {
   questions: Question[];
-  suggestedPage: number | null;
   approvalFilter: ApprovalFilter;
   onApprovalFilterChange: (filter: ApprovalFilter) => void;
   onAdd: (input: NewQuestionInput) => void;
@@ -21,7 +28,6 @@ type Props = {
 
 export function ReviewToolbar({
   questions,
-  suggestedPage,
   approvalFilter,
   onApprovalFilterChange,
   onAdd,
@@ -30,12 +36,7 @@ export function ReviewToolbar({
 }: Props) {
   return (
     <div className="sticky top-[4.25rem] z-10 flex flex-wrap items-end gap-x-4 gap-y-3 rounded-xl border border-border bg-card/95 px-3 py-3 shadow-[var(--shadow-paper)] backdrop-blur">
-      <AddQuestionForm
-        plain
-        questions={questions}
-        suggestedPage={suggestedPage}
-        onAdd={onAdd}
-      />
+      <AddQuestionButton questions={questions} onAdd={onAdd} />
       <JumpField label="Go to page" placeholder="Page" onGo={onScrollToPage} />
       <JumpField label="Go to question" placeholder="Number" onGo={onScrollToQuestion} />
       <ApprovalFilterControl
@@ -44,6 +45,48 @@ export function ReviewToolbar({
         onChange={onApprovalFilterChange}
       />
     </div>
+  );
+}
+
+function AddQuestionButton({
+  questions,
+  onAdd,
+}: {
+  questions: Question[];
+  onAdd: (input: NewQuestionInput) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <>
+      <Button type="button" size="sm" className="h-9" onClick={() => setOpen(true)}>
+        <Plus className="h-4 w-4" aria-hidden="true" />
+        Add question
+      </Button>
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Add question</DialogTitle>
+            <DialogDescription>
+              Enter the question number, type, and page. Leave the page blank if it is not on a
+              scanned page yet.
+            </DialogDescription>
+          </DialogHeader>
+          {open ? (
+            <AddQuestionForm
+              plain
+              stacked
+              prefill={false}
+              questions={questions}
+              onAdd={(input) => {
+                onAdd(input);
+                setOpen(false);
+              }}
+            />
+          ) : null}
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 

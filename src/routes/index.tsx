@@ -190,7 +190,6 @@ function HomePage() {
   );
   const viewerRef = useRef<PageImageViewerHandle>(null);
   const pendingQuestionScroll = useRef<string | null>(null);
-  const [visiblePage, setVisiblePage] = useState<number | null>(null);
   const [focusQuestionId, setFocusQuestionId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -463,10 +462,6 @@ function HomePage() {
 
   const resolveFigure = useCallback((path: string) => figureUrls[path], [figureUrls]);
 
-  const onVisiblePageChange = useCallback((page: number | null) => {
-    setVisiblePage((current) => (current === page ? current : page));
-  }, []);
-
   const changePageMode = useCallback((pageId: string, mode: ContentMode) => {
     setPageModes((current) => ({ ...current, [pageId]: mode }));
   }, []);
@@ -562,7 +557,6 @@ function HomePage() {
         id: page.id,
         pageIndex: page.page_index,
         dataUrl: page.dataUrl,
-        filePath: page.file_path,
         read: page.ocr_status === "done",
         contentMode: (pageModes[page.id] ?? page.read_mode ?? "text") as ContentMode,
         activity: (activeReadId === page.id
@@ -1247,7 +1241,6 @@ function HomePage() {
 
         <ReviewToolbar
           questions={questions}
-          suggestedPage={visiblePage}
           approvalFilter={approvalFilter}
           onApprovalFilterChange={setApprovalFilter}
           onAdd={addFromToolbar}
@@ -1263,7 +1256,6 @@ function HomePage() {
               onContentModeChange={changePageMode}
               onRead={onReadPage}
               onRemove={onRemovePage}
-              onVisiblePageChange={onVisiblePageChange}
               className="h-full min-h-0 min-w-0"
             />
           </aside>
