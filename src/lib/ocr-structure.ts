@@ -195,11 +195,9 @@ export function structureOcrText(pageText: string, page: number): Question[] {
   const instructionsFor = (number: string | null): string | null => {
     const parsed = Number(number);
     if (directionMode && directionSpan && Number.isFinite(parsed)) {
-      if (parsed < directionSpan.start) return sectionInstructions;
-      if (parsed > directionSpan.end) {
-        directionMode = false;
-        return sectionInstructions;
-      }
+      // OCR can read a later number before an earlier one. Stay in direction
+      // mode and decide from the printed range on each question.
+      if (parsed < directionSpan.start || parsed > directionSpan.end) return sectionInstructions;
     }
     return directionMode ? directionInstructions : sectionInstructions;
   };

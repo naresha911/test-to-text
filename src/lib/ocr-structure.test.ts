@@ -99,6 +99,36 @@ describe("structureOcrText", () => {
     expect(question26?.stem).toBe("Next");
   });
 
+  test("a later question number does not strip directions from an earlier number read afterwards", () => {
+    const questions = structureOcrText(
+      [
+        "Section A",
+        "DIRECTIONS (21-25): Choose the word which best expresses",
+        "the meaning of the given words.",
+        "26. Next",
+        "(a) one",
+        "(b) two",
+        "22. Bold",
+        "(a) brave",
+        "(b) shy",
+        "21. Timid",
+        "(a) bold",
+        "(b) shy",
+      ].join("\n"),
+      11,
+    );
+
+    const question21 = questions.find((question) => question.number === "21");
+    const question22 = questions.find((question) => question.number === "22");
+    const question26 = questions.find((question) => question.number === "26");
+
+    expect(question26?.instructions).toBe("Section A");
+    expect(question21?.instructions).toContain("DIRECTIONS (21-25)");
+    expect(question22?.instructions).toBe(question21?.instructions);
+    expect(question21?.stem).toBe("Timid");
+    expect(question22?.stem).toBe("Bold");
+  });
+
   test("a directions header glued onto the last option is not part of that option", () => {
     const questions = structureOcrText(
       "20. Living in a fool's paradise (a) good (b) fooled (c) luxury (d) To live in a world of imagination DIRECTIONS (21-25): Choose the word. 21. Timid (a) bold (b) shy",
