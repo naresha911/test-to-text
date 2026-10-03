@@ -25,7 +25,7 @@ import {
   type DocumentMeta,
   type PageRecord,
 } from "@/lib/document-types";
-import { extractPage } from "@/lib/extract.functions";
+import { extractPage, readQuestionCrop } from "@/lib/extract.functions";
 import { generateHintSolution } from "@/lib/hint-solution.functions";
 import { useSolutionGeneration } from "@/hooks/useSolutionGeneration";
 import {
@@ -57,6 +57,8 @@ import {
   type QuestionType,
 } from "@/lib/question-schema";
 import { DEFAULT_READER_SETTINGS, READER_LABELS, loadReaderSettings } from "@/lib/reader-settings";
+import { readStoredCrop } from "@/lib/reading/crop-client";
+import type { CropLayout } from "@/lib/reading/crop-layout";
 import type { ContentMode } from "@/lib/reading/mode";
 import {
   planPageRead,
@@ -113,6 +115,7 @@ function HomePage() {
   const { id: searchId } = Route.useSearch();
   const navigate = useNavigate();
   const runExtract = useServerFn(extractPage);
+  const runReadCrop = useServerFn(readQuestionCrop);
   const runHintSolution = useServerFn(generateHintSolution);
   const runCreate = useServerFn(createLocalDocument);
   const runGet = useServerFn(getLocalDocument);
@@ -456,6 +459,32 @@ function HomePage() {
       }
       return updated;
     });
+  }
+
+  async function readCrop(question: Question, layout: CropLayout): Promise<Question> {
+    const path = question.source_block?.image_path;
+    const cropDataUrl = path ? figureUrlsRef.current[path] : undefined;
+    if (!cropDataUrl) throw new Error("The printed crop for this question is unavailable.");
+    const pageRecord = pagesRef.current.find((item) => item.page_index === (question.page ?? -1));
+    const mode = pageRecord ? contentModeFor(pageRecord) : "text";
+    const id = await ensureDocument();
+    const hint = metaRef.current.notes?.trim();
+    const loaded = await readStoredCrop({
+      question,
+      layout,
+      contentMode: mode,
+      documentId: id,
+      cropDataUrl,
+      ...(hint ? { hint } : {}),
+      read: (request) => runReadCrop({ data: request }),
+      saveFigure: (data) => runSaveFigure({ data }),
+    });
+    if (Object.keys(loaded.urls).length) {
+      const urls = { ...figureUrlsRef.current, ...loaded.urls };
+      figureUrlsRef.current = urls;
+      setFigureUrls(urls);
+    }
+    return loaded.question;
   }
 
   const addFiles = useCallback(
@@ -1167,6 +1196,11 @@ function HomePage() {
                 promptReveal={solution.promptReveal}
                 promptStore={solution.prompts}
                 solutionAudience={audience}
+                onReadCrop={readCrop}
+                contentModeForPage={(page) => {
+                  const record = pages.find((item) => item.page_index === page);
+                  return record ? contentModeFor(record) : "text";
+                }}
               />
             </div>
           </section>

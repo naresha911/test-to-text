@@ -15,6 +15,7 @@ import { parseMockGeneration } from "@/lib/document-types";
 import {
   collectQuestionsImagePaths,
   droppedImagePaths,
+  isLoadableQuestionImage,
   normalizeStoredImagePath,
 } from "@/lib/question-images";
 import { pageImageFilePath, pagesWithLostImage } from "@/lib/page-image-path";
@@ -609,10 +610,7 @@ async function listFigurePaths(documentId: string): Promise<string[]> {
         await walk(path.join(current, entry.name), rel);
         continue;
       }
-      const image = /\.(jpe?g|png|webp|svg)$/i.test(entry.name);
-      const sourceCrop = entry.name.includes("fig-");
-      const generated = rel.includes("/generated/") && entry.name !== "_manifest.json";
-      if (image && (sourceCrop || generated)) found.push(rel);
+      if (isLoadableQuestionImage(rel)) found.push(rel);
     }
   }
 

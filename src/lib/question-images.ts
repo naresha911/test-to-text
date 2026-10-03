@@ -1,6 +1,19 @@
 import type { Question } from "@/lib/question-schema";
 
 const PATH_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const IMAGE_FILE = /\.(jpe?g|png|webp|svg)$/i;
+
+/**
+ * Files the document loader turns into question image URLs.
+ * Diagram crops use `fig-`, printed question crops use `-block`.
+ * Page scans stay on the page record.
+ */
+export function isLoadableQuestionImage(relativePath: string): boolean {
+  const name = relativePath.split("/").pop() ?? "";
+  if (!IMAGE_FILE.test(name) || name === "_manifest.json") return false;
+  if (relativePath.includes("/generated/")) return true;
+  return name.includes("fig-") || name.includes("-block.");
+}
 
 /** Storage key relative to the local image root. Rejects absolute paths and traversal. */
 export function normalizeStoredImagePath(value: string | null | undefined): string | null {

@@ -15,6 +15,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 
 import { MathText } from "@/components/MathText";
 import { MathFormatHelp } from "@/components/questions/MathFormatHelp";
+import { QuestionCropDialog } from "@/components/questions/QuestionCropDialog";
 import { useSolutionUi } from "@/components/questions/solution-ui";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -29,6 +30,8 @@ import {
   SOLUTION_SYSTEM_PROMPT,
 } from "@/lib/question-context";
 import { detachImagePath, questionWithoutOption } from "@/lib/question-images";
+import { applyCropReading, type CropLayout } from "@/lib/reading/crop-layout";
+import type { ContentMode } from "@/lib/reading/mode";
 import { READ_FLAG_LABELS } from "@/lib/reading/read-audit";
 import {
   QUESTION_TYPE_LABELS,
@@ -37,6 +40,7 @@ import {
   type Figure,
   type Option,
   type Question,
+  type ReadFlag,
 } from "@/lib/question-schema";
 import { cn } from "@/lib/utils";
 
@@ -758,51 +762,28 @@ function EditableNumber({
   );
 }
 
-function PrintedQuestion({
-  question,
-  resolve,
+function ReadFlags({
+  flags,
+  onOpen,
 }: {
-  question: Question;
-  resolve?: Resolver | undefined;
+  flags: readonly ReadFlag[];
+  onOpen?: (() => void) | undefined;
 }) {
-  const block = question.source_block;
-  if (!block) return null;
-  const flags = block.flags ?? [];
-  const flagged = flags.length > 0;
-  const url = block.image_path ? resolve?.(block.image_path) : undefined;
-  if (!url && !flagged) return null;
-  const label = question.number ? `question ${question.number}` : "this question";
-
+  if (!flags.length) return null;
   return (
-    <Collapsible defaultOpen={flagged} className="mt-3">
-      <CollapsibleTrigger className="flex items-center gap-2 text-sm font-medium text-foreground [&[data-state=open]>svg]:rotate-180">
-        <ChevronDown className="h-4 w-4 transition-transform" aria-hidden="true" />
-        Printed question
-        {flagged ? <Badge variant="outline">{flags.length} to check</Badge> : null}
-      </CollapsibleTrigger>
-      <CollapsibleContent className="mt-2 space-y-2">
-        {flagged ? (
-          <div className="flex flex-wrap gap-1">
-            {flags.map((flag) => (
-              <Badge key={flag} variant="secondary">
-                {READ_FLAG_LABELS[flag]}
-              </Badge>
-            ))}
-          </div>
-        ) : null}
-        {url ? (
-          <img
-            src={url}
-            alt={`Printed ${label} from the paper`}
-            className="max-h-80 w-auto max-w-full rounded border border-border bg-secondary/40 object-contain"
-          />
+    <div className="mt-3 flex flex-wrap gap-1">
+      {flags.map((flag) =>
+        onOpen ? (
+          <button key={flag} type="button" className="rounded-md" onClick={onOpen}>
+            <Badge variant="secondary">{READ_FLAG_LABELS[flag]}</Badge>
+          </button>
         ) : (
-          <p className="text-sm text-muted-foreground">
-            The printed question image is unavailable.
-          </p>
-        )}
-      </CollapsibleContent>
-    </Collapsible>
+          <Badge key={flag} variant="secondary">
+            {READ_FLAG_LABELS[flag]}
+          </Badge>
+        ),
+      )}
+    </div>
   );
 }
 
@@ -904,6 +885,8 @@ export function QuestionCard({
   onRegenerateGenerated,
   onRegenerateFigure,
   generatingIds,
+  onReadCrop,
+  contentMode = "text",
 }: {
   question: Question;
   index: number;
@@ -924,8 +907,11 @@ export function QuestionCard({
   onRegenerateGenerated?: ((questionId: string) => void) | undefined;
   onRegenerateFigure?: ((questionId: string) => void) | undefined;
   generatingIds?: Set<string> | undefined;
+  onReadCrop?: ((layout: CropLayout) => Promise<Question>) | undefined;
+  contentMode?: ContentMode | undefined;
 }) {
   const [editing, setEditing] = useState(startEditing);
+  const [cropOpen, setCropOpen] = useState(false);
   const articleRef = useRef<HTMLElement>(null);
   const solutionUi = useSolutionUi();
   const generating = generatingIds?.has(question.id) === true;
@@ -957,6 +943,12 @@ export function QuestionCard({
   const offerSolutionRegenerate =
     canRegenerateSolution &&
     (!question.approval_status || question.approved || answerMissing);
+  const cropUrl = question.source_block?.image_path
+    ? resolve?.(question.source_block.image_path)
+    : undefined;
+  const canReadCrop = Boolean(onReadCrop && question.source_block);
+  const cropLabel = question.number ? `question ${question.number}` : `question ${index + 1}`;
+  const readFlags = question.source_block?.flags ?? [];
 
   useEffect(() => {
     if (!startEditing) return;
@@ -1070,6 +1062,18 @@ export function QuestionCard({
         ) : null}
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
+          {canReadCrop ? (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              disabled={!cropUrl}
+              title={cropUrl ? "Read this printed question again" : "Printed crop unavailable"}
+              onClick={() => setCropOpen(true)}
+            >
+              Read crop
+            </Button>
+          ) : null}
           {queued || generating ? (
             <Badge variant="outline" className="gap-1">
               {generating ? <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" /> : null}
@@ -1185,7 +1189,34 @@ export function QuestionCard({
         </div>
       </header>
 
-      <PrintedQuestion question={question} {...(resolve ? { resolve } : {})} />
+      <ReadFlags
+        flags={readFlags}
+        {...(canReadCrop && cropUrl ? { onOpen: () => setCropOpen(true) } : {})}
+      />
+      {canReadCrop && !cropUrl ? (
+        <p className="mt-3 text-sm text-muted-foreground">Printed crop unavailable.</p>
+      ) : null}
+      {canReadCrop && cropUrl && onReadCrop ? (
+        <QuestionCropDialog
+          open={cropOpen}
+          onOpenChange={setCropOpen}
+          label={cropLabel}
+          cropUrl={cropUrl}
+          contentMode={contentMode}
+          onRun={onReadCrop}
+          onReplace={(reading) => {
+            onChange?.(applyCropReading(question, reading, contentMode));
+            setCropOpen(false);
+          }}
+          preview={(reading) => (
+            <QuestionCard
+              question={reading}
+              index={index}
+              {...(resolve ? { resolve } : {})}
+            />
+          )}
+        />
+      ) : null}
 
       {question.validation?.checks.length ? (
         <div className="mt-3 rounded-md border border-border bg-secondary/30 px-3 py-2 text-sm">

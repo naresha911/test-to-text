@@ -28,7 +28,9 @@ import {
   type Catalog,
   type DocumentMeta,
   type MockGenerationState,
+  type PageRecord,
 } from "@/lib/document-types";
+import { readQuestionCrop } from "@/lib/extract.functions";
 import { generateHintSolution } from "@/lib/hint-solution.functions";
 import { useSolutionGeneration } from "@/hooks/useSolutionGeneration";
 import {
@@ -40,6 +42,7 @@ import {
   getLocalDocument,
   listLocalDocuments,
   saveLocalDocument,
+  saveLocalFigure,
 } from "@/lib/local-store.functions";
 import { resumeMockPaperGeneration } from "@/lib/mock-paper-client";
 import {
@@ -48,6 +51,8 @@ import {
   regenerateMockQuestion,
 } from "@/lib/mock-paper.functions";
 import { sortMockPairs, sortQuestions } from "@/lib/question-order";
+import { readStoredCrop } from "@/lib/reading/crop-client";
+import type { CropLayout } from "@/lib/reading/crop-layout";
 import {
   createManualQuestion,
   findQuestionById,
@@ -75,6 +80,8 @@ function PaperDetail({ id }: { id: string }) {
   const runGet = useServerFn(getLocalDocument);
   const runSave = useServerFn(saveLocalDocument);
   const runHintSolution = useServerFn(generateHintSolution);
+  const runReadCrop = useServerFn(readQuestionCrop);
+  const runSaveFigure = useServerFn(saveLocalFigure);
   const runCatalog = useServerFn(getLocalCatalog);
   const runRegenerateQuestion = useServerFn(regenerateMockQuestion);
   const runRegenerateFigure = useServerFn(regenerateMockFigure);
@@ -82,6 +89,9 @@ function PaperDetail({ id }: { id: string }) {
   const [questions, setQuestions] = useState<Question[]>([]);
   const [pageUrls, setPageUrls] = useState<Array<string | undefined>>([]);
   const [figureUrls, setFigureUrls] = useState<Record<string, string>>({});
+  const pagesRef = useRef<PageRecord[]>([]);
+  const figureUrlsRef = useRef(figureUrls);
+  figureUrlsRef.current = figureUrls;
   const [ready, setReady] = useState(false);
   const [catalog, setCatalog] = useState<Catalog>({
     standards: [],
@@ -124,6 +134,7 @@ function PaperDetail({ id }: { id: string }) {
         : loaded.document;
       loadedRef.current = true;
       questionsRevRef.current = loaded.document.questions_rev;
+      pagesRef.current = loaded.pages;
       setQuestions(sorted);
       const urls: Array<string | undefined> = [];
       for (const page of loaded.pages) urls[page.page_index] = page.dataUrl;
@@ -277,6 +288,32 @@ function PaperDetail({ id }: { id: string }) {
     });
   }
 
+  async function readCrop(question: Question, layout: CropLayout): Promise<Question> {
+    const path = question.source_block?.image_path;
+    const cropDataUrl = path ? figureUrlsRef.current[path] : undefined;
+    if (!cropDataUrl) throw new Error("The printed crop for this question is unavailable.");
+    const mode =
+      pagesRef.current.find((item) => item.page_index === (question.page ?? -1))?.read_mode ??
+      "text";
+    const hint = audienceMeta.notes?.trim();
+    const loaded = await readStoredCrop({
+      question,
+      layout,
+      contentMode: mode,
+      documentId: id,
+      cropDataUrl,
+      ...(hint ? { hint } : {}),
+      read: (request) => runReadCrop({ data: request }),
+      saveFigure: (data) => runSaveFigure({ data }),
+    });
+    if (Object.keys(loaded.urls).length) {
+      const urls = { ...figureUrlsRef.current, ...loaded.urls };
+      figureUrlsRef.current = urls;
+      setFigureUrls(urls);
+    }
+    return loaded.question;
+  }
+
   async function refreshFigures() {
     const loaded = await runGet({ data: { id } });
     if (loaded) {
@@ -355,6 +392,10 @@ function PaperDetail({ id }: { id: string }) {
         onRegenerateGenerated={(questionId) => void regenerateQuestion(questionId)}
         onRegenerateFigure={(questionId) => void regenerateFigure(questionId)}
         generatingIds={solution.generatingIds}
+        onReadCrop={readCrop}
+        contentModeForPage={(page) =>
+          pagesRef.current.find((item) => item.page_index === page)?.read_mode ?? "text"
+        }
       />
     </div>
   );

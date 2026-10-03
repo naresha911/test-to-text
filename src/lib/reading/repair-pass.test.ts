@@ -380,6 +380,35 @@ describe("repair loop", () => {
   });
 });
 
+describe("leftover question boxes", () => {
+  test("a question whose number missed its block still receives the leftover box", async () => {
+    const first = emptyQuestion({
+      number: "1",
+      type: "short_answer",
+      stem: "Alpha question about cats today",
+    });
+    const second = emptyQuestion({
+      number: "9",
+      type: "short_answer",
+      stem: "Beta question about dogs today",
+    });
+    const result = await repairFlaggedQuestions([first, second], {
+      lines: [
+        line("1. Alpha question about cats today", 0.1, 0.1),
+        line("2. Beta question about dogs today", 0.1, 0.4),
+      ],
+      source: "local",
+      imageDataUrl: "data:image/jpeg;base64,aa",
+      page: 0,
+    });
+
+    expect(result.map((question) => question.number)).toEqual(["1", "9"]);
+    expect(result[0]?.source_block?.bbox).not.toBeNull();
+    expect(result[1]?.source_block?.bbox).not.toBeNull();
+    expect(result[0]!.source_block!.bbox![1]).toBeLessThan(result[1]!.source_block!.bbox![1]);
+  });
+});
+
 describe("source block storage", () => {
   test("normalizeQuestion keeps the printed crop and its flags", () => {
     const question = normalizeQuestion(

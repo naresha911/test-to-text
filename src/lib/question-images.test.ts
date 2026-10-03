@@ -4,6 +4,7 @@ import {
   collectQuestionsImagePaths,
   detachImagePath,
   droppedImagePaths,
+  isLoadableQuestionImage,
   normalizeStoredImagePath,
   questionWithoutOption,
 } from "@/lib/question-images";
@@ -19,6 +20,16 @@ describe("stored image paths", () => {
     expect(normalizeStoredImagePath("doc-1/generated/q-1/a1b2c3d4.svg")).toBe(
       "doc-1/generated/q-1/a1b2c3d4.svg",
     );
+  });
+
+  test("loads diagram crops, question crops, and generated art", () => {
+    expect(isLoadableQuestionImage("doc/p1-q1-fig-1.jpg")).toBe(true);
+    expect(isLoadableQuestionImage("doc/p26-q6-block.jpg")).toBe(true);
+    expect(isLoadableQuestionImage("doc/generated/q-1/a1b2c3d4.svg")).toBe(true);
+    expect(isLoadableQuestionImage("doc/page-080631a7-4b5e-482d-9d6d-a844cedbda21.jpg")).toBe(
+      false,
+    );
+    expect(isLoadableQuestionImage("doc/generated/_manifest.json")).toBe(false);
   });
 
   test("rejects traversal, absolute paths, and the asset manifest", () => {

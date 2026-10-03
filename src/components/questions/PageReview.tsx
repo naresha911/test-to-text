@@ -9,6 +9,8 @@ import type { SolutionPromptReveal } from "@/hooks/useSolutionGeneration";
 import { sortQuestions } from "@/lib/question-order";
 import type { SolutionAudience } from "@/lib/question-context";
 import type { Question } from "@/lib/question-schema";
+import type { CropLayout } from "@/lib/reading/crop-layout";
+import type { ContentMode } from "@/lib/reading/mode";
 
 const EMPTY_QUEUED = new Set<string>();
 
@@ -38,6 +40,8 @@ type Props = {
   onRegenerateGenerated?: ((questionId: string) => void) | undefined;
   onRegenerateFigure?: ((questionId: string) => void) | undefined;
   generatingIds?: Set<string> | undefined;
+  onReadCrop?: ((question: Question, layout: CropLayout) => Promise<Question>) | undefined;
+  contentModeForPage?: ((page: number | null | undefined) => ContentMode) | undefined;
 };
 
 export function PageReview({
@@ -59,6 +63,8 @@ export function PageReview({
   queuedIds,
   promptReveal,
   promptStore,
+  onReadCrop,
+  contentModeForPage,
 }: Props) {
   const [focusId, setFocusId] = useState<string | null>(null);
   const fallbackPrompts = useRef(new Map<string, string>());
@@ -163,6 +169,12 @@ export function PageReview({
               {...(onRegenerateGenerated ? { onRegenerateGenerated } : {})}
               {...(onRegenerateFigure ? { onRegenerateFigure } : {})}
               {...(generatingIds ? { generatingIds } : {})}
+              {...(onReadCrop
+                ? {
+                    onReadCrop: (layout: CropLayout) => onReadCrop(question, layout),
+                    contentMode: contentModeForPage?.(question.page) ?? "text",
+                  }
+                : {})}
             />
           </div>
         );

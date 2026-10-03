@@ -10,10 +10,14 @@ import {
 import { structureOcrText as structureOcrTextOffline } from "@/lib/ocr-structure";
 import { normalizeQuestion, type Question } from "@/lib/question-schema";
 import { openOcrHealthy } from "@/lib/reader/openocr";
+import { attachFigures } from "@/lib/reader/parse-blocks";
 import { stripFigures } from "@/lib/reading/clean-page";
+import { CROP_LAYOUTS, oneCropQuestion, structureCropText } from "@/lib/reading/crop-layout";
+import { readLayoutRegions } from "@/lib/reading/layout-reader";
+import { inlineStackedFractions } from "@/lib/reading/math-text";
 import { CONTENT_MODES } from "@/lib/reading/mode";
 import { readExamPage } from "@/lib/reading/pipeline";
-import { ocrSpaceText, optiicText } from "@/lib/reading/text-reader";
+import { ocrSpaceText, optiicText, readPrintedText } from "@/lib/reading/text-reader";
 
 export const READER_ENGINES = ["openocr", "lovable", "openrouter", "optiic", "ocrspace"] as const;
 export type ReaderEngine = (typeof READER_ENGINES)[number];
@@ -478,6 +482,103 @@ export const structureOcrText = createServerFn({ method: "POST" })
 
     return resolvedQuestions(structured, data.text, data.page);
   });
+
+const CropInputSchema = z.object({
+  imageDataUrl: z.string().min(32),
+  page: z.number().int().min(0),
+  layout: z.enum(CROP_LAYOUTS),
+  contentMode: z.enum(CONTENT_MODES).default("text"),
+  number: z.string().max(40).nullable().optional(),
+  engine: z.enum(READER_ENGINES).default("openocr"),
+  apiKey: z.string().max(1000).optional(),
+  ocrSpaceKey: z.string().max(1000).optional(),
+  optiicKey: z.string().max(1000).optional(),
+  model: z.string().min(2).max(120).optional(),
+  hint: z.string().max(600).optional(),
+});
+
+/** Read one question image. Equations uses the vision model. Every other layout uses text OCR. */
+export const readQuestionCrop = createServerFn({ method: "POST" })
+  .validator((input: unknown) => CropInputSchema.parse(input))
+  .handler(async ({ data }): Promise<{ question: Question }> => {
+    const number = data.number ?? null;
+    if (data.layout === "equations") {
+      const question = await readEquationCrop(data, number);
+      return { question: presentCrop(question, data.contentMode) };
+    }
+
+    const ocrSpaceKey = data.ocrSpaceKey?.trim() || process.env["OCR_SPACE_API_KEY"];
+    const optiicKey = data.optiicKey?.trim() || process.env["OPTIIC_API_KEY"];
+    const transcript = await readPrintedText({
+      imageDataUrl: data.imageDataUrl,
+      ...(ocrSpaceKey ? { ocrSpaceKey } : {}),
+      ...(optiicKey ? { optiicKey } : {}),
+    });
+    const recovered = transcript.words?.length ? inlineStackedFractions(transcript.words) : null;
+    const text =
+      recovered &&
+      recovered.length >= transcript.text.length * 0.6 &&
+      numberedHeads(recovered) >= numberedHeads(transcript.text)
+        ? recovered
+        : transcript.text;
+    const structured = structureCropText(text, data.layout, data.page, number);
+    if (!structured) throw new Error("This crop could not be read with that layout.");
+
+    let question: Question = { ...structured, reader_id: "crop", reader_version: data.layout };
+    if (data.contentMode === "graphics") {
+      try {
+        const regions = await readLayoutRegions(transcript.imageDataUrl);
+        const [withFigures] = attachFigures([question], regions, {
+          reader_id: "crop",
+          reader_version: `${data.layout}+layout`,
+        });
+        if (withFigures) question = withFigures;
+      } catch {
+        /* The words still stand when the diagram service is unavailable. */
+      }
+    }
+    return { question: presentCrop(question, data.contentMode) };
+  });
+
+async function readEquationCrop(
+  data: z.infer<typeof CropInputSchema>,
+  number: string | null,
+): Promise<Question> {
+  const omniroutersKey = omniroutersApiKey();
+  const lovableKey = process.env["LOVABLE_API_KEY"];
+  const openRouterFromEnv = process.env["OPENROUTER_API_KEY"];
+  const openRouterKey =
+    data.engine === "openrouter" ? data.apiKey?.trim() || openRouterFromEnv : openRouterFromEnv;
+  const hint = [
+    "This image is one printed question, including its choices. Return exactly one question. Write mathematics as LaTeX.",
+    data.hint?.trim(),
+  ]
+    .filter(Boolean)
+    .join(" ");
+  const questions = await digitisePageImage(data.imageDataUrl, {
+    page: data.page,
+    ...(hint ? { hint } : {}),
+    ...(omniroutersKey ? { omniroutersKey } : {}),
+    ...(openRouterKey ? { openRouterKey } : {}),
+    ...(lovableKey ? { lovableKey } : {}),
+    ...(data.model ? { model: data.model } : {}),
+  });
+  const question = oneCropQuestion(questions ?? [], number);
+  if (!question) {
+    throw new Error("Equations could not be read from this crop. Check the AI key in Settings.");
+  }
+  return { ...question, reader_id: "crop", reader_version: "equations" };
+}
+
+function presentCrop(question: Question, mode: "text" | "graphics"): Question {
+  if (mode !== "text") return question;
+  const [stripped] = stripFigures([question]);
+  return stripped ?? question;
+}
+
+function numberedHeads(text: string): number {
+  return text.split("\n").filter((line) => /^\s*\(?\d{1,3}\s*[.)]/.test(line)).length;
+}
 
 /** Reports which reader keys are configured, without ever revealing their values. */
 export const getReaderStatus = createServerFn({ method: "GET" }).handler(

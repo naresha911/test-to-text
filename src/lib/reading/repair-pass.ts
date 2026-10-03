@@ -81,6 +81,28 @@ function attachBlocks(questions: Question[], blocks: QuestionBlock[], page: numb
     };
   });
 
+  const pending = attached
+    .map((question, index) => ({ index, question }))
+    .filter((item) => item.question.source_block?.bbox == null);
+  let pendingAt = 0;
+  // A question whose printed number missed still gets the next unused box, in order.
+  for (let blockIndex = 0; blockIndex < blocks.length && pendingAt < pending.length; blockIndex += 1) {
+    if (used.has(blockIndex)) continue;
+    const block = blocks[blockIndex]!;
+    const target = pending[pendingAt]!;
+    pendingAt += 1;
+    used.add(blockIndex);
+    attached[target.index] = {
+      ...target.question,
+      source_block: {
+        bbox: block.bbox,
+        image_path: target.question.source_block?.image_path ?? null,
+        flags: [],
+        passes: 1,
+      },
+    };
+  }
+
   const extras: Question[] = [];
   blocks.forEach((block, index) => {
     if (used.has(index)) return;
