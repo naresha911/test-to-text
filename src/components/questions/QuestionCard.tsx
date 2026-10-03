@@ -931,10 +931,10 @@ export function QuestionCard({
   const generating = generatingIds?.has(question.id) === true;
   const queued = solutionUi?.queuedIds.has(question.id) === true;
   const canEdit = !!onChange;
-  const showSolutionPrompt =
+  const canRegenerateSolution =
     Boolean(onRegenerate) &&
-    !question.approval_status &&
     (question.type !== "comprehension" || question.sub_questions.length === 0);
+  const showSolutionPrompt = canRegenerateSolution && !question.approval_status;
   const audience = solutionUi?.audience;
   const builtPrompt = useMemo(
     () =>
@@ -954,6 +954,9 @@ export function QuestionCard({
         solutionUi?.promptReveal?.ids.includes(question.id),
     );
   const [promptOpen, setPromptOpen] = useState(false);
+  const offerSolutionRegenerate =
+    canRegenerateSolution &&
+    (!question.approval_status || question.approved || answerMissing);
 
   useEffect(() => {
     if (!startEditing) return;
@@ -1375,7 +1378,7 @@ export function QuestionCard({
             {...(generating ? { generating: true } : {})}
             {...(queued ? { queued: true } : {})}
             {...(onChange ? { onChange } : {})}
-            {...(showSolutionPrompt ? { onRegenerate: submitRegenerate } : {})}
+            {...(offerSolutionRegenerate ? { onRegenerate: submitRegenerate } : {})}
           />
           {showSolutionPrompt ? (
             <SolutionPrompt
