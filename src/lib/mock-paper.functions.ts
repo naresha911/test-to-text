@@ -421,6 +421,10 @@ async function executeMockGeneration(
     : [];
   let generationState = parseMockGeneration(data.generation);
   let questionsRev = data.questions_rev;
+  const authorInstructions =
+    data.mode === "from_source"
+      ? data.instructions?.trim() || generationState?.instructions?.trim() || null
+      : null;
 
   const result = await runGenerationItem({
     item,
@@ -436,7 +440,8 @@ async function executeMockGeneration(
         : sourceQuestion
           ? toSourceQuestionRecord({ documentId: data.documentId, question: sourceQuestion })
           : null,
-    instructions: data.instructions ?? null,
+    instructions: data.mode === "from_instructions" ? (data.instructions ?? null) : null,
+    authorInstructions,
     number,
     audience: {
       standard: audience?.standard ?? null,
@@ -456,7 +461,7 @@ async function executeMockGeneration(
           role: "system",
           content: "You write original grammar questions. Return one JSON object and nothing else.",
         },
-        { role: "user", content: buildGrammarUserPrompt(spec) },
+        { role: "user", content: buildGrammarUserPrompt(spec, authorInstructions) },
       ]);
       const parsed = extractJson(text);
       if (!parsed) throw new Error("The grammar model returned unreadable output. Try again.");
@@ -468,7 +473,7 @@ async function executeMockGeneration(
       let sourceDifficulty: Question["difficulty"] | null = null;
       const skill = detectSkill({
         stem: sourceQuestion?.stem,
-        instructions: data.instructions,
+        instructions: data.mode === "from_source" ? sourceQuestion?.instructions : data.instructions,
         type: sourceQuestion?.type,
         figureCount: sourceQuestion?.figures.length ?? 0,
         optionImageCount:
@@ -506,6 +511,7 @@ async function executeMockGeneration(
           total: data.total,
           ...(audienceForPrompt ? { audience: audienceForPrompt } : {}),
           ...(images.length ? { hasImages: true } : {}),
+          authorInstructions,
         });
       } else {
         const instructions = data.instructions?.trim();
@@ -519,9 +525,15 @@ async function executeMockGeneration(
           ...(audience ? { audience } : {}),
         });
       }
+      const authorBlock = authorInstructions
+        ? `\n\nADDITIONAL INSTRUCTIONS (must follow for this question):\n${authorInstructions}`
+        : "";
       const chat = await completeExamChat({
         messages: [
-          { role: "system", content: skillNote ? `${SYSTEM_PROMPT}\n\n${skillNote}` : SYSTEM_PROMPT },
+          {
+            role: "system",
+            content: `${skillNote ? `${SYSTEM_PROMPT}\n\n${skillNote}` : SYSTEM_PROMPT}${authorBlock}`,
+          },
           { role: "user", content: userContent },
         ],
         images,

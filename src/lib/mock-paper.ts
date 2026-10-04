@@ -174,6 +174,8 @@ export function buildFromSourceUserPrompt(options: {
   total: number;
   audience?: MockPaperAudience;
   hasImages?: boolean;
+  /** Teacher notes applied to every equivalent question in the mock. */
+  authorInstructions?: string | null;
 }): string {
   const stripped = stripQuestionForPrompt(options.sourceQuestion);
   const payload = buildQuestionPromptPayload(stripped, {
@@ -221,6 +223,14 @@ export function buildFromSourceUserPrompt(options: {
       ...(options.audience ? { audience: options.audience } : {}),
       sourceQuestion: options.sourceQuestion,
     }),
+    ...(options.authorInstructions?.trim()
+      ? [
+          "",
+          "ADDITIONAL INSTRUCTIONS (must follow for this question):",
+          options.authorInstructions.trim(),
+          "Keep the same skill as the source. Change the surface details so the question is original. The answer must still be correct.",
+        ]
+      : []),
     "",
     ...describeSourceMetadata(options.sourceQuestion),
     ...comprehensionRules,

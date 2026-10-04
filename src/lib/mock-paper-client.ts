@@ -199,6 +199,7 @@ export async function resumeMockPaperGeneration(options: {
           data: {
             mode: "from_source",
             sourceQuestion,
+            instructions: state.instructions,
             index,
             total,
             number: sourceQuestion.number ?? String(index + 1),

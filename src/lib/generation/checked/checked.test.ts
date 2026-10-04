@@ -8,6 +8,9 @@ import {
 } from "@/lib/generation/checked/registry";
 import { detectSkill } from "@/lib/generation/skill-detect";
 import { runGenerationItem } from "@/lib/generation/orchestrator";
+import { buildFromSourceUserPrompt } from "@/lib/mock-paper";
+import { emptyQuestion } from "@/lib/question-schema";
+import { toSourceQuestionRecord } from "@/lib/source/source-record";
 import { createMemoryAssetStore } from "@/lib/assets/store";
 
 const now = "2026-10-04T00:00:00.000Z";
@@ -87,5 +90,46 @@ describe("checked skill generators", () => {
     expect(result.question.skill_type).toBe("ranking");
     expect(result.question.validation?.status).toBe("passed");
     expect(result.question.difficulty).toBe("hard");
+  });
+
+  test("author instructions are sent with each source question and replace the checked generator", async () => {
+    const source = emptyQuestion({
+      id: "src-profit",
+      type: "mcq",
+      stem: "A shopkeeper buys a pen for Rs 20 and sells it for Rs 25. Find the profit.",
+    });
+    const prompt = buildFromSourceUserPrompt({
+      sourceQuestion: source,
+      index: 0,
+      total: 3,
+      authorInstructions: "Use a fruit-seller story and prices in rupees.",
+    });
+    expect(prompt).toContain("ADDITIONAL INSTRUCTIONS");
+    expect(prompt).toContain("fruit-seller");
+
+    let legacyCalls = 0;
+    const result = await runGenerationItem({
+      jobId: "job-notes",
+      sequence: 0,
+      documentId: "doc-notes",
+      number: "1",
+      authorInstructions: "Use a fruit-seller story and prices in rupees.",
+      source: toSourceQuestionRecord({ documentId: "source-doc", question: source }),
+      assetStore: createMemoryAssetStore(),
+      callLegacyModel: async () => {
+        legacyCalls += 1;
+        return emptyQuestion({
+          id: "legacy-profit",
+          type: "mcq",
+          stem: "A fruit seller buys mangoes for Rs 40 and sells them for Rs 55. What is the profit?",
+          options: [{ key: "A", text: "Rs 15", is_correct: true }],
+          answer_keys: ["A"],
+        });
+      },
+      now,
+    });
+    expect(legacyCalls).toBe(1);
+    expect(result.question.stem).toContain("fruit seller");
+    expect(result.question.validation?.status).toBe("needs_review");
   });
 });

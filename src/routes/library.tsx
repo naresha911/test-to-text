@@ -30,6 +30,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   documentKindBadge,
   documentKindLabel,
@@ -506,6 +507,7 @@ function LibraryPage() {
     slots: { skill: string; count: number }[];
     gaps: string[];
     harder: boolean;
+    notes: string;
   } | null>(null);
 
   const papers = useQuery({
@@ -563,13 +565,23 @@ function LibraryPage() {
 
   async function startMockFromSource(
     sourceId: string,
-    options?: { slots: { skill: string; count: number }[]; difficultyStep: 0 | 1 },
+    options?: {
+      slots: { skill: string; count: number }[];
+      difficultyStep: 0 | 1;
+      authorInstructions?: string;
+    },
   ) {
     setCreatingMockFor(sourceId);
     try {
+      const notes = options?.authorInstructions?.trim() ?? "";
       const created = await createMockFn({
         data: options
-          ? { sourceId, slots: options.slots, difficultyStep: options.difficultyStep }
+          ? {
+              sourceId,
+              slots: options.slots,
+              difficultyStep: options.difficultyStep,
+              ...(notes ? { authorInstructions: notes } : {}),
+            }
           : { sourceId },
       });
       void queryClient.invalidateQueries({ queryKey: ["local-documents"] });
@@ -620,6 +632,7 @@ function LibraryPage() {
         slots: paper.slots.map((slot) => ({ skill: slot.skill, count: slot.count })),
         gaps: numberGaps(questions.map((question) => question.number ?? "")),
         harder: false,
+        notes: "",
       });
     } catch {
       await startMockFromSource(sourceId);
@@ -635,6 +648,7 @@ function LibraryPage() {
     void startMockFromSource(draft.sourceId, {
       slots: draft.slots,
       difficultyStep: draft.harder ? 1 : 0,
+      authorInstructions: draft.notes,
     });
   }
 
@@ -910,8 +924,8 @@ function LibraryPage() {
           <DialogHeader>
             <DialogTitle>Generate AI Mock</DialogTitle>
             <DialogDescription>
-              Each count is how many new questions to write for that skill. Confirm uses these
-              counts. Cancel leaves the paper unchanged.
+              Each count is how many new questions to write for that skill. Notes below are sent
+              with every question. Cancel leaves the paper unchanged.
             </DialogDescription>
           </DialogHeader>
           {mockBlueprint?.gaps.length ? (
@@ -963,6 +977,25 @@ function LibraryPage() {
             />
             One step harder
           </label>
+          <div className="space-y-2">
+            <Label htmlFor="mock-author-instructions">Instructions for every question</Label>
+            <Textarea
+              id="mock-author-instructions"
+              value={mockBlueprint?.notes ?? ""}
+              rows={4}
+              maxLength={4000}
+              placeholder="Optional. For example: use Indian names and rupees, word problems only, avoid decimals."
+              onChange={(event) =>
+                setMockBlueprint((current) =>
+                  current ? { ...current, notes: event.target.value } : current,
+                )
+              }
+            />
+            <p className="text-xs text-muted-foreground">
+              Applied while writing each equivalent question. Diagram skills that draw their own
+              figure keep that drawing.
+            </p>
+          </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setMockBlueprint(null)}>
               Cancel

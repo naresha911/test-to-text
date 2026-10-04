@@ -254,6 +254,7 @@ export const createAiMockFromSource = createServerFn({ method: "POST" })
           )
           .optional(),
         difficultyStep: z.union([z.literal(0), z.literal(1)]).optional(),
+        authorInstructions: z.string().max(4000).optional(),
       })
       .parse(input),
   )
@@ -315,12 +316,14 @@ export const createAiMockFromSource = createServerFn({ method: "POST" })
       difficultyStep = step;
     }
 
+    const authorInstructions = data.authorInstructions?.trim() || null;
     const generation = emptyMockGeneration({
       mode: "from_source",
       status: "pending",
       source_question_ids: generationIds,
       cursor: 0,
       blueprint,
+      instructions: authorInstructions,
       ...(difficultyStep != null ? { difficulty_step: difficultyStep } : {}),
     });
 

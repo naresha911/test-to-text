@@ -41,6 +41,8 @@ export type RunGenerationInput = {
   documentId: string;
   source?: SourceQuestionRecord | null;
   instructions?: string | null;
+  /** Free-text notes that must shape every equivalent question. */
+  authorInstructions?: string | null;
   number: string;
   audience?: GenerationAudience;
   grade?: number | null;
@@ -99,6 +101,7 @@ export async function runGenerationItem(input: RunGenerationInput): Promise<{
   }
 
   const skill = skillByType(analysis.skill_type);
+  const authorNotes = input.authorInstructions?.trim() ?? "";
   const spec = buildGenerationSpec(analysis, {
     sourceQuestionId: input.source?.source_question_id ?? null,
     ...(input.audience ? { audience: input.audience } : {}),
@@ -114,7 +117,7 @@ export async function runGenerationItem(input: RunGenerationInput): Promise<{
     const questionId = item.candidate_question_id ?? crypto.randomUUID();
     item = { ...item, candidate_question_id: questionId };
     const seedKey = `${item.idempotency_key}:${attempt}`;
-    if (isCheckedSkill(analysis.skill_type)) {
+    if (isCheckedSkill(analysis.skill_type) && !authorNotes) {
       return generateCheckedQuestion({
         skill: analysis.skill_type,
         seedKey,
@@ -126,7 +129,7 @@ export async function runGenerationItem(input: RunGenerationInput): Promise<{
         jobId: input.jobId,
       });
     }
-    if (analysis.skill_type === "number_series") {
+    if (analysis.skill_type === "number_series" && !authorNotes) {
       const generated = generateNumberSeriesQuestion({
         seedKey,
         questionId,
@@ -218,6 +221,24 @@ export async function runGenerationItem(input: RunGenerationInput): Promise<{
   };
 
   const validate = (candidate: Question): ValidationResult => {
+    if (
+      authorNotes &&
+      (isCheckedSkill(analysis.skill_type) || analysis.skill_type === "number_series")
+    ) {
+      return {
+        status: "needs_review",
+        checks: [
+          {
+            name: "author_instructions",
+            status: "needs_review",
+            details: "Teacher instructions replaced the automatic solver, so a person needs to review it.",
+          },
+        ],
+        errors: [],
+        validator_version: "slice-1",
+        created_at: input.now ?? new Date().toISOString(),
+      };
+    }
     if (isCheckedSkill(analysis.skill_type)) return validateCheckedQuestion(candidate, input.now);
     if (analysis.skill_type === "number_series")
       return validateNumberSeriesQuestion(candidate, input.now);
