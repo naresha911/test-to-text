@@ -8,10 +8,17 @@ import {
 } from "@/lib/question-context";
 import { findQuestionById, updateQuestionById, type Question } from "@/lib/question-schema";
 
+function figurePaths(question: Question): string[] {
+  return question.figures
+    .map((figure) => figure.image_path)
+    .filter((path): path is string => Boolean(path));
+}
+
 export type RunGenerate = (input: {
   data: {
     question: Question;
     parentPassage?: string | null;
+    parentImagePaths?: string[];
     force?: boolean;
     audience?: SolutionAudience;
     userPrompt?: string;
@@ -108,6 +115,7 @@ export async function generateForApprovedQuestion(options: {
         data: {
           question: current,
           parentPassage: target.parentPassage ?? null,
+          parentImagePaths: target.question.id === root.id ? [] : figurePaths(root),
           force,
           ...(options.audience ? { audience: options.audience } : {}),
           ...(userPrompt ? { userPrompt } : {}),

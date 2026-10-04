@@ -7,6 +7,10 @@ import {
   type DocumentKind,
   type MockGenerationState,
 } from "@/lib/document-types";
+import { blueprintFromQuestions, drillBlueprint, expandBlueprint } from "@/lib/generation/blueprint";
+import { detectSkill } from "@/lib/generation/skill-detect";
+import { skillAuthorPrompt } from "@/lib/generation/skill-prompts";
+import { skillByType } from "@/lib/question-taxonomy";
 import { GENERATION_ITEM_STATUSES, GENERATION_STAGES } from "@/lib/generation/job-types";
 import { buildExamPrepExport } from "@/lib/exam-prep-export";
 import {
@@ -59,6 +63,9 @@ export const GenerationSchema = z.object({
   pairs: z.array(GenerationPairSchema),
   job_id: z.string().nullable().optional(),
   items: z.array(GenerationItemSchema).optional(),
+  blueprint: z.array(z.object({ skill: z.string(), count: z.number() })).optional(),
+  difficulty_step: z.number().int().min(0).max(2).optional(),
+  drill_skill: z.string().max(80).nullable().optional(),
 });
 
 export const listLocalDocuments = createServerFn({ method: "GET" }).handler(async () =>
@@ -234,7 +241,22 @@ export const pushLocalDocument = createServerFn({ method: "POST" })
 
 /** Create an AI mock draft from an existing library paper. */
 export const createAiMockFromSource = createServerFn({ method: "POST" })
-  .validator((input: unknown) => z.object({ sourceId: z.string().uuid() }).parse(input))
+  .validator((input: unknown) =>
+    z
+      .object({
+        sourceId: z.string().uuid(),
+        slots: z
+          .array(
+            z.object({
+              skill: z.string().min(1).max(80),
+              count: z.number().int().min(1).max(80),
+            }),
+          )
+          .optional(),
+        difficultyStep: z.union([z.literal(0), z.literal(1)]).optional(),
+      })
+      .parse(input),
+  )
   .handler(async ({ data }) => {
     const loaded = await getDocument(data.sourceId);
     if (!loaded) throw new Error("Source paper not found");
@@ -245,12 +267,61 @@ export const createAiMockFromSource = createServerFn({ method: "POST" })
       throw new Error("That paper has no questions yet. Extract questions first.");
     }
 
-    const sourceIds = loaded.questions.map((q) => q.id);
+    const detectFields = (question: Question) => ({
+      number: question.number,
+      stem: question.stem,
+      instructions: question.instructions,
+      type: question.type,
+      figureCount: question.figures.length,
+      optionImageCount: question.options.filter((option) => option.image_path).length,
+      optionTexts: question.options.map((option) => option.text),
+      passage: question.passage,
+    });
+
+    const seenNumbers = new Set<string>();
+    const sourceIds = loaded.questions.flatMap((question) => {
+      const number = question.number?.trim() ?? "";
+      if (number && seenNumbers.has(number)) return [];
+      if (number) seenNumbers.add(number);
+      return [question.id];
+    });
+    const paper = blueprintFromQuestions(loaded.questions.map(detectFields));
+
+    let generationIds = sourceIds;
+    let blueprint = paper.slots.map((slot) => ({ skill: slot.skill, count: slot.count }));
+    let difficultyStep: 0 | 1 | undefined;
+    if (data.slots) {
+      const exemplars: Record<string, string> = {};
+      const seenExemplarNumbers = new Set<string>();
+      for (const question of loaded.questions) {
+        const number = question.number?.trim() ?? "";
+        if (number && seenExemplarNumbers.has(number)) continue;
+        if (number) seenExemplarNumbers.add(number);
+        const skill = detectSkill(detectFields(question));
+        if (skill === "unsupported" || exemplars[skill]) continue;
+        exemplars[skill] = question.id;
+      }
+      const step = data.difficultyStep ?? 0;
+      generationIds = expandBlueprint(
+        data.slots.map((slot) => ({
+          skill: slot.skill,
+          count: slot.count,
+          grade: null,
+          difficultyStep: step,
+        })),
+        exemplars,
+      );
+      blueprint = data.slots.map((slot) => ({ skill: slot.skill, count: slot.count }));
+      difficultyStep = step;
+    }
+
     const generation = emptyMockGeneration({
       mode: "from_source",
       status: "pending",
-      source_question_ids: sourceIds,
+      source_question_ids: generationIds,
       cursor: 0,
+      blueprint,
+      ...(difficultyStep != null ? { difficulty_step: difficultyStep } : {}),
     });
 
     const created = await createDocument("ai_mock", {
@@ -292,8 +363,10 @@ export const createAiMockFromInstructions = createServerFn({ method: "POST" })
     z
       .object({
         title: z.string().min(1).max(300),
-        instructions: z.string().min(10).max(8000),
+        instructions: z.string().max(8000).optional(),
         planned_count: z.number().int().min(1).max(80),
+        drill_skill: z.string().max(80).optional(),
+        difficulty_step: z.number().int().min(0).max(1).optional(),
         standard_id: z.number().int().nullable().optional(),
         stream_id: z.number().int().nullable().optional(),
         subject_id: z.number().int().nullable().optional(),
@@ -302,15 +375,48 @@ export const createAiMockFromInstructions = createServerFn({ method: "POST" })
         duration_minutes: z.number().int().nullable().optional(),
         default_marks: z.number().nullable().optional(),
       })
+      .superRefine((value, ctx) => {
+        const notes = value.instructions?.trim() ?? "";
+        if (!value.drill_skill && notes.length < 10) {
+          ctx.addIssue({
+            code: "custom",
+            message: "Add clearer instructions (at least a short paragraph).",
+            path: ["instructions"],
+          });
+        }
+        if (value.drill_skill && !skillByType(value.drill_skill)) {
+          ctx.addIssue({
+            code: "custom",
+            message: "Choose a known topic.",
+            path: ["drill_skill"],
+          });
+        }
+      })
       .parse(input),
   )
   .handler(async ({ data }) => {
+    const drill = data.drill_skill ? drillBlueprint({
+      skill: data.drill_skill,
+      count: data.planned_count,
+      difficultyStep: data.difficulty_step ?? 0,
+    }) : null;
+    const notes = data.instructions?.trim() ?? "";
+    const instructions = drill
+      ? [`[skill:${drill.skill}]`, skillAuthorPrompt(drill.skill), notes].filter(Boolean).join("\n")
+      : notes;
     const generation = emptyMockGeneration({
       mode: "from_instructions",
       status: "pending",
-      instructions: data.instructions.trim(),
+      instructions,
       planned_count: data.planned_count,
       cursor: 0,
+      ...(drill
+        ? {
+            blueprint: [{ skill: drill.skill, count: drill.count }],
+            difficulty_step: drill.difficultyStep,
+            drill_skill: drill.skill,
+          }
+        : {}),
     });
 
     const created = await createDocument("ai_mock", {
@@ -327,8 +433,8 @@ export const createAiMockFromInstructions = createServerFn({ method: "POST" })
       exam: data.exam ?? null,
       duration_minutes: data.duration_minutes ?? null,
       default_marks: data.default_marks ?? null,
-      source: "ai_mock_from_instructions",
-      description: data.instructions.trim().slice(0, 2000),
+      source: drill ? `ai_mock_drill:${drill.skill}` : "ai_mock_from_instructions",
+      description: instructions.slice(0, 2000),
       questions: [],
       questions_rev: created.questions_rev,
     });

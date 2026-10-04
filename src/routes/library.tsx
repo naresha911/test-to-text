@@ -21,6 +21,16 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
   documentKindBadge,
   documentKindLabel,
   isMockGenerationIncomplete,
@@ -45,6 +55,7 @@ import {
   saveLocalDocument,
   saveLocalFigure,
 } from "@/lib/local-store.functions";
+import { blueprintFromQuestions, numberGaps } from "@/lib/generation/blueprint";
 import { fileToDataUrl } from "@/lib/image-utils";
 import { resumeMockPaperGeneration } from "@/lib/mock-paper-client";
 import {
@@ -490,6 +501,12 @@ function LibraryPage() {
     page_count: number;
     question_count: number;
   } | null>(null);
+  const [mockBlueprint, setMockBlueprint] = useState<{
+    sourceId: string;
+    slots: { skill: string; count: number }[];
+    gaps: string[];
+    harder: boolean;
+  } | null>(null);
 
   const papers = useQuery({
     queryKey: ["local-documents"],
@@ -544,18 +561,81 @@ function LibraryPage() {
     }
   }
 
-  async function startMockFromSource(sourceId: string) {
+  async function startMockFromSource(
+    sourceId: string,
+    options?: { slots: { skill: string; count: number }[]; difficultyStep: 0 | 1 },
+  ) {
     setCreatingMockFor(sourceId);
     try {
-      const created = await createMockFn({ data: { sourceId } });
+      const created = await createMockFn({
+        data: options
+          ? { sourceId, slots: options.slots, difficultyStep: options.difficultyStep }
+          : { sourceId },
+      });
       void queryClient.invalidateQueries({ queryKey: ["local-documents"] });
-      toast.success("AI mock draft created — generating on the comparison screen.");
+      const mix = created.document.generation?.blueprint
+        ?.slice(0, 6)
+        .map((slot) => `${slot.count} ${slot.skill.replaceAll("_", " ")}`)
+        .join(", ");
+      toast.success(
+        mix
+          ? `AI mock draft created (${mix}). Generating on the comparison screen.`
+          : "AI mock draft created — generating on the comparison screen.",
+      );
       void navigate({ to: "/compare/$mockId", params: { mockId: created.document.id } });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Could not start AI mock generation.");
     } finally {
       setCreatingMockFor(null);
     }
+  }
+
+  async function prepareMockFromSource(sourceId: string) {
+    setCreatingMockFor(sourceId);
+    try {
+      const loaded = await getFn({ data: { id: sourceId } });
+      const questions = loaded?.questions ?? [];
+      if (!questions.length) {
+        await startMockFromSource(sourceId);
+        return;
+      }
+      const paper = blueprintFromQuestions(
+        questions.map((question) => ({
+          number: question.number,
+          stem: question.stem,
+          instructions: question.instructions,
+          type: question.type,
+          figureCount: question.figures.length,
+          optionImageCount: question.options.filter((option) => option.image_path).length,
+          optionTexts: question.options.map((option) => option.text),
+          passage: question.passage,
+        })),
+      );
+      if (!paper.slots.length) {
+        await startMockFromSource(sourceId);
+        return;
+      }
+      setMockBlueprint({
+        sourceId,
+        slots: paper.slots.map((slot) => ({ skill: slot.skill, count: slot.count })),
+        gaps: numberGaps(questions.map((question) => question.number ?? "")),
+        harder: false,
+      });
+    } catch {
+      await startMockFromSource(sourceId);
+    } finally {
+      setCreatingMockFor(null);
+    }
+  }
+
+  function confirmMockBlueprint() {
+    const draft = mockBlueprint;
+    if (!draft) return;
+    setMockBlueprint(null);
+    void startMockFromSource(draft.sourceId, {
+      slots: draft.slots,
+      difficultyStep: draft.harder ? 1 : 0,
+    });
   }
 
   async function resumeInstructionMock(mockId: string) {
@@ -726,8 +806,12 @@ function LibraryPage() {
                       <Button
                         variant="outline"
                         size="sm"
-                        disabled={creatingMockFor === paper.id || paper.question_count === 0}
-                        onClick={() => void startMockFromSource(paper.id)}
+                        disabled={
+                          creatingMockFor === paper.id ||
+                          paper.question_count === 0 ||
+                          mockBlueprint?.sourceId === paper.id
+                        }
+                        onClick={() => void prepareMockFromSource(paper.id)}
                       >
                         {creatingMockFor === paper.id ? (
                           <>
@@ -815,6 +899,80 @@ function LibraryPage() {
           </ul>
         )}
       </main>
+
+      <Dialog
+        open={mockBlueprint != null}
+        onOpenChange={(open) => {
+          if (!open) setMockBlueprint(null);
+        }}
+      >
+        <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Generate AI Mock</DialogTitle>
+            <DialogDescription>
+              Each count is how many new questions to write for that skill. Confirm uses these
+              counts. Cancel leaves the paper unchanged.
+            </DialogDescription>
+          </DialogHeader>
+          {mockBlueprint?.gaps.length ? (
+            <p className="text-sm text-muted-foreground">
+              Missing question numbers: {mockBlueprint.gaps.join(", ")}
+            </p>
+          ) : null}
+          <ul className="max-h-64 space-y-3 overflow-y-auto">
+            {mockBlueprint?.slots.map((slot, index) => (
+              <li key={slot.skill} className="flex items-center gap-3">
+                <Label className="mr-auto capitalize" htmlFor={`blueprint-count-${slot.skill}`}>
+                  {slot.skill.replaceAll("_", " ")}
+                </Label>
+                <Input
+                  id={`blueprint-count-${slot.skill}`}
+                  className="w-20"
+                  type="number"
+                  min={1}
+                  max={80}
+                  value={slot.count}
+                  onChange={(event) => {
+                    const next = Math.round(Number(event.target.value));
+                    if (!Number.isFinite(next)) return;
+                    const count = Math.min(80, Math.max(1, next));
+                    setMockBlueprint((current) =>
+                      current
+                        ? {
+                            ...current,
+                            slots: current.slots.map((item, itemIndex) =>
+                              itemIndex === index ? { ...item, count } : item,
+                            ),
+                          }
+                        : current,
+                    );
+                  }}
+                />
+              </li>
+            ))}
+          </ul>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={mockBlueprint?.harder ?? false}
+              onChange={(event) =>
+                setMockBlueprint((current) =>
+                  current ? { ...current, harder: event.target.checked } : current,
+                )
+              }
+            />
+            One step harder
+          </label>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setMockBlueprint(null)}>
+              Cancel
+            </Button>
+            <Button onClick={confirmMockBlueprint} disabled={creatingMockFor != null}>
+              Generate AI Mock
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog
         open={pendingDelete != null}

@@ -10,7 +10,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { isCheckedSkill } from "@/lib/generation/checked/registry";
 import { DIFFICULTIES, type Difficulty } from "@/lib/document-types";
+import { SKILL_CATALOG } from "@/lib/question-taxonomy";
 import {
   createAiMockFromInstructions,
   getLocalCatalog,
@@ -45,6 +47,9 @@ function MockNewPage() {
   });
 
   const [title, setTitle] = useState("AI Mock Paper");
+  const [paperMode, setPaperMode] = useState<"instructions" | "topic">("instructions");
+  const [drillSkill, setDrillSkill] = useState("number_series");
+  const [harder, setHarder] = useState(false);
   const [instructions, setInstructions] = useState("");
   const [plannedCount, setPlannedCount] = useState(10);
   const [standardId, setStandardId] = useState<number | "">("");
@@ -64,7 +69,11 @@ function MockNewPage() {
 
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault();
-    if (instructions.trim().length < 10) {
+    if (paperMode === "topic" && standardId === "") {
+      toast.error("Choose the class, for example 5th or 8th.");
+      return;
+    }
+    if (paperMode === "instructions" && instructions.trim().length < 10) {
       toast.error("Add clearer instructions (at least a short paragraph).");
       return;
     }
@@ -77,6 +86,9 @@ function MockNewPage() {
           title: title.trim() || "AI Mock Paper",
           instructions: instructions.trim(),
           planned_count: plannedCount,
+          ...(paperMode === "topic"
+            ? { drill_skill: drillSkill, difficulty_step: harder ? 1 : 0 }
+            : {}),
           standard_id: standardId === "" ? null : standardId,
           stream_id: streamId === "" ? null : streamId,
           subject_id: subjectId === "" ? null : subjectId,
@@ -143,11 +155,63 @@ function MockNewPage() {
           <h1 className="text-4xl">New AI Mock Paper</h1>
         </div>
         <p className="mt-2 text-muted-foreground">
-          Describe the paper you need. The AI invents original questions (no source paper, no side-by-side
-          comparison). Generation resumes from the library if the model fails mid-run.
+          Describe a whole paper, or practise one topic for a class. Checked topics compute the
+          answer. Other topics still use the model. Generation resumes from the library if it stops.
         </p>
 
         <form className="mt-8 space-y-5" onSubmit={(e) => void onSubmit(e)}>
+          <fieldset className="space-y-3">
+            <legend className="text-sm font-medium">What to generate</legend>
+            <div className="flex flex-wrap gap-4 text-sm">
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="paper-mode"
+                  checked={paperMode === "instructions"}
+                  onChange={() => setPaperMode("instructions")}
+                />
+                From instructions
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="paper-mode"
+                  checked={paperMode === "topic"}
+                  onChange={() => setPaperMode("topic")}
+                />
+                One topic
+              </label>
+            </div>
+          </fieldset>
+
+          {paperMode === "topic" ? (
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div className="space-y-2 sm:col-span-2">
+                <Label htmlFor="topic">Topic</Label>
+                <select
+                  id="topic"
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                  value={drillSkill}
+                  onChange={(e) => setDrillSkill(e.target.value)}
+                >
+                  {SKILL_CATALOG.map((skill) => (
+                    <option key={skill.skill_type} value={skill.skill_type}>
+                      {skill.skill_type.replaceAll("_", " ")}
+                      {isCheckedSkill(skill.skill_type) ? " (answer checked)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <label className="flex items-center gap-2 text-sm sm:col-span-2">
+                <input
+                  type="checkbox"
+                  checked={harder}
+                  onChange={(e) => setHarder(e.target.checked)}
+                />
+                One step harder, still inside the class
+              </label>
+            </div>
+          ) : null}
           <div className="space-y-2">
             <Label htmlFor="title">Title</Label>
             <Input
@@ -160,14 +224,20 @@ function MockNewPage() {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="instructions">Instructions</Label>
+            <Label htmlFor="instructions">
+              {paperMode === "topic" ? "Extra notes (optional)" : "Instructions"}
+            </Label>
             <Textarea
               id="instructions"
               value={instructions}
               onChange={(e) => setInstructions(e.target.value)}
               rows={8}
-              placeholder="e.g. Class 10 CBSE Mathematics — algebra and geometry, mix of MCQ and short answer, medium difficulty, emphasize word problems…"
-              required
+              placeholder={
+                paperMode === "topic"
+                  ? "Optional. For example: word problems only, avoid decimals."
+                  : "e.g. Class 10 CBSE Mathematics — algebra and geometry, mix of MCQ and short answer, medium difficulty, emphasize word problems…"
+              }
+              required={paperMode === "instructions"}
             />
           </div>
 
@@ -203,7 +273,7 @@ function MockNewPage() {
 
           <div className="grid gap-4 sm:grid-cols-2">
             <div className="space-y-2">
-              <Label htmlFor="standard">Standard</Label>
+              <Label htmlFor="standard">{paperMode === "topic" ? "Class" : "Standard"}</Label>
               <select
                 id="standard"
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
@@ -213,7 +283,7 @@ function MockNewPage() {
                   setStreamId("");
                 }}
               >
-                <option value="">Optional</option>
+                <option value="">{paperMode === "topic" ? "Choose a class" : "Optional"}</option>
                 {(catalog.data?.standards ?? []).map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.name}

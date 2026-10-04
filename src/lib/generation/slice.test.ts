@@ -84,12 +84,15 @@ describe("question schema", () => {
 });
 
 describe("taxonomy", () => {
-  test("only the first three skills can run", () => {
+  test("a skill runs only when its generator and validator are enabled", () => {
     expect(isAutoGeneratable("grammar")).toBe(true);
     expect(isAutoGeneratable("number_series")).toBe(true);
     expect(isAutoGeneratable("mirror_image")).toBe(true);
+    expect(isAutoGeneratable("percentage")).toBe(true);
+    expect(isAutoGeneratable("letter_series")).toBe(true);
     expect(isAutoGeneratable("counting_triangles")).toBe(false);
     expect(isAutoGeneratable("figure_series")).toBe(false);
+    expect(isAutoGeneratable("general_knowledge")).toBe(false);
   });
 });
 

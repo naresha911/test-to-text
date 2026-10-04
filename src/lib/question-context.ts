@@ -33,7 +33,7 @@ OUTPUT SHAPE
  */
 export function buildQuestionPromptPayload(
   question: Question,
-  options: { parentPassage?: string | null; audience?: SolutionAudience } = {},
+  options: { parentPassage?: string | null; audience?: SolutionAudience; hasImages?: boolean } = {},
 ): string {
   const lines: string[] = [];
   const { audience, parentPassage } = options;
@@ -103,7 +103,11 @@ export function buildQuestionPromptPayload(
 
   if (question.figures.length) {
     lines.push("");
-    lines.push("Figures (text descriptions — use these; there is no image):");
+    lines.push(
+      options.hasImages
+        ? "Figures (the images are attached, in the order listed):"
+        : "Figures (text descriptions — use these; there is no image):",
+    );
     for (const [index, figure] of question.figures.entries()) {
       const caption = figure.caption ? ` Caption: ${figure.caption}` : "";
       lines.push(`${index + 1}. ${figure.description}${caption}`);
@@ -137,12 +141,18 @@ export function buildQuestionPromptPayload(
 /** User message for one hint/solution request. Includes the question details. */
 export function buildSolutionUserPrompt(
   question: Question,
-  options: { parentPassage?: string | null; audience?: SolutionAudience; force?: boolean } = {},
+  options: {
+    parentPassage?: string | null;
+    audience?: SolutionAudience;
+    force?: boolean;
+    hasImages?: boolean;
+  } = {},
 ): string {
   const verb = options.force ? "Regenerate" : "Generate";
   const payload = buildQuestionPromptPayload(question, {
     ...(options.parentPassage !== undefined ? { parentPassage: options.parentPassage } : {}),
     ...(options.audience ? { audience: options.audience } : {}),
+    ...(options.hasImages ? { hasImages: true } : {}),
   });
   return `${verb} hint and solution for this question.\n\n${payload}`;
 }

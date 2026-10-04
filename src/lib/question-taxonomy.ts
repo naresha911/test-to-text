@@ -1,3 +1,4 @@
+import { CHECKED_SKILL_IDS } from "@/lib/generation/checked/registry";
 import type { QuestionType } from "@/lib/question-schema";
 
 export type SkillFamily = "textual" | "math" | "intelligence";
@@ -67,7 +68,73 @@ export const SKILL_CATALOG: SkillDefinition[] = [
     render_type: "mcq",
     visual: true,
   }),
+  skill({ skill_type: "jumbled_sentences", family: "textual", render_type: "mcq" }),
+  skill({ skill_type: "cloze", family: "textual", render_type: "mcq" }),
+  skill({ skill_type: "synonym_antonym", family: "textual", render_type: "mcq" }),
+  skill({ skill_type: "idioms", family: "textual", render_type: "mcq" }),
+  skill({ skill_type: "spelling", family: "textual", render_type: "mcq" }),
+  skill({ skill_type: "one_word_substitution", family: "textual", render_type: "mcq" }),
+  skill({ skill_type: "parts_of_speech", family: "textual", render_type: "mcq" }),
+  skill({ skill_type: "sentence_completion", family: "textual", render_type: "mcq" }),
+  skill({ skill_type: "general_knowledge", family: "textual", render_type: "mcq" }),
+  skill({ skill_type: "symbol_operations", family: "intelligence", render_type: "mcq" }),
+  skill({ skill_type: "clock_direction", family: "intelligence", render_type: "mcq" }),
+  skill({ skill_type: "embedded_figure", family: "intelligence", render_type: "diagram", visual: true }),
+  skill({ skill_type: "figure_identity", family: "intelligence", render_type: "diagram", visual: true }),
+  skill({ skill_type: "meaningful_order", family: "intelligence", render_type: "mcq" }),
+  skill({ skill_type: "letter_series", family: "intelligence", render_type: "mcq" }),
+  skill({ skill_type: "blood_relations", family: "intelligence", render_type: "mcq" }),
+  skill({ skill_type: "symbol_arrangement", family: "intelligence", render_type: "mcq" }),
+  skill({ skill_type: "dictionary_order", family: "intelligence", render_type: "mcq" }),
+  skill({ skill_type: "calendar", family: "intelligence", render_type: "mcq" }),
+  skill({ skill_type: "coding_decoding", family: "intelligence", render_type: "mcq" }),
+  skill({ skill_type: "odd_one_out", family: "intelligence", render_type: "mcq" }),
+  skill({ skill_type: "figure_pattern", family: "intelligence", render_type: "diagram", visual: true }),
+  skill({ skill_type: "figure_analogy", family: "intelligence", render_type: "diagram", visual: true }),
+  skill({ skill_type: "word_analogy", family: "intelligence", render_type: "mcq" }),
+  skill({ skill_type: "number_analogy", family: "intelligence", render_type: "mcq" }),
+  skill({ skill_type: "word_formation", family: "intelligence", render_type: "mcq" }),
+  skill({ skill_type: "direction_sense", family: "intelligence", render_type: "mcq" }),
+  skill({ skill_type: "venn_diagram", family: "intelligence", render_type: "diagram", visual: true }),
+  skill({ skill_type: "seating_arrangement", family: "intelligence", render_type: "mcq" }),
+  skill({ skill_type: "date_puzzle", family: "intelligence", render_type: "mcq" }),
+  skill({ skill_type: "ranking", family: "intelligence", render_type: "mcq" }),
+  skill({
+    skill_type: "missing_number_figure",
+    family: "intelligence",
+    render_type: "diagram",
+    visual: true,
+  }),
+  skill({ skill_type: "profit_loss", family: "math", render_type: "mcq" }),
+  skill({ skill_type: "division", family: "math", render_type: "mcq" }),
+  skill({ skill_type: "fractions", family: "math", render_type: "mcq" }),
+  skill({ skill_type: "mensuration", family: "math", render_type: "mcq" }),
+  skill({ skill_type: "number_formation", family: "math", render_type: "mcq" }),
+  skill({ skill_type: "percentage", family: "math", render_type: "mcq" }),
+  skill({ skill_type: "ratio_hcf", family: "math", render_type: "mcq" }),
+  skill({ skill_type: "triangle_area", family: "math", render_type: "mcq" }),
+  skill({ skill_type: "speed_time", family: "math", render_type: "mcq" }),
+  skill({ skill_type: "factors", family: "math", render_type: "mcq" }),
+  skill({ skill_type: "angles", family: "math", render_type: "mcq" }),
+  skill({ skill_type: "average", family: "math", render_type: "mcq" }),
+  skill({ skill_type: "simple_interest", family: "math", render_type: "mcq" }),
+  skill({ skill_type: "metric_measures", family: "math", render_type: "mcq" }),
+  skill({ skill_type: "linear_equation", family: "math", render_type: "mcq" }),
+  skill({ skill_type: "work_rate", family: "math", render_type: "mcq" }),
+  skill({ skill_type: "unitary_method", family: "math", render_type: "mcq" }),
+  skill({ skill_type: "mean_proportion", family: "math", render_type: "mcq" }),
+  skill({ skill_type: "divisibility", family: "math", render_type: "mcq" }),
+  skill({ skill_type: "multiplication", family: "math", render_type: "mcq" }),
+  skill({ skill_type: "rounding", family: "math", render_type: "mcq" }),
 ];
+
+for (const entry of SKILL_CATALOG) {
+  if (!CHECKED_SKILL_IDS.includes(entry.skill_type as (typeof CHECKED_SKILL_IDS)[number])) continue;
+  entry.generator = "checked";
+  entry.validator = "checked-solver";
+  entry.deterministic_oracle = true;
+  entry.enabled = true;
+}
 
 export function skillByType(skillType: string | null | undefined): SkillDefinition | null {
   if (!skillType) return null;

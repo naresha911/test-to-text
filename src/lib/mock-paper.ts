@@ -173,6 +173,7 @@ export function buildFromSourceUserPrompt(options: {
   index: number;
   total: number;
   audience?: MockPaperAudience;
+  hasImages?: boolean;
 }): string {
   const stripped = stripQuestionForPrompt(options.sourceQuestion);
   const payload = buildQuestionPromptPayload(stripped, {
@@ -181,6 +182,7 @@ export function buildFromSourceUserPrompt(options: {
       exam: options.audience?.exam ?? null,
       notes: options.audience?.notes ?? null,
     },
+    ...(options.hasImages ? { hasImages: true } : {}),
   });
 
   const extras: string[] = [];
@@ -210,7 +212,9 @@ export function buildFromSourceUserPrompt(options: {
     "Do NOT copy stems, passages, numbers, option wording, or distinctive phrasing — invent replacements.",
     "If OCR is garbled or incomplete, infer the intended skill and invent a correct new question.",
     "You may change sub-question counts for comprehension / assertion / similar multi-part types.",
-    "For diagram/figure questions, invent a new scenario and describe it in figures[].description (no image).",
+    options.hasImages
+      ? "You can see the source figure. Invent a new figure of the same skill and describe it in figures[].description. The answer must match the new figure."
+      : "For diagram/figure questions, invent a new scenario and describe it in figures[].description.",
     "Return a full Question JSON object with answers, hint, explanation, and difficulty.",
     "",
     ...buildLevelingGuidance({

@@ -39,6 +39,12 @@ export type MockGenerationState = {
   job_id?: string | null;
   /** Per-question stage checkpoints. The cursor remains a progress display. */
   items?: GenerationItem[];
+  /** Skill counts for a full mock. A topic drill uses one entry. */
+  blueprint?: { skill: string; count: number }[];
+  /** 0 matches the source level. 1 is one step harder inside the class ceiling. */
+  difficulty_step?: number;
+  /** Set when the mock practises one skill instead of copying a paper. */
+  drill_skill?: string | null;
 };
 
 export type DocumentMeta = {
@@ -187,6 +193,24 @@ export function parseMockGeneration(raw: unknown): MockGenerationState | null {
     pairs,
     job_id: typeof obj["job_id"] === "string" ? obj["job_id"] : null,
     items,
+    ...(Array.isArray(obj["blueprint"])
+      ? {
+          blueprint: obj["blueprint"].flatMap((entry) => {
+            if (!entry || typeof entry !== "object") return [];
+            const row = entry as Record<string, unknown>;
+            if (typeof row["skill"] !== "string" || typeof row["count"] !== "number") return [];
+            return [{ skill: row["skill"], count: row["count"] }];
+          }),
+        }
+      : {}),
+    ...(typeof obj["difficulty_step"] === "number" && Number.isFinite(obj["difficulty_step"])
+      ? { difficulty_step: obj["difficulty_step"] }
+      : {}),
+    ...(typeof obj["drill_skill"] === "string"
+      ? { drill_skill: obj["drill_skill"] }
+      : obj["drill_skill"] === null
+        ? { drill_skill: null }
+        : {}),
   };
 }
 

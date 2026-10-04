@@ -1,21 +1,18 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 
-import {
-  assistantTextFromChatBody,
-  chatCompletionBody,
-  completeChatWithFallback,
-  generationChatTargets,
-  omniroutersApiKey,
-  providerFailureMessage,
-} from "@/lib/generation/chat-provider";
+import { completeExamChat, type ExamImage } from "@/lib/generation/exam-chat";
+import { localCheckedSolution } from "@/lib/generation/hint-solve";
+import { buildSearchQuery } from "@/lib/generation/web-search";
+import { omniroutersApiKey } from "@/lib/generation/chat-provider";
 import {
   buildSolutionUserPrompt,
   questionHasAnswer,
   SOLUTION_SYSTEM_PROMPT,
   type SolutionAudience,
 } from "@/lib/question-context";
-import { type HintSolutionResult } from "@/lib/hint-solution";
+import { applyHintSolution, type HintSolutionResult } from "@/lib/hint-solution";
+import { readLocalImageDataUrl } from "@/lib/local-db";
 import { emptyQuestion, type Question } from "@/lib/question-schema";
 
 /** Prefer free OpenRouter routes; models[] lets OpenRouter fall back if one is down. */
@@ -30,6 +27,7 @@ const OptionSchema = z.object({
   key: z.string(),
   text: z.string(),
   is_correct: z.boolean().nullable().optional(),
+  image_path: z.string().nullable().optional(),
 });
 
 const QuestionInputSchema = z.object({
@@ -59,17 +57,20 @@ const QuestionInputSchema = z.object({
       z.object({
         description: z.string(),
         caption: z.string().nullable().optional(),
+        image_path: z.string().nullable().optional(),
       }),
     )
     .default([]),
   page: z.number().nullable().optional(),
   confidence: z.number().nullable().optional(),
   approved: z.boolean().optional(),
+  math_spec: z.record(z.string(), z.unknown()).nullable().optional(),
 });
 
 const InputSchema = z.object({
   question: QuestionInputSchema,
   parentPassage: z.string().max(20000).nullable().optional(),
+  parentImagePaths: z.array(z.string().max(500)).max(6).optional(),
   /** When true, overwrite existing hint and explanation. */
   force: z.boolean().optional().default(false),
   /** Replaces the generated user message. The fixed instructions are still sent. */
@@ -105,47 +106,36 @@ function extractJson(text: string): unknown {
   }
 }
 
-async function callChat(options: {
-  url: string;
-  headers: Record<string, string>;
-  model?: string | null;
-  models?: string[];
-  messages: { role: "system" | "user"; content: string }[];
-  label: string;
-}): Promise<string> {
-  const response = await fetch(options.url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-    body: JSON.stringify(
-      chatCompletionBody({
-        model: options.model,
-        models: options.models,
-        messages: options.messages,
-        maxTokens: 4000,
-        stream: false,
-      }),
-    ),
+function solutionAcceptable(text: string, question: Question): boolean {
+  const parsed = extractJson(text);
+  if (!parsed) return false;
+  const result = parseResult(parsed, question);
+  if (!result.hint && !result.explanation) return false;
+  return questionHasAnswer(applyHintSolution(question, result, true));
+}
+
+async function solutionImages(question: Question, parentPaths: string[]): Promise<ExamImage[]> {
+  const labeled: { path: string; label: string }[] = [];
+  question.figures.forEach((figure, index) => {
+    if (figure.image_path) {
+      labeled.push({
+        path: figure.image_path,
+        label: figure.caption?.trim() || figure.description.trim() || `Figure ${index + 1}`,
+      });
+    }
   });
-
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    const message = providerFailureMessage(body, response.status, options.label);
-    if (response.status === 429) {
-      throw new Error(`${options.label} is busy or rate limited. Wait a moment and try again.`);
-    }
-    if (response.status === 401) {
-      throw new Error(`${options.label} rejected the API key. Check the key in Settings.`);
-    }
-    if (response.status === 402 || response.status === 403) {
-      throw new Error(`AI_CREDITS: ${message}`);
-    }
-    throw new Error(message);
+  question.options.forEach((option) => {
+    if (option.image_path) labeled.push({ path: option.image_path, label: `Option ${option.key}` });
+  });
+  parentPaths.forEach((path, index) => {
+    labeled.push({ path, label: `Passage figure ${index + 1}` });
+  });
+  const images: ExamImage[] = [];
+  for (const item of labeled.slice(0, 6)) {
+    const dataUrl = await readLocalImageDataUrl(item.path);
+    if (dataUrl) images.push({ dataUrl, label: item.label });
   }
-
-  return assistantTextFromChatBody(await response.text());
+  return images;
 }
 
 function asQuestion(raw: z.infer<typeof QuestionInputSchema>): Question {
@@ -162,6 +152,7 @@ function asQuestion(raw: z.infer<typeof QuestionInputSchema>): Question {
       key: option.key,
       text: option.text,
       is_correct: option.is_correct ?? null,
+      image_path: option.image_path ?? null,
     })),
     blanks: raw.blanks ?? [],
     match_pairs: raw.match_pairs ?? [],
@@ -180,9 +171,49 @@ function asQuestion(raw: z.infer<typeof QuestionInputSchema>): Question {
     figures: (raw.figures ?? []).map((f) => ({
       description: f.description,
       caption: f.caption ?? null,
+      image_path: f.image_path ?? null,
     })),
     sub_questions: [],
+    math_spec: (raw.math_spec as Question["math_spec"]) ?? null,
   });
+}
+
+function checkedHintResult(
+  question: Question,
+  local: { hint: string; explanation: string; answerText: string },
+): HintSolutionResult {
+  const answerText = local.answerText;
+  const matchingKeys = question.options
+    .filter((option) => option.text.trim() === answerText)
+    .map((option) => option.key);
+  const markOptions = matchingKeys.length > 0;
+  const answerBoolean =
+    question.type === "true_false"
+      ? answerText.toLowerCase() === "true"
+        ? true
+        : answerText.toLowerCase() === "false"
+          ? false
+          : null
+      : null;
+  return {
+    hint: local.hint,
+    explanation: local.explanation,
+    answer_keys: markOptions ? matchingKeys : question.answer_keys,
+    answer_text: answerText,
+    answer_boolean: answerBoolean,
+    options: question.options.map((option) => ({
+      key: option.key,
+      text: option.text,
+      is_correct: markOptions ? matchingKeys.includes(option.key) : (option.is_correct ?? null),
+    })),
+    blanks:
+      question.type === "fill_blank"
+        ? question.blanks.length
+          ? question.blanks.map(() => answerText)
+          : [answerText]
+        : question.blanks,
+    match_pairs: question.match_pairs,
+  };
 }
 
 function parseResult(raw: unknown, source: Question): HintSolutionResult {
@@ -228,15 +259,6 @@ function parseResult(raw: unknown, source: Question): HintSolutionResult {
 export const generateHintSolution = createServerFn({ method: "POST" })
   .validator((input: unknown) => InputSchema.parse(input))
   .handler(async ({ data }): Promise<HintSolutionResult> => {
-    const omniroutersKey = omniroutersApiKey();
-    const openRouterKey = process.env["OPENROUTER_API_KEY"];
-    const lovableKey = process.env["LOVABLE_API_KEY"];
-    if (!omniroutersKey && !openRouterKey && !lovableKey) {
-      throw new Error(
-        "No AI key is configured for hints and solutions. Add OMNIROUTERS_API_KEY, OPENROUTER_API_KEY, or LOVABLE_API_KEY in .env.local (or Lovable project secrets), then restart the server.",
-      );
-    }
-
     const question = asQuestion(data.question);
     if (
       !data.force &&
@@ -260,6 +282,21 @@ export const generateHintSolution = createServerFn({ method: "POST" })
       };
     }
 
+    const local = localCheckedSolution({
+      math_spec: question.math_spec ?? null,
+      stem: question.stem,
+    });
+    if (local) return checkedHintResult(question, local);
+
+    const omniroutersKey = omniroutersApiKey();
+    const openRouterKey = process.env["OPENROUTER_API_KEY"];
+    const lovableKey = process.env["LOVABLE_API_KEY"];
+    if (!omniroutersKey && !openRouterKey && !lovableKey) {
+      throw new Error(
+        "No AI key is configured for hints and solutions. Add OMNIROUTERS_API_KEY, OPENROUTER_API_KEY, or LOVABLE_API_KEY in .env.local (or Lovable project secrets), then restart the server.",
+      );
+    }
+
     const audience: SolutionAudience | undefined = data.audience
       ? {
           subject: data.audience.subject ?? null,
@@ -267,12 +304,14 @@ export const generateHintSolution = createServerFn({ method: "POST" })
           notes: data.audience.notes ?? null,
         }
       : undefined;
+    const images = await solutionImages(question, data.parentImagePaths ?? []);
     const userContent =
       data.userPrompt?.trim() ||
       buildSolutionUserPrompt(question, {
         parentPassage: data.parentPassage ?? null,
         ...(audience ? { audience } : {}),
         force: data.force,
+        ...(images.length ? { hasImages: true } : {}),
       });
 
     const messages = [
@@ -280,37 +319,27 @@ export const generateHintSolution = createServerFn({ method: "POST" })
       { role: "user" as const, content: userContent },
     ];
 
-    const text = await completeChatWithFallback(
-      generationChatTargets({
-        omniroutersKey,
-        openRouterKey,
-        lovableKey,
-        requestedModel: data.model,
-        omniroutersModel: process.env["OMNIROUTERS_MODEL"],
-        omniroutersBaseUrl: process.env["OMNIROUTERS_BASE_URL"],
-        openRouterModel: data.model?.trim() || DEFAULT_SOLUTION_MODEL,
-        openRouterFallbacks: SOLUTION_MODEL_FALLBACKS,
-        lovableModel: "google/gemini-3.8-flash",
+    const chat = await completeExamChat({
+      messages,
+      images,
+      searchQuery: buildSearchQuery({
+        stem: question.stem,
+        subject: audience?.subject,
+        exam: audience?.exam,
       }),
-      (target) =>
-        callChat({
-          url: target.url,
-          headers: target.headers,
-          model: target.model,
-          ...(target.models ? { models: target.models } : {}),
-          messages,
-          label: target.label,
-        }),
-      "No AI key is configured for hints and solutions. Add OMNIROUTERS_API_KEY, OPENROUTER_API_KEY, or LOVABLE_API_KEY in .env.local (or Lovable project secrets), then restart the server.",
-    );
+      accept: (text) => solutionAcceptable(text, question),
+    });
 
-    const parsed = extractJson(text);
+    const parsed = extractJson(chat.text);
     if (!parsed) {
       throw new Error("The solution model returned unreadable output. Try again.");
     }
     const result = parseResult(parsed, question);
     if (!result.hint && !result.explanation) {
       throw new Error("The solution model did not return a hint or solution. Try again.");
+    }
+    if (!chat.accepted) {
+      throw new Error("No right answer was found. Edit the AI prompt and regenerate.");
     }
     return result;
   });

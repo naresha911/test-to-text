@@ -9,6 +9,12 @@ import {
   generationChatTargets,
   omniroutersApiKey,
 } from "@/lib/generation/chat-provider";
+import { completeExamChat, type ExamImage } from "@/lib/generation/exam-chat";
+import { detectSkill } from "@/lib/generation/skill-detect";
+import { skillAuthorPlan } from "@/lib/generation/skills/author-plan";
+import { skillAuthorPrompt, skillDifficultyGuidance } from "@/lib/generation/skill-prompts";
+import { buildSearchQuery } from "@/lib/generation/web-search";
+import { skillByType } from "@/lib/question-taxonomy";
 import {
   emptyGenerationItem,
   parseGenerationItem,
@@ -23,6 +29,7 @@ import {
   buildFromInstructionsUserPrompt,
   buildFromSourceUserPrompt,
   finalizeMockQuestion,
+  parseGradeFromStandardName,
   type MockPaperAudience,
 } from "@/lib/mock-paper";
 import { emptyQuestion, type Question } from "@/lib/question-schema";
@@ -146,9 +153,30 @@ RULES
 2. Always include hint and explanation on answerable items (each sub_question for comprehension).
 3. Math/chemistry/logic notation must use LaTeX: $...$ or $$...$$.
 4. COMPREHENSION: when the source is comprehension (or you choose that type), you MUST set type to "comprehension", write a NEW non-empty "passage", and include one or more "sub_questions" based on that passage. Sub-question count may differ. Never return sub_questions alone without a passage. Passage reading level must fit the student standard.
-5. Diagram questions: invent a new figure; put all visual detail in figures[].description (no image bytes).
+5. Diagram questions: invent a new figure and describe it in figures[].description. When source images are attached, look at them and invent a different figure of the same kind. Do not copy the source image onto the new question.
 6. Prefer the same broad type as the source when generating from a source question, unless the source type is unknown or broken.
 7. Preserve learning intent (same concept family) while changing surface details.`;
+
+async function questionImages(question: Question): Promise<ExamImage[]> {
+  const labeled: { path: string; label: string }[] = [];
+  question.figures.forEach((figure, index) => {
+    if (figure.image_path) {
+      labeled.push({
+        path: figure.image_path,
+        label: figure.caption?.trim() || figure.description.trim() || `Figure ${index + 1}`,
+      });
+    }
+  });
+  question.options.forEach((option) => {
+    if (option.image_path) labeled.push({ path: option.image_path, label: `Option ${option.key}` });
+  });
+  const images: ExamImage[] = [];
+  for (const item of labeled.slice(0, 6)) {
+    const dataUrl = await readLocalImageDataUrl(item.path);
+    if (dataUrl) images.push({ dataUrl, label: item.label });
+  }
+  return images;
+}
 
 function extractJson(text: string): unknown {
   const cleaned = text
@@ -415,6 +443,8 @@ async function executeMockGeneration(
       subject: audience?.subject ?? null,
       exam: audience?.exam ?? null,
     },
+    grade: parseGradeFromStandardName(audience?.standard ?? null),
+    difficultyStep: generationState?.difficulty_step ?? 0,
     existingQuestion:
       data.existingQuestion && typeof data.existingQuestion === "object"
         ? (data.existingQuestion as Question)
@@ -436,6 +466,26 @@ async function executeMockGeneration(
       let userContent: string;
       let sourceType: Question["type"] | null = null;
       let sourceDifficulty: Question["difficulty"] | null = null;
+      const skill = detectSkill({
+        stem: sourceQuestion?.stem,
+        instructions: data.instructions,
+        type: sourceQuestion?.type,
+        figureCount: sourceQuestion?.figures.length ?? 0,
+        optionImageCount:
+          sourceQuestion?.options.filter((option) => option.image_path).length ?? 0,
+        optionTexts: sourceQuestion?.options.map((option) => option.text) ?? [],
+        passage: sourceQuestion?.passage,
+      });
+      const grade = parseGradeFromStandardName(audience?.standard ?? null);
+      const difficultyStep = generationState?.difficulty_step ?? 0;
+      const plan = skillAuthorPlan({ skill, grade, difficultyStep, hasImages: false });
+      const wantsImages = plan?.requiresImages === true || skillByType(skill)?.visual === true;
+      const images = wantsImages && sourceQuestion ? await questionImages(sourceQuestion) : [];
+      const skillNote =
+        plan?.systemAddendum ??
+        [skillAuthorPrompt(skill), skillDifficultyGuidance(skill, grade, difficultyStep)]
+          .filter(Boolean)
+          .join("\n");
       if (data.mode === "from_source") {
         if (!sourceQuestion)
           throw new Error("Source question is required for from_source generation.");
@@ -455,6 +505,7 @@ async function executeMockGeneration(
           index: data.index,
           total: data.total,
           ...(audienceForPrompt ? { audience: audienceForPrompt } : {}),
+          ...(images.length ? { hasImages: true } : {}),
         });
       } else {
         const instructions = data.instructions?.trim();
@@ -468,11 +519,32 @@ async function executeMockGeneration(
           ...(audience ? { audience } : {}),
         });
       }
-      const text = await completeChat([
-        { role: "system", content: SYSTEM_PROMPT },
-        { role: "user", content: userContent },
-      ]);
-      const parsed = extractJson(text);
+      const chat = await completeExamChat({
+        messages: [
+          { role: "system", content: skillNote ? `${SYSTEM_PROMPT}\n\n${skillNote}` : SYSTEM_PROMPT },
+          { role: "user", content: userContent },
+        ],
+        images,
+        searchQuery: buildSearchQuery({
+          stem: sourceQuestion?.stem ?? data.instructions,
+          subject: audience?.subject,
+          exam: audience?.exam,
+        }),
+        accept: (text) => {
+          const parsed = extractJson(text);
+          if (!parsed || typeof parsed !== "object") return false;
+          const stem = (parsed as { stem?: unknown }).stem;
+          const passage = (parsed as { passage?: unknown }).passage;
+          return (
+            (typeof stem === "string" && stem.trim().length > 0) ||
+            (typeof passage === "string" && passage.trim().length > 0)
+          );
+        },
+      });
+      if (!chat.accepted) {
+        throw new Error("The mock model did not return a usable question stem. Try again.");
+      }
+      const parsed = extractJson(chat.text);
       if (!parsed) throw new Error("The mock model returned unreadable output. Try again.");
       const question = finalizeMockQuestion(parsed, {
         number,

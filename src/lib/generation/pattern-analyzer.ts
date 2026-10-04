@@ -1,13 +1,9 @@
 import type { Difficulty } from "@/lib/document-types";
 import type { Question, QuestionType } from "@/lib/question-schema";
+import { detectSkill } from "@/lib/generation/skill-detect";
 import { isAutoGeneratable, skillByType, type SkillFamily } from "@/lib/question-taxonomy";
 
 import type { PatternAnalysis, StructuralConstraints } from "@/lib/generation/pattern-types";
-
-const MIRROR = /\bmirror(?:\s|-)?image\b|\bwater\s+image\b|\breflection of the figure\b/i;
-const SERIES = /\bnumber\s+series\b|\bfind the next\b|\bwhat comes next\b|\bmissing number\b/i;
-const GRAMMAR =
-  /\bgrammar\b|\btenses?\b|\bprepositions?\b|\barticles?\b|\bactive and passive\b|\breported speech\b|\bparts of speech\b|\bsynonyms?\b|\bantonyms?\b|\bsubject[- ]verb\b/i;
 
 function focusFromText(text: string): string {
   if (/\btenses?\b/i.test(text)) return "verb tense";
@@ -18,11 +14,6 @@ function focusFromText(text: string): string {
   if (/\bsynonyms?\b|\bantonyms?\b/i.test(text)) return "synonyms and antonyms";
   if (/\bparts of speech\b/i.test(text)) return "parts of speech";
   return "grammar usage";
-}
-
-function looksLikeNumberSeries(text: string): boolean {
-  const numbers = text.match(/-?\d+(?:\.\d+)?/g);
-  return (numbers?.length ?? 0) >= 4 && /[,;]|…|\.\.\./.test(text);
 }
 
 function constraintsFrom(question: Question | null): StructuralConstraints {
@@ -52,15 +43,31 @@ export function analyzePattern(input: {
   const text = [instructions, source?.stem ?? "", source?.instructions ?? ""].join("\n");
   const base = constraintsFrom(source);
 
-  let skillType = "unsupported";
+  let skillType = detectSkill({
+    stem: source?.stem,
+    instructions,
+    type: source?.type,
+    figureCount: source?.figures.length ?? 0,
+    optionImageCount: source?.options.filter((option) => option.image_path).length ?? 0,
+    optionTexts: source?.options.map((option) => option.text) ?? [],
+    passage: source?.passage,
+  });
   let family: SkillFamily = "textual";
   let type: QuestionType = source?.type ?? "mcq";
   let intent = "Invent an original practice question.";
   let pattern: Record<string, unknown> = {};
-  let confidence = 0.4;
+  let confidence = skillType === "unsupported" ? 0.4 : 0.7;
+  const known = skillByType(skillType);
+  if (known) {
+    family = known.family;
+    if (!source?.type || source.type === "unknown") type = known.render_type;
+    if (known.visual) {
+      base.has_figure = true;
+      base.has_option_images = base.has_option_images || known.skill_type === "mirror_image";
+    }
+  }
 
-  if (MIRROR.test(text) || (source?.figures.length && /\bmirror\b/i.test(text))) {
-    skillType = "mirror_image";
+  if (skillType === "mirror_image") {
     family = "intelligence";
     type = "mcq";
     intent = "Choose the exact vertical mirror image of a new asymmetric figure.";
@@ -69,8 +76,7 @@ export function analyzePattern(input: {
     base.has_option_images = true;
     base.option_count = 4;
     confidence = 0.8;
-  } else if (SERIES.test(text) || looksLikeNumberSeries(source?.stem ?? "")) {
-    skillType = "number_series";
+  } else if (skillType === "number_series") {
     family = "math";
     type = "mcq";
     intent = "Find the next term of a number series from a typed rule.";
@@ -78,11 +84,7 @@ export function analyzePattern(input: {
     base.has_math = true;
     base.option_count = 4;
     confidence = 0.85;
-  } else if (
-    GRAMMAR.test(text) ||
-    (source?.type === "mcq" && !source.figures.length && GRAMMAR.test(source.tags.join(" ")))
-  ) {
-    skillType = "grammar";
+  } else if (skillType === "grammar") {
     family = "textual";
     type = "mcq";
     const focus = focusFromText(text);

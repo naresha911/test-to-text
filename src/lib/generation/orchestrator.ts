@@ -6,6 +6,11 @@ import {
   withStage,
   type GenerationItem,
 } from "@/lib/generation/job-types";
+import {
+  generateCheckedQuestion,
+  isCheckedSkill,
+  validateCheckedQuestion,
+} from "@/lib/generation/checked/registry";
 import { generateNumberSeriesQuestion } from "@/lib/generation/math/generator";
 import { validateNumberSeriesQuestion } from "@/lib/generation/math/validator";
 import { analyzePattern } from "@/lib/generation/pattern-analyzer";
@@ -38,6 +43,8 @@ export type RunGenerationInput = {
   instructions?: string | null;
   number: string;
   audience?: GenerationAudience;
+  grade?: number | null;
+  difficultyStep?: number;
   existingQuestion?: Question | null;
   assetStore: AssetStore;
   callGrammarModel?: (spec: ReturnType<typeof buildGenerationSpec>) => Promise<unknown>;
@@ -107,6 +114,18 @@ export async function runGenerationItem(input: RunGenerationInput): Promise<{
     const questionId = item.candidate_question_id ?? crypto.randomUUID();
     item = { ...item, candidate_question_id: questionId };
     const seedKey = `${item.idempotency_key}:${attempt}`;
+    if (isCheckedSkill(analysis.skill_type)) {
+      return generateCheckedQuestion({
+        skill: analysis.skill_type,
+        seedKey,
+        questionId,
+        number: input.number,
+        grade: input.grade ?? null,
+        difficultyStep: input.difficultyStep ?? 0,
+        sourceQuestionId: input.source?.source_question_id ?? null,
+        jobId: input.jobId,
+      });
+    }
     if (analysis.skill_type === "number_series") {
       const generated = generateNumberSeriesQuestion({
         seedKey,
@@ -199,6 +218,7 @@ export async function runGenerationItem(input: RunGenerationInput): Promise<{
   };
 
   const validate = (candidate: Question): ValidationResult => {
+    if (isCheckedSkill(analysis.skill_type)) return validateCheckedQuestion(candidate, input.now);
     if (analysis.skill_type === "number_series")
       return validateNumberSeriesQuestion(candidate, input.now);
     if (analysis.skill_type === "mirror_image") {
