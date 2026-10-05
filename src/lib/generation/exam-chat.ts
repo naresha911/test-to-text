@@ -1,6 +1,8 @@
 import {
   assistantTextFromChatBody,
   chatCompletionBody,
+  commandCodeApiKey,
+  commandCodeChatTargets,
   DEFAULT_OMNIROUTERS_BASE_URL,
   generationChatTargets,
   omniroutersApiKey,
@@ -13,6 +15,7 @@ import {
   type WebSnippet,
 } from "@/lib/generation/web-search";
 import {
+  COMMAND_CODE_VISION_MODELS,
   OMNI_VISION_MODELS,
   OPENROUTER_VISION_MODELS,
   TEXT_EXAM_FALLBACKS,
@@ -69,6 +72,8 @@ export function examChatTargets(input: {
   omniroutersKey?: string | null;
   openRouterKey?: string | null;
   lovableKey?: string | null;
+  commandCodeKey?: string | null | undefined;
+  commandCodeBaseUrl?: string | null | undefined;
   omniroutersBaseUrl?: string | null;
   omniroutersModel?: string | null;
 }): GenerationChatTarget[] {
@@ -77,6 +82,8 @@ export function examChatTargets(input: {
       omniroutersKey: input.omniroutersKey,
       openRouterKey: input.openRouterKey,
       lovableKey: input.lovableKey,
+      commandCodeKey: input.commandCodeKey,
+      commandCodeBaseUrl: input.commandCodeBaseUrl,
       omniroutersModel: input.omniroutersModel,
       omniroutersBaseUrl: input.omniroutersBaseUrl,
       openRouterModel: TEXT_EXAM_MODEL,
@@ -86,6 +93,13 @@ export function examChatTargets(input: {
   }
 
   const targets: GenerationChatTarget[] = [];
+  targets.push(
+    ...commandCodeChatTargets({
+      key: input.commandCodeKey,
+      baseUrl: input.commandCodeBaseUrl,
+      models: COMMAND_CODE_VISION_MODELS,
+    }),
+  );
   const omniKey = input.omniroutersKey?.trim();
   if (omniKey) {
     const base = (input.omniroutersBaseUrl?.trim() || DEFAULT_OMNIROUTERS_BASE_URL).replace(
@@ -168,6 +182,8 @@ function defaultDeps(): ExamChatDeps {
         omniroutersKey: omniroutersApiKey(),
         openRouterKey: process.env["OPENROUTER_API_KEY"],
         lovableKey: process.env["LOVABLE_API_KEY"],
+        commandCodeKey: commandCodeApiKey(),
+        commandCodeBaseUrl: process.env["COMMANDCODE_BASE_URL"],
         omniroutersBaseUrl: process.env["OMNIROUTERS_BASE_URL"],
         omniroutersModel: process.env["OMNIROUTERS_MODEL"],
       }),

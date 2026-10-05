@@ -3,13 +3,17 @@ import { describe, expect, test } from "bun:test";
 import {
   assistantTextFromChatBody,
   chatCompletionBody,
+  commandCodeApiKey,
+  commandCodeChatTargets,
   completeChatWithFallback,
+  DEFAULT_COMMANDCODE_BASE_URL,
   generationChatTargets,
   OMNIROUTERS_AUTO_MODEL,
   omniroutersApiKey,
   providerFailureMessage,
   resolveOmniroutersModel,
 } from "@/lib/generation/chat-provider";
+import { COMMAND_CODE_TEXT_MODELS } from "@/lib/generation/vision-models";
 
 const shared = {
   openRouterModel: "google/gemma-4-26b-a4b-it:free",
@@ -34,6 +38,42 @@ describe("generation chat providers", () => {
     expect(targets[0]?.model).toBe(OMNIROUTERS_AUTO_MODEL);
     expect(targets[0]?.headers.Authorization).toBe("Bearer omni-key");
     expect(targets[0]?.models).toBeUndefined();
+  });
+
+  test("Command Code is preferred and leads with the free models when a key is set", () => {
+    const targets = generationChatTargets({
+      ...shared,
+      commandCodeKey: "cmd-key",
+      openRouterKey: "or-key",
+    });
+    expect(targets[0]?.provider).toBe("commandcode");
+    expect(targets[0]?.url).toBe(`${DEFAULT_COMMANDCODE_BASE_URL}/chat/completions`);
+    expect(targets[0]?.headers["Authorization"]).toBe("Bearer cmd-key");
+    expect(targets.filter((target) => target.provider === "commandcode").map((t) => t.model)).toEqual(
+      [...COMMAND_CODE_TEXT_MODELS],
+    );
+  });
+
+  test("no Command Code target appears without a key", () => {
+    const targets = generationChatTargets({ ...shared, openRouterKey: "or-key" });
+    expect(targets.some((target) => target.provider === "commandcode")).toBe(false);
+  });
+
+  test("a Command Code base url is trimmed to the endpoint root", () => {
+    const [target] = commandCodeChatTargets({
+      key: "k",
+      baseUrl: "http://127.0.0.1:9000/v1/",
+      models: ["a-model"],
+    });
+    expect(target?.url).toBe("http://127.0.0.1:9000/v1/chat/completions");
+    expect(target?.model).toBe("a-model");
+  });
+
+  test("either env name supplies the Command Code key", () => {
+    expect(commandCodeApiKey({ CMD_API_KEY: " from-alias " })).toBe("from-alias");
+    expect(commandCodeApiKey({ COMMANDCODE_API_KEY: "official", CMD_API_KEY: "alias" })).toBe(
+      "official",
+    );
   });
 
   test("OpenRouter-only model ids stay on the OpenRouter fallback", () => {

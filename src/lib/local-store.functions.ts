@@ -7,8 +7,7 @@ import {
   type DocumentKind,
   type MockGenerationState,
 } from "@/lib/document-types";
-import { blueprintFromQuestions, drillBlueprint, expandBlueprint } from "@/lib/generation/blueprint";
-import { detectSkill } from "@/lib/generation/skill-detect";
+import { drillBlueprint } from "@/lib/generation/blueprint";
 import { skillAuthorPrompt } from "@/lib/generation/skill-prompts";
 import { skillByType } from "@/lib/question-taxonomy";
 import { GENERATION_ITEM_STATUSES, GENERATION_STAGES } from "@/lib/generation/job-types";
@@ -64,7 +63,8 @@ export const GenerationSchema = z.object({
   job_id: z.string().nullable().optional(),
   items: z.array(GenerationItemSchema).optional(),
   blueprint: z.array(z.object({ skill: z.string(), count: z.number() })).optional(),
-  difficulty_step: z.number().int().min(0).max(2).optional(),
+  strategy: z.enum(["rewrite", "write_new"]).optional(),
+  difficulty_step: z.number().int().min(-1).max(2).optional(),
   drill_skill: z.string().max(80).nullable().optional(),
 });
 
@@ -245,15 +245,8 @@ export const createAiMockFromSource = createServerFn({ method: "POST" })
     z
       .object({
         sourceId: z.string().uuid(),
-        slots: z
-          .array(
-            z.object({
-              skill: z.string().min(1).max(80),
-              count: z.number().int().min(1).max(80),
-            }),
-          )
-          .optional(),
-        difficultyStep: z.union([z.literal(0), z.literal(1)]).optional(),
+        strategy: z.enum(["rewrite", "write_new"]),
+        difficultyStep: z.number().int().min(-1).max(1).optional(),
         authorInstructions: z.string().max(4000).optional(),
       })
       .parse(input),
@@ -268,17 +261,8 @@ export const createAiMockFromSource = createServerFn({ method: "POST" })
       throw new Error("That paper has no questions yet. Extract questions first.");
     }
 
-    const detectFields = (question: Question) => ({
-      number: question.number,
-      stem: question.stem,
-      instructions: question.instructions,
-      type: question.type,
-      figureCount: question.figures.length,
-      optionImageCount: question.options.filter((option) => option.image_path).length,
-      optionTexts: question.options.map((option) => option.text),
-      passage: question.passage,
-    });
-
+    // One output question per top-level source question, in order. Duplicate
+    // printed numbers count once; nested sub-questions belong to their parent.
     const seenNumbers = new Set<string>();
     const sourceIds = loaded.questions.flatMap((question) => {
       const number = question.number?.trim() ?? "";
@@ -286,45 +270,16 @@ export const createAiMockFromSource = createServerFn({ method: "POST" })
       if (number) seenNumbers.add(number);
       return [question.id];
     });
-    const paper = blueprintFromQuestions(loaded.questions.map(detectFields));
-
-    let generationIds = sourceIds;
-    let blueprint = paper.slots.map((slot) => ({ skill: slot.skill, count: slot.count }));
-    let difficultyStep: 0 | 1 | undefined;
-    if (data.slots) {
-      const exemplars: Record<string, string> = {};
-      const seenExemplarNumbers = new Set<string>();
-      for (const question of loaded.questions) {
-        const number = question.number?.trim() ?? "";
-        if (number && seenExemplarNumbers.has(number)) continue;
-        if (number) seenExemplarNumbers.add(number);
-        const skill = detectSkill(detectFields(question));
-        if (skill === "unsupported" || exemplars[skill]) continue;
-        exemplars[skill] = question.id;
-      }
-      const step = data.difficultyStep ?? 0;
-      generationIds = expandBlueprint(
-        data.slots.map((slot) => ({
-          skill: slot.skill,
-          count: slot.count,
-          grade: null,
-          difficultyStep: step,
-        })),
-        exemplars,
-      );
-      blueprint = data.slots.map((slot) => ({ skill: slot.skill, count: slot.count }));
-      difficultyStep = step;
-    }
 
     const authorInstructions = data.authorInstructions?.trim() || null;
     const generation = emptyMockGeneration({
       mode: "from_source",
       status: "pending",
-      source_question_ids: generationIds,
+      source_question_ids: sourceIds,
       cursor: 0,
-      blueprint,
+      strategy: data.strategy,
       instructions: authorInstructions,
-      ...(difficultyStep != null ? { difficulty_step: difficultyStep } : {}),
+      difficulty_step: data.difficultyStep ?? 0,
     });
 
     const created = await createDocument("ai_mock", {

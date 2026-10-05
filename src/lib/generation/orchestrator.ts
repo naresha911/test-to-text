@@ -1,4 +1,5 @@
 import type { AssetStore } from "@/lib/assets/types";
+import type { MockStrategy } from "@/lib/document-types";
 import { buildGenerationSpec, type GenerationAudience } from "@/lib/generation/generation-spec";
 import {
   emptyGenerationItem,
@@ -43,6 +44,8 @@ export type RunGenerationInput = {
   instructions?: string | null;
   /** Free-text notes that must shape every equivalent question. */
   authorInstructions?: string | null;
+  /** rewrite forces the model path so the source is reworded, not re-solved. */
+  strategy?: MockStrategy;
   number: string;
   audience?: GenerationAudience;
   grade?: number | null;
@@ -102,6 +105,7 @@ export async function runGenerationItem(input: RunGenerationInput): Promise<{
 
   const skill = skillByType(analysis.skill_type);
   const authorNotes = input.authorInstructions?.trim() ?? "";
+  const rewrite = input.strategy === "rewrite";
   const spec = buildGenerationSpec(analysis, {
     sourceQuestionId: input.source?.source_question_id ?? null,
     ...(input.audience ? { audience: input.audience } : {}),
@@ -117,7 +121,7 @@ export async function runGenerationItem(input: RunGenerationInput): Promise<{
     const questionId = item.candidate_question_id ?? crypto.randomUUID();
     item = { ...item, candidate_question_id: questionId };
     const seedKey = `${item.idempotency_key}:${attempt}`;
-    if (isCheckedSkill(analysis.skill_type) && !authorNotes) {
+    if (isCheckedSkill(analysis.skill_type) && !authorNotes && !rewrite) {
       return generateCheckedQuestion({
         skill: analysis.skill_type,
         seedKey,
@@ -129,7 +133,7 @@ export async function runGenerationItem(input: RunGenerationInput): Promise<{
         jobId: input.jobId,
       });
     }
-    if (analysis.skill_type === "number_series" && !authorNotes) {
+    if (analysis.skill_type === "number_series" && !authorNotes && !rewrite) {
       const generated = generateNumberSeriesQuestion({
         seedKey,
         questionId,
@@ -139,7 +143,7 @@ export async function runGenerationItem(input: RunGenerationInput): Promise<{
       });
       return generated.question;
     }
-    if (analysis.skill_type === "mirror_image") {
+    if (analysis.skill_type === "mirror_image" && !rewrite) {
       if (
         input.describeSourceFigure &&
         sourceQuestion?.figures.some((figure) => figure.image_path)
@@ -182,7 +186,7 @@ export async function runGenerationItem(input: RunGenerationInput): Promise<{
         idempotencyKey: item.idempotency_key,
       });
     }
-    if (analysis.skill_type === "grammar") {
+    if (analysis.skill_type === "grammar" && !rewrite) {
       if (!input.callGrammarModel) throw new Error("Grammar generation needs a model call.");
       const raw = await input.callGrammarModel(spec);
       const parsed = normalizeQuestion(raw, 0);
@@ -221,6 +225,21 @@ export async function runGenerationItem(input: RunGenerationInput): Promise<{
   };
 
   const validate = (candidate: Question): ValidationResult => {
+    if (rewrite) {
+      return {
+        status: "needs_review",
+        checks: [
+          {
+            name: "rewrite",
+            status: "needs_review",
+            details: "A reworded question has no automatic solver, so a person needs to review it.",
+          },
+        ],
+        errors: [],
+        validator_version: "slice-1",
+        created_at: input.now ?? new Date().toISOString(),
+      };
+    }
     if (
       authorNotes &&
       (isCheckedSkill(analysis.skill_type) || analysis.skill_type === "number_series")

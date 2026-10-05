@@ -5,6 +5,7 @@ import { createLocalImageAssetStore } from "@/lib/assets/store";
 import { parseMockGeneration, type MockGenerationState } from "@/lib/document-types";
 import {
   chatCompletionBody,
+  commandCodeApiKey,
   completeChatWithFallback,
   generationChatTargets,
   omniroutersApiKey,
@@ -102,7 +103,7 @@ const InputSchema = z.object({
   sourceQuestion: QuestionInputSchema.optional(),
   instructions: z.string().max(8000).nullable().optional(),
   index: z.number().int().min(0),
-  total: z.number().int().min(1).max(80),
+  total: z.number().int().min(1),
   number: z.string().max(40).optional(),
   sourceQuestionId: z.string().nullable().optional(),
   previousStems: z.array(z.string().max(400)).max(12).optional(),
@@ -113,6 +114,19 @@ const InputSchema = z.object({
       topic_id: z.number().int().nullable().optional(),
       standard_id: z.number().int().nullable().optional(),
       stream_id: z.number().int().nullable().optional(),
+    })
+    .optional(),
+  strategy: z.enum(["rewrite", "write_new"]).optional(),
+  catalogOptions: z
+    .object({
+      subjects: z
+        .array(z.object({ id: z.number().int(), name: z.string().min(1).max(200) }))
+        .max(200)
+        .optional(),
+      topics: z
+        .array(z.object({ id: z.number().int(), name: z.string().min(1).max(300) }))
+        .max(500)
+        .optional(),
     })
     .optional(),
   model: z.string().min(2).max(120).optional(),
@@ -354,6 +368,18 @@ function asQuestion(raw: unknown): Question {
 
 const LOVABLE_MOCK_MODEL = "google/gemini-3.8-flash";
 
+/** Resolve a model-returned catalog name to its id (exact, case-insensitive). */
+function matchCatalogId(
+  options: { id: number; name: string }[] | undefined,
+  value: unknown,
+): number | null {
+  if (!options?.length || typeof value !== "string") return null;
+  const needle = value.trim().toLowerCase();
+  if (!needle) return null;
+  const hit = options.find((option) => option.name.trim().toLowerCase() === needle);
+  return hit?.id ?? null;
+}
+
 async function executeMockGeneration(
   data: z.infer<typeof InputSchema>,
 ): Promise<{ question: Question; item: GenerationItem; questions_rev: number }> {
@@ -379,6 +405,25 @@ async function executeMockGeneration(
   }
   const sourceQuestion = data.mode === "from_source" ? asQuestion(data.sourceQuestion) : null;
   const jobId = data.jobId ?? data.documentId;
+  const strategy: "rewrite" | "write_new" = data.strategy ?? "write_new";
+  // Metadata inheritance: reuse the source/document ids and ask the model to fill only gaps.
+  const inheritedSubjectId = data.catalog?.subject_id ?? null;
+  const inheritedTopicId = data.catalog?.topic_id ?? null;
+  const needsSubjectFill =
+    inheritedSubjectId == null && (data.catalogOptions?.subjects?.length ?? 0) > 0;
+  const needsTopicFill =
+    inheritedTopicId == null && (data.catalogOptions?.topics?.length ?? 0) > 0;
+  const metadataCatalog =
+    needsSubjectFill || needsTopicFill
+      ? {
+          ...(needsSubjectFill
+            ? { subjects: data.catalogOptions?.subjects?.map((entry) => entry.name) ?? [] }
+            : {}),
+          ...(needsTopicFill
+            ? { topics: data.catalogOptions?.topics?.map((entry) => entry.name) ?? [] }
+            : {}),
+        }
+      : undefined;
   const item =
     parseGenerationItem(data.item) ??
     emptyGenerationItem({
@@ -394,6 +439,8 @@ async function executeMockGeneration(
       omniroutersKey,
       openRouterKey,
       lovableKey,
+      commandCodeKey: commandCodeApiKey(),
+      commandCodeBaseUrl: process.env["COMMANDCODE_BASE_URL"],
       requestedModel: data.model,
       omniroutersModel: process.env["OMNIROUTERS_MODEL"],
       omniroutersBaseUrl: process.env["OMNIROUTERS_BASE_URL"],
@@ -412,7 +459,7 @@ async function executeMockGeneration(
           messages,
           label: target.label,
         }),
-      "No AI key is configured for mock papers. Add OMNIROUTERS_API_KEY, OPENROUTER_API_KEY, or LOVABLE_API_KEY in .env.local (or Lovable project secrets), then restart the server.",
+      "No AI key is configured for mock papers. Add COMMANDCODE_API_KEY, OMNIROUTERS_API_KEY, OPENROUTER_API_KEY, or LOVABLE_API_KEY in .env.local (or Lovable project secrets), then restart the server.",
     );
   }
 
@@ -442,6 +489,7 @@ async function executeMockGeneration(
           : null,
     instructions: data.mode === "from_instructions" ? (data.instructions ?? null) : null,
     authorInstructions,
+    strategy,
     number,
     audience: {
       standard: audience?.standard ?? null,
@@ -512,6 +560,8 @@ async function executeMockGeneration(
           ...(audienceForPrompt ? { audience: audienceForPrompt } : {}),
           ...(images.length ? { hasImages: true } : {}),
           authorInstructions,
+          strategy,
+          ...(metadataCatalog ? { metadataCatalog } : {}),
         });
       } else {
         const instructions = data.instructions?.trim();
@@ -558,22 +608,29 @@ async function executeMockGeneration(
       }
       const parsed = extractJson(chat.text);
       if (!parsed) throw new Error("The mock model returned unreadable output. Try again.");
+      const rawMeta = parsed as Record<string, unknown>;
+      const resolvedSubjectId =
+        inheritedSubjectId ?? matchCatalogId(data.catalogOptions?.subjects, rawMeta["subject"]);
+      const resolvedTopicId =
+        inheritedTopicId ?? matchCatalogId(data.catalogOptions?.topics, rawMeta["topic"]);
+      const catalog = data.catalog
+        ? {
+            subject_id: resolvedSubjectId,
+            topic_id: resolvedTopicId,
+            standard_id: data.catalog.standard_id ?? null,
+            stream_id: data.catalog.stream_id ?? null,
+          }
+        : resolvedSubjectId != null || resolvedTopicId != null
+          ? { subject_id: resolvedSubjectId, topic_id: resolvedTopicId }
+          : null;
       const question = finalizeMockQuestion(parsed, {
         number,
         sourceQuestionId: data.sourceQuestionId ?? null,
         generationJobId: jobId,
         sourceType,
         sourceDifficulty,
-        ...(data.catalog
-          ? {
-              catalog: {
-                subject_id: data.catalog.subject_id ?? null,
-                topic_id: data.catalog.topic_id ?? null,
-                standard_id: data.catalog.standard_id ?? null,
-                stream_id: data.catalog.stream_id ?? null,
-              },
-            }
-          : {}),
+        strategy,
+        ...(catalog ? { catalog } : {}),
       });
       if (!question.stem.trim() && !question.passage?.trim() && !question.assertion?.trim()) {
         throw new Error("The mock model did not return a usable question stem. Try again.");
@@ -718,6 +775,7 @@ export const regenerateMockQuestion = createServerFn({ method: "POST" })
       mode: generation.mode,
       ...(source ? { sourceQuestion: source.question } : {}),
       instructions: generation.instructions,
+      ...(generation.strategy ? { strategy: generation.strategy } : {}),
       index: sequence,
       total: Math.max(generation.items?.length ?? 1, sequence + 1),
       number: current.number ?? String(sequence + 1),
@@ -729,6 +787,12 @@ export const regenerateMockQuestion = createServerFn({ method: "POST" })
       generation,
       savedQuestions: loaded.questions.filter((entry) => entry.id !== current.id),
       questions_rev: loaded.document.questions_rev,
+      catalog: {
+        subject_id: source?.question.subject_id ?? loaded.document.subject_id,
+        topic_id: source?.question.topic_id ?? null,
+        standard_id: source?.question.standard_id ?? loaded.document.standard_id,
+        stream_id: source?.question.stream_id ?? loaded.document.stream_id,
+      },
       audience: {
         exam: loaded.document.exam,
         notes: loaded.document.notes,

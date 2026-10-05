@@ -1,4 +1,4 @@
-import type { DocumentMeta, MockGenerationState } from "@/lib/document-types";
+import type { DocumentMeta, MockGenerationState, MockStrategy } from "@/lib/document-types";
 import { ensureGenerationItems, mockGenerationTotal } from "@/lib/document-types";
 import type { GenerationItem } from "@/lib/generation/job-types";
 import {
@@ -34,6 +34,8 @@ type GenerateFn = (input: {
     generation?: MockGenerationState;
     savedQuestions?: Question[];
     existingQuestion?: Question | null;
+    strategy?: MockStrategy;
+    catalogOptions?: MockCatalogOptions;
     questions_rev: number;
   };
 }) => Promise<{ question: Question; item: GenerationItem; questions_rev: number }>;
@@ -66,6 +68,12 @@ export type MockCatalogNames = {
   topicsById?: Record<number, string>;
 };
 
+/** Catalog shortlist the model may pick from to fill missing subject/topic metadata. */
+export type MockCatalogOptions = {
+  subjects?: { id: number; name: string }[];
+  topics?: { id: number; name: string }[];
+};
+
 /**
  * Resume / run AI mock generation from the document's generation cursor.
  * Persists after each successful question so free-API failures are recoverable.
@@ -76,6 +84,7 @@ export async function resumeMockPaperGeneration(options: {
   questions: Question[];
   sourceQuestions?: Question[];
   catalogNames?: MockCatalogNames;
+  catalogOptions?: MockCatalogOptions;
   runGenerate: GenerateFn;
   runSave: SaveFn;
   onProgress?: (state: {
@@ -213,6 +222,8 @@ export async function resumeMockPaperGeneration(options: {
             generation: state,
             savedQuestions: questions,
             existingQuestion: already ?? null,
+            strategy: state.strategy ?? "write_new",
+            ...(options.catalogOptions ? { catalogOptions: options.catalogOptions } : {}),
             questions_rev: questionsRev,
           },
         });

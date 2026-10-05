@@ -6,12 +6,13 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import { AppHeader } from "@/components/AppHeader";
+import { GenerationProgress } from "@/components/mock/GenerationProgress";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { isCheckedSkill } from "@/lib/generation/checked/registry";
-import { DIFFICULTIES, type Difficulty } from "@/lib/document-types";
+import { DIFFICULTIES, type Difficulty, type MockGenerationState } from "@/lib/document-types";
 import { SKILL_CATALOG } from "@/lib/question-taxonomy";
 import {
   createAiMockFromInstructions,
@@ -60,6 +61,10 @@ function MockNewPage() {
   const [duration, setDuration] = useState<number | "">("");
   const [busy, setBusy] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
+  const [liveGeneration, setLiveGeneration] = useState<{
+    generation: MockGenerationState;
+    total: number;
+  } | null>(null);
 
   const streams = useMemo(() => {
     const all = catalog.data?.streams ?? [];
@@ -123,8 +128,9 @@ function MockNewPage() {
         },
         runGenerate: generateFn,
         runSave: saveFn,
-        onProgress: ({ cursor, total }) => {
+        onProgress: ({ cursor, total, generation }) => {
           setProgress(`Generating question ${Math.min(cursor + 1, total)} of ${total}…`);
+          setLiveGeneration({ generation, total });
         },
       });
 
@@ -143,6 +149,7 @@ function MockNewPage() {
     } finally {
       setBusy(false);
       setProgress(null);
+      setLiveGeneration(null);
     }
   }
 
@@ -365,6 +372,15 @@ function MockNewPage() {
               <Link to="/library">Cancel</Link>
             </Button>
           </div>
+
+          {busy && liveGeneration ? (
+            <GenerationProgress
+              generation={liveGeneration.generation}
+              total={liveGeneration.total}
+              generating
+              detailed
+            />
+          ) : null}
         </form>
       </main>
     </div>

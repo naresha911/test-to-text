@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { AppHeader } from "@/components/AppHeader";
+import { GenerationProgress } from "@/components/mock/GenerationProgress";
 import { AddQuestionForm, type NewQuestionInput } from "@/components/questions/AddQuestionForm";
 import { QuestionCard } from "@/components/questions/QuestionCard";
 import { Badge } from "@/components/ui/badge";
@@ -277,6 +278,16 @@ function ComparePage() {
       for (const topic of catalog.data?.topics ?? []) {
         topicsById[topic.id] = topic.name;
       }
+      const catalogOptions = {
+        subjects: (catalog.data?.subjects ?? []).map((subject) => ({
+          id: subject.id,
+          name: subject.name,
+        })),
+        topics: (catalog.data?.topics ?? []).map((topic) => ({
+          id: topic.id,
+          name: topic.name,
+        })),
+      };
 
       const result = await resumeMockPaperGeneration({
         mockId,
@@ -289,6 +300,7 @@ function ComparePage() {
           stream: streamName,
           topicsById,
         },
+        catalogOptions,
         runGenerate: generateFn,
         runSave: saveFn,
         onProgress: ({ questions, generation: nextGen, questions_rev }) => {
@@ -429,15 +441,19 @@ function ComparePage() {
           ) : null}
         </div>
 
-        <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-          <Badge variant="outline">
-            {generation?.cursor ?? 0}/{totalPlanned} generated
-          </Badge>
-          <Badge variant="secondary" className="capitalize">
-            {generation?.status ?? "unknown"}
-          </Badge>
-          {generation?.last_error ? (
-            <span className="text-destructive">{generation.last_error}</span>
+        <div className="mt-4 space-y-2">
+          <GenerationProgress
+            generation={generation}
+            total={totalPlanned}
+            generating={generating}
+            detailed
+          />
+          {generation?.strategy ? (
+            <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
+              <Badge variant="secondary">
+                {generation.strategy === "rewrite" ? "Copyright-Safe Rewrite" : "Write New"}
+              </Badge>
+            </div>
           ) : null}
         </div>
 

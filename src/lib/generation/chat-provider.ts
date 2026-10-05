@@ -1,3 +1,5 @@
+import { COMMAND_CODE_TEXT_MODELS } from "@/lib/generation/vision-models";
+
 /** OpenAI-compatible chat route documented at https://docs.omnirouters.com/api/llm/openai-chat */
 export const DEFAULT_OMNIROUTERS_BASE_URL = "https://omnirouters.com/v1";
 /**
@@ -6,7 +8,10 @@ export const DEFAULT_OMNIROUTERS_BASE_URL = "https://omnirouters.com/v1";
  */
 export const OMNIROUTERS_AUTO_MODEL = "auto";
 
-export type GenerationProvider = "omnirouters" | "openrouter" | "lovable";
+/** Command Code Provider API, an OpenAI-compatible route documented at https://commandcode.ai/docs/provider */
+export const DEFAULT_COMMANDCODE_BASE_URL = "https://api.commandcode.ai/provider/v1";
+
+export type GenerationProvider = "commandcode" | "omnirouters" | "openrouter" | "lovable";
 
 export type GenerationChatTarget = {
   provider: GenerationProvider;
@@ -25,6 +30,38 @@ export function omniroutersApiKey(
   env: Record<string, string | undefined> = process.env,
 ): string | undefined {
   return env["OMNIROUTERS_API_KEY"]?.trim() || env["OMNIROUTER_API_KEY"]?.trim() || undefined;
+}
+
+/** The Provider API key. The same key authenticates the Command Code CLI. */
+export function commandCodeApiKey(
+  env: Record<string, string | undefined> = process.env,
+): string | undefined {
+  return env["COMMANDCODE_API_KEY"]?.trim() || env["CMD_API_KEY"]?.trim() || undefined;
+}
+
+/**
+ * One target per model so `completeChatWithFallback` / `firstUsable` walk the
+ * list. The Provider API serves images too, but the free routes are text-only,
+ * so callers pass vision-capable ids for diagram questions.
+ */
+export function commandCodeChatTargets(input: {
+  key?: string | null | undefined;
+  baseUrl?: string | null | undefined;
+  models: readonly string[];
+}): GenerationChatTarget[] {
+  const key = input.key?.trim();
+  if (!key) return [];
+  const base = (input.baseUrl?.trim() || DEFAULT_COMMANDCODE_BASE_URL).replace(/\/+$/, "");
+  return input.models
+    .map((model) => model.trim())
+    .filter(Boolean)
+    .map((model) => ({
+      provider: "commandcode" as const,
+      label: "Command Code",
+      url: `${base}/chat/completions`,
+      headers: { Authorization: `Bearer ${key}` },
+      model,
+    }));
 }
 
 function isOpenRouterOnlyModel(model: string): boolean {
@@ -197,6 +234,9 @@ export function generationChatTargets(input: {
   omniroutersKey?: string | null;
   openRouterKey?: string | null;
   lovableKey?: string | null;
+  commandCodeKey?: string | null | undefined;
+  commandCodeBaseUrl?: string | null | undefined;
+  commandCodeModels?: readonly string[] | null | undefined;
   requestedModel?: string | null;
   omniroutersModel?: string | null;
   omniroutersBaseUrl?: string | null;
@@ -205,6 +245,13 @@ export function generationChatTargets(input: {
   lovableModel: string;
 }): GenerationChatTarget[] {
   const targets: GenerationChatTarget[] = [];
+  targets.push(
+    ...commandCodeChatTargets({
+      key: input.commandCodeKey,
+      baseUrl: input.commandCodeBaseUrl,
+      models: input.commandCodeModels ?? COMMAND_CODE_TEXT_MODELS,
+    }),
+  );
   const omniKey = input.omniroutersKey?.trim();
   if (omniKey) {
     const base = (input.omniroutersBaseUrl?.trim() || DEFAULT_OMNIROUTERS_BASE_URL).replace(

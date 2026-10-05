@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { AppHeader } from "@/components/AppHeader";
+import { GenerationProgress } from "@/components/mock/GenerationProgress";
 import { type NewQuestionInput } from "@/components/questions/AddQuestionForm";
 import { PageReview } from "@/components/questions/PageReview";
 import {
@@ -28,8 +29,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import {
   documentKindBadge,
@@ -56,7 +64,7 @@ import {
   saveLocalDocument,
   saveLocalFigure,
 } from "@/lib/local-store.functions";
-import { blueprintFromQuestions, numberGaps } from "@/lib/generation/blueprint";
+import { numberGaps } from "@/lib/generation/blueprint";
 import { fileToDataUrl } from "@/lib/image-utils";
 import { resumeMockPaperGeneration } from "@/lib/mock-paper-client";
 import {
@@ -495,6 +503,11 @@ function LibraryPage() {
   const [openId, setOpenId] = useState<string | null>(null);
   const [creatingMockFor, setCreatingMockFor] = useState<string | null>(null);
   const [resumingMockId, setResumingMockId] = useState<string | null>(null);
+  const [liveGeneration, setLiveGeneration] = useState<{
+    id: string;
+    generation: MockGenerationState;
+    total: number;
+  } | null>(null);
   const [pushingId, setPushingId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<{
     id: string;
@@ -504,9 +517,10 @@ function LibraryPage() {
   } | null>(null);
   const [mockBlueprint, setMockBlueprint] = useState<{
     sourceId: string;
-    slots: { skill: string; count: number }[];
     gaps: string[];
-    harder: boolean;
+    questionCount: number;
+    strategy: "rewrite" | "write_new";
+    difficultyStep: -1 | 0 | 1;
     notes: string;
   } | null>(null);
 
@@ -566,32 +580,27 @@ function LibraryPage() {
   async function startMockFromSource(
     sourceId: string,
     options?: {
-      slots: { skill: string; count: number }[];
-      difficultyStep: 0 | 1;
+      strategy: "rewrite" | "write_new";
+      difficultyStep: -1 | 0 | 1;
       authorInstructions?: string;
     },
   ) {
     setCreatingMockFor(sourceId);
     try {
+      const strategy = options?.strategy ?? "write_new";
       const notes = options?.authorInstructions?.trim() ?? "";
       const created = await createMockFn({
-        data: options
-          ? {
-              sourceId,
-              slots: options.slots,
-              difficultyStep: options.difficultyStep,
-              ...(notes ? { authorInstructions: notes } : {}),
-            }
-          : { sourceId },
+        data: {
+          sourceId,
+          strategy,
+          difficultyStep: options?.difficultyStep ?? 0,
+          ...(notes ? { authorInstructions: notes } : {}),
+        },
       });
       void queryClient.invalidateQueries({ queryKey: ["local-documents"] });
-      const mix = created.document.generation?.blueprint
-        ?.slice(0, 6)
-        .map((slot) => `${slot.count} ${slot.skill.replaceAll("_", " ")}`)
-        .join(", ");
       toast.success(
-        mix
-          ? `AI mock draft created (${mix}). Generating on the comparison screen.`
+        strategy === "rewrite"
+          ? "AI mock draft created — rewording on the comparison screen."
           : "AI mock draft created — generating on the comparison screen.",
       );
       void navigate({ to: "/compare/$mockId", params: { mockId: created.document.id } });
@@ -611,27 +620,20 @@ function LibraryPage() {
         await startMockFromSource(sourceId);
         return;
       }
-      const paper = blueprintFromQuestions(
-        questions.map((question) => ({
-          number: question.number,
-          stem: question.stem,
-          instructions: question.instructions,
-          type: question.type,
-          figureCount: question.figures.length,
-          optionImageCount: question.options.filter((option) => option.image_path).length,
-          optionTexts: question.options.map((option) => option.text),
-          passage: question.passage,
-        })),
-      );
-      if (!paper.slots.length) {
-        await startMockFromSource(sourceId);
-        return;
+      const seenNumbers = new Set<string>();
+      let questionCount = 0;
+      for (const question of questions) {
+        const number = question.number?.trim() ?? "";
+        if (number && seenNumbers.has(number)) continue;
+        if (number) seenNumbers.add(number);
+        questionCount += 1;
       }
       setMockBlueprint({
         sourceId,
-        slots: paper.slots.map((slot) => ({ skill: slot.skill, count: slot.count })),
         gaps: numberGaps(questions.map((question) => question.number ?? "")),
-        harder: false,
+        questionCount,
+        strategy: "write_new",
+        difficultyStep: 0,
         notes: "",
       });
     } catch {
@@ -646,8 +648,8 @@ function LibraryPage() {
     if (!draft) return;
     setMockBlueprint(null);
     void startMockFromSource(draft.sourceId, {
-      slots: draft.slots,
-      difficultyStep: draft.harder ? 1 : 0,
+      strategy: draft.strategy,
+      difficultyStep: draft.difficultyStep,
       authorInstructions: draft.notes,
     });
   }
@@ -683,6 +685,9 @@ function LibraryPage() {
         },
         runGenerate: generateFn,
         runSave: saveFn,
+        onProgress: ({ generation, total }) => {
+          setLiveGeneration({ id: mockId, generation, total });
+        },
       });
       void queryClient.invalidateQueries({ queryKey: ["local-documents"] });
       if (result.completed) {
@@ -695,6 +700,7 @@ function LibraryPage() {
       void queryClient.invalidateQueries({ queryKey: ["local-documents"] });
     } finally {
       setResumingMockId(null);
+      setLiveGeneration(null);
     }
   }
 
@@ -906,6 +912,16 @@ function LibraryPage() {
                       <Trash2 className="h-4 w-4 text-destructive" aria-hidden="true" />
                     </Button>
                   </div>
+                  {liveGeneration?.id === paper.id ? (
+                    <div className="mt-3">
+                      <GenerationProgress
+                        generation={liveGeneration.generation}
+                        total={liveGeneration.total}
+                        generating
+                        detailed
+                      />
+                    </div>
+                  ) : null}
                   {open ? <PaperDetail id={paper.id} /> : null}
                 </li>
               );
@@ -924,8 +940,9 @@ function LibraryPage() {
           <DialogHeader>
             <DialogTitle>Generate AI Mock</DialogTitle>
             <DialogDescription>
-              Each count is how many new questions to write for that skill. Notes below are sent
-              with every question. Cancel leaves the paper unchanged.
+              One new question is written for each of the {mockBlueprint?.questionCount ?? 0}{" "}
+              reference questions, in order. Pick how to derive them. Cancel leaves the paper
+              unchanged.
             </DialogDescription>
           </DialogHeader>
           {mockBlueprint?.gaps.length ? (
@@ -933,50 +950,63 @@ function LibraryPage() {
               Missing question numbers: {mockBlueprint.gaps.join(", ")}
             </p>
           ) : null}
-          <ul className="max-h-64 space-y-3 overflow-y-auto">
-            {mockBlueprint?.slots.map((slot, index) => (
-              <li key={slot.skill} className="flex items-center gap-3">
-                <Label className="mr-auto capitalize" htmlFor={`blueprint-count-${slot.skill}`}>
-                  {slot.skill.replaceAll("_", " ")}
-                </Label>
-                <Input
-                  id={`blueprint-count-${slot.skill}`}
-                  className="w-20"
-                  type="number"
-                  min={1}
-                  max={80}
-                  value={slot.count}
-                  onChange={(event) => {
-                    const next = Math.round(Number(event.target.value));
-                    if (!Number.isFinite(next)) return;
-                    const count = Math.min(80, Math.max(1, next));
-                    setMockBlueprint((current) =>
-                      current
-                        ? {
-                            ...current,
-                            slots: current.slots.map((item, itemIndex) =>
-                              itemIndex === index ? { ...item, count } : item,
-                            ),
-                          }
-                        : current,
-                    );
-                  }}
-                />
-              </li>
-            ))}
-          </ul>
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={mockBlueprint?.harder ?? false}
-              onChange={(event) =>
+          <div className="space-y-2">
+            <Label>Strategy</Label>
+            <RadioGroup
+              value={mockBlueprint?.strategy ?? "write_new"}
+              onValueChange={(value) =>
                 setMockBlueprint((current) =>
-                  current ? { ...current, harder: event.target.checked } : current,
+                  current ? { ...current, strategy: value as "rewrite" | "write_new" } : current,
                 )
               }
-            />
-            One step harder
-          </label>
+              className="gap-3"
+            >
+              <div className="flex items-start gap-3 rounded-lg border border-border p-3 text-sm">
+                <RadioGroupItem value="rewrite" id="strategy-rewrite" className="mt-0.5" />
+                <label htmlFor="strategy-rewrite" className="cursor-pointer space-y-1">
+                  <span className="block font-medium">Copyright-Safe Rewrite</span>
+                  <span className="block text-xs text-muted-foreground">
+                    Same question, reworded. Names, numbers and wording change; skill, topic and
+                    difficulty stay identical.
+                  </span>
+                </label>
+              </div>
+              <div className="flex items-start gap-3 rounded-lg border border-border p-3 text-sm">
+                <RadioGroupItem value="write_new" id="strategy-write-new" className="mt-0.5" />
+                <label htmlFor="strategy-write-new" className="cursor-pointer space-y-1">
+                  <span className="block font-medium">Write New</span>
+                  <span className="block text-xs text-muted-foreground">
+                    A brand-new question with the same skill and topic.
+                  </span>
+                </label>
+              </div>
+            </RadioGroup>
+          </div>
+          {mockBlueprint?.strategy === "write_new" ? (
+            <div className="space-y-2">
+              <Label htmlFor="mock-difficulty">Difficulty</Label>
+              <Select
+                value={String(mockBlueprint?.difficultyStep ?? 0)}
+                onValueChange={(value) =>
+                  setMockBlueprint((current) =>
+                    current ? { ...current, difficultyStep: Number(value) as -1 | 0 | 1 } : current,
+                  )
+                }
+              >
+                <SelectTrigger id="mock-difficulty">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="-1">One step easier</SelectItem>
+                  <SelectItem value="0">Match source</SelectItem>
+                  <SelectItem value="1">One step harder</SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                The AI marks the actual difficulty on each question after it is generated.
+              </p>
+            </div>
+          ) : null}
           <div className="space-y-2">
             <Label htmlFor="mock-author-instructions">Instructions for every question</Label>
             <Textarea
@@ -992,8 +1022,8 @@ function LibraryPage() {
               }
             />
             <p className="text-xs text-muted-foreground">
-              Applied while writing each equivalent question. Diagram skills that draw their own
-              figure keep that drawing.
+              Applied while writing each question. Diagram skills that draw their own figure keep
+              that drawing.
             </p>
           </div>
           <DialogFooter>

@@ -4,7 +4,7 @@ import { z } from "zod";
 import { completeExamChat, type ExamImage } from "@/lib/generation/exam-chat";
 import { localCheckedSolution } from "@/lib/generation/hint-solve";
 import { buildSearchQuery } from "@/lib/generation/web-search";
-import { omniroutersApiKey } from "@/lib/generation/chat-provider";
+import { commandCodeApiKey, omniroutersApiKey } from "@/lib/generation/chat-provider";
 import {
   buildSolutionUserPrompt,
   questionHasAnswer,
@@ -289,11 +289,12 @@ export const generateHintSolution = createServerFn({ method: "POST" })
     if (local) return checkedHintResult(question, local);
 
     const omniroutersKey = omniroutersApiKey();
+    const commandCodeKey = commandCodeApiKey();
     const openRouterKey = process.env["OPENROUTER_API_KEY"];
     const lovableKey = process.env["LOVABLE_API_KEY"];
-    if (!omniroutersKey && !openRouterKey && !lovableKey) {
+    if (!commandCodeKey && !omniroutersKey && !openRouterKey && !lovableKey) {
       throw new Error(
-        "No AI key is configured for hints and solutions. Add OMNIROUTERS_API_KEY, OPENROUTER_API_KEY, or LOVABLE_API_KEY in .env.local (or Lovable project secrets), then restart the server.",
+        "No AI key is configured for hints and solutions. Add COMMANDCODE_API_KEY, OMNIROUTERS_API_KEY, OPENROUTER_API_KEY, or LOVABLE_API_KEY in .env.local (or Lovable project secrets), then restart the server.",
       );
     }
 

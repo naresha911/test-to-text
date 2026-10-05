@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
 import { examChatTargets, withImages, completeExamChat } from "@/lib/generation/exam-chat";
-import { TEXT_EXAM_MODEL } from "@/lib/generation/vision-models";
+import {
+  COMMAND_CODE_TEXT_MODEL,
+  COMMAND_CODE_VISION_MODELS,
+  TEXT_EXAM_MODEL,
+} from "@/lib/generation/vision-models";
 import { buildSearchQuery, formatSnippets, snippetsFromSearchBody } from "@/lib/generation/web-search";
 import { detectSkill } from "@/lib/generation/skill-detect";
 import {
@@ -66,6 +70,19 @@ describe("exam chat", () => {
     expect(Array.isArray(content)).toBe(true);
     if (!Array.isArray(content)) return;
     expect(content.some((part) => part.type === "image_url")).toBe(true);
+  });
+
+  test("a text question prefers the free Command Code model", () => {
+    const targets = examChatTargets({ vision: false, commandCodeKey: "cmd" });
+    expect(targets[0]?.provider).toBe("commandcode");
+    expect(targets[0]?.model).toBe(COMMAND_CODE_TEXT_MODEL);
+  });
+
+  test("a diagram question routes to the Command Code vision model", () => {
+    const targets = examChatTargets({ vision: true, commandCodeKey: "cmd", openRouterKey: "open" });
+    expect(targets[0]?.provider).toBe("commandcode");
+    expect(targets[0]?.model).toBe(COMMAND_CODE_VISION_MODELS[0]);
+    expect(targets.some((target) => target.model?.includes("gemma"))).toBe(false);
   });
 
   test("searches once when the first answer is rejected, and not when it is accepted", async () => {

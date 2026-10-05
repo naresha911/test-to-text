@@ -20,6 +20,12 @@ export type Catalog = {
 
 export type MockGenerationMode = "from_source" | "from_instructions";
 export type MockGenerationStatus = "pending" | "in_progress" | "completed" | "failed";
+/**
+ * How a reference-paper mock derives each question.
+ * - rewrite: reword the source question; metadata stays identical.
+ * - write_new: invent a new question of the same skill and topic.
+ */
+export type MockStrategy = "rewrite" | "write_new";
 
 export type MockGenerationPair = {
   source_question_id: string | null;
@@ -41,7 +47,11 @@ export type MockGenerationState = {
   items?: GenerationItem[];
   /** Skill counts for a full mock. A topic drill uses one entry. */
   blueprint?: { skill: string; count: number }[];
-  /** 0 matches the source level. 1 is one step harder inside the class ceiling. */
+  /**
+   * Reference-paper generation strategy. Missing means write_new.
+   */
+  strategy?: MockStrategy;
+  /** -1 is one step easier, 0 matches the source, 1 is one step harder. */
   difficulty_step?: number;
   /** Set when the mock practises one skill instead of copying a paper. */
   drill_skill?: string | null;
@@ -202,6 +212,9 @@ export function parseMockGeneration(raw: unknown): MockGenerationState | null {
             return [{ skill: row["skill"], count: row["count"] }];
           }),
         }
+      : {}),
+    ...(obj["strategy"] === "rewrite" || obj["strategy"] === "write_new"
+      ? { strategy: obj["strategy"] }
       : {}),
     ...(typeof obj["difficulty_step"] === "number" && Number.isFinite(obj["difficulty_step"])
       ? { difficulty_step: obj["difficulty_step"] }

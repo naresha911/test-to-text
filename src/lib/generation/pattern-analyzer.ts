@@ -43,15 +43,20 @@ export function analyzePattern(input: {
   const text = [instructions, source?.stem ?? "", source?.instructions ?? ""].join("\n");
   const base = constraintsFrom(source);
 
-  let skillType = detectSkill({
-    stem: source?.stem,
-    instructions,
-    type: source?.type,
-    figureCount: source?.figures.length ?? 0,
-    optionImageCount: source?.options.filter((option) => option.image_path).length ?? 0,
-    optionTexts: source?.options.map((option) => option.text) ?? [],
-    passage: source?.passage,
-  });
+  // Prefer an explicit skill on the source; otherwise detect it from the text.
+  const explicitSkill =
+    source?.skill_type && skillByType(source.skill_type) ? source.skill_type : null;
+  let skillType =
+    explicitSkill ??
+    detectSkill({
+      stem: source?.stem,
+      instructions,
+      type: source?.type,
+      figureCount: source?.figures.length ?? 0,
+      optionImageCount: source?.options.filter((option) => option.image_path).length ?? 0,
+      optionTexts: source?.options.map((option) => option.text) ?? [],
+      passage: source?.passage,
+    });
   let family: SkillFamily = "textual";
   let type: QuestionType = source?.type ?? "mcq";
   let intent = "Invent an original practice question.";

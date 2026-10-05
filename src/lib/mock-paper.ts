@@ -1,4 +1,4 @@
-import type { DocumentMeta, MockGenerationState } from "@/lib/document-types";
+import type { DocumentMeta, MockGenerationState, MockStrategy } from "@/lib/document-types";
 import { mockGenerationTotal } from "@/lib/document-types";
 import { buildQuestionPromptPayload } from "@/lib/question-context";
 import { emptyQuestion, normalizeQuestion, type Question } from "@/lib/question-schema";
@@ -176,6 +176,10 @@ export function buildFromSourceUserPrompt(options: {
   hasImages?: boolean;
   /** Teacher notes applied to every equivalent question in the mock. */
   authorInstructions?: string | null;
+  /** rewrite keeps the question and metadata; write_new invents a new one. */
+  strategy?: MockStrategy;
+  /** Catalog names the model may pick from to fill missing subject/topic metadata. */
+  metadataCatalog?: { subjects?: string[]; topics?: string[] };
 }): string {
   const stripped = stripQuestionForPrompt(options.sourceQuestion);
   const payload = buildQuestionPromptPayload(stripped, {
@@ -190,11 +194,23 @@ export function buildFromSourceUserPrompt(options: {
   const extras: string[] = [];
   extras.push(`Slot: ${options.index + 1} of ${options.total}`);
 
-  const comprehensionRules =
+  const rewrite = options.strategy === "rewrite";
+
+  const isComprehension =
     options.sourceQuestion.type === "comprehension" ||
     Boolean(options.sourceQuestion.passage?.trim()) ||
-    options.sourceQuestion.sub_questions.length > 0
+    options.sourceQuestion.sub_questions.length > 0;
+
+  const comprehensionRules = isComprehension
+    ? rewrite
       ? [
+          "COMPREHENSION / PASSAGE SET (required):",
+          '- type must be "comprehension".',
+          '- REWORD the source passage with new names, facts and numbers; keep the same theme and reading level.',
+          '- Keep the SAME number of sub-questions as the source. Each sub needs answers + hint + explanation.',
+          "- Do NOT copy the source passage — reword it.",
+        ]
+      : [
           "COMPREHENSION / PASSAGE SET (required):",
           '- type must be "comprehension".',
           '- You MUST invent a completely NEW shared passage in the "passage" field (several sentences).',
@@ -204,20 +220,58 @@ export function buildFromSourceUserPrompt(options: {
           '- Parent stem may be a short instruction (e.g. "Read the passage and answer") or empty; the passage carries the content.',
           "- Keep passage reading level aligned with the student standard / leveling rules above.",
         ]
-      : [];
+    : [];
 
   const patternLines: string[] = [];
   appendSubQuestionPattern(patternLines, stripped);
 
-  return [
-    "Create ONE original mock exam question inspired by the SOURCE pattern below.",
-    "Do NOT copy stems, passages, numbers, option wording, or distinctive phrasing — invent replacements.",
-    "If OCR is garbled or incomplete, infer the intended skill and invent a correct new question.",
-    "You may change sub-question counts for comprehension / assertion / similar multi-part types.",
-    options.hasImages
+  const intro = rewrite
+    ? [
+        "REWORD the SOURCE question below into an original question.",
+        "Keep the SAME question: same type, same structure, same number of parts, options and marks, same skill, topic, subject and difficulty.",
+        "Change only surface details: names, numbers, values, units, entities and phrasing. The correct answer must stay correct for the new values.",
+        "Do not add, remove or reorder parts, options, or sub-questions.",
+      ]
+    : [
+        "Create ONE original mock exam question inspired by the SOURCE pattern below.",
+        "If OCR is garbled or incomplete, infer the intended skill and invent a correct new question.",
+        "You may change sub-question counts for comprehension / assertion / similar multi-part types.",
+      ];
+
+  const copyright = [
+    "COPYRIGHT (must follow):",
+    "- Do NOT copy or lightly reorder the source stem, passage, options, or distinctive phrasing.",
+    "- Replace every name, number, unit and entity. No source token may appear verbatim in your output.",
+    "- Never reproduce more than about six consecutive words from the source.",
+    "- If the source looks like a well-known or standard question, produce a materially different variant — not a near-copy.",
+  ];
+
+  const figureRule = rewrite
+    ? options.hasImages
+      ? "You can see the source figure. Keep the same kind of figure; reword only the surrounding text and its description."
+      : "Keep the same kind of figure the source describes; reword the surrounding text only."
+    : options.hasImages
       ? "You can see the source figure. Invent a new figure of the same skill and describe it in figures[].description. The answer must match the new figure."
-      : "For diagram/figure questions, invent a new scenario and describe it in figures[].description.",
+      : "For diagram/figure questions, invent a new scenario and describe it in figures[].description.";
+
+  const metadataLines: string[] = [];
+  const subjects = options.metadataCatalog?.subjects ?? [];
+  const topics = options.metadataCatalog?.topics ?? [];
+  if (subjects.length || topics.length) {
+    metadataLines.push(
+      "",
+      'METADATA: also return "subject" and "topic" string fields. Pick the closest value from these lists and copy its exact name:',
+    );
+    if (subjects.length) metadataLines.push(`- Subjects: ${subjects.join(", ")}`);
+    if (topics.length) metadataLines.push(`- Topics: ${topics.join(", ")}`);
+  }
+
+  return [
+    ...intro,
+    ...copyright,
+    figureRule,
     "Return a full Question JSON object with answers, hint, explanation, and difficulty.",
+    ...metadataLines,
     "",
     ...buildLevelingGuidance({
       ...(options.audience ? { audience: options.audience } : {}),
@@ -237,7 +291,9 @@ export function buildFromSourceUserPrompt(options: {
     "",
     extras.join("\n"),
     "",
-    "SOURCE QUESTION (pattern only — rewrite into something new):",
+    rewrite
+      ? "SOURCE QUESTION (reword it — keep the question and metadata, change only the surface):"
+      : "SOURCE QUESTION (pattern only — rewrite into something new):",
     payload,
     ...patternLines,
   ].join("\n");
@@ -291,6 +347,8 @@ export function finalizeMockQuestion(
     skillType?: string | null;
     sourceType?: Question["type"] | null;
     sourceDifficulty?: Question["difficulty"] | null;
+    /** rewrite pins difficulty to the source; write_new lets the model set it. */
+    strategy?: MockStrategy;
     catalog?: {
       subject_id?: number | null;
       topic_id?: number | null;
@@ -318,8 +376,10 @@ export function finalizeMockQuestion(
     question.type = "comprehension";
   }
 
-  // Fall back to source difficulty when the model omits it.
-  if (!question.difficulty && options.sourceDifficulty) {
+  // A rewrite keeps the source difficulty. Otherwise fall back when the model omits it.
+  if (options.strategy === "rewrite" && options.sourceDifficulty) {
+    question.difficulty = options.sourceDifficulty;
+  } else if (!question.difficulty && options.sourceDifficulty) {
     question.difficulty = options.sourceDifficulty;
   }
 

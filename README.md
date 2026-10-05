@@ -106,6 +106,14 @@ OMNIROUTERS_BASE_URL=http://127.0.0.1:20128/v1
 OMNIROUTERS_API_KEY=
 OMNIROUTERS_MODEL=auto
 
+# Command Code Provider API. Preferred for every AI generation when set.
+# Needs a GOAT/Pro/Max plan (the Go plan has no API access). Create the key at
+# https://commandcode.ai/settings/keys — the same key authenticates the CLI.
+# Text questions ride the free routes; diagram questions use a vision model.
+COMMANDCODE_API_KEY=
+# Optional overrides.
+# COMMANDCODE_BASE_URL=https://api.commandcode.ai/provider/v1
+
 # https://openrouter.ai/keys — also used when OmniRoute is not configured.
 OPENROUTER_API_KEY=
 
@@ -131,7 +139,7 @@ For the default OpenOCR reader, configure at least one of:
 - `OPTIIC_API_KEY` or an Optiic key in Settings
 - Tesseract on `PATH` (local text only)
 
-Structuring a page into questions, plus hints, solutions, and mock papers, needs one model key: `OMNIROUTERS_API_KEY`, `OPENROUTER_API_KEY`, or `LOVABLE_API_KEY`.
+Structuring a page into questions, plus hints, solutions, and mock papers, needs one model key: `COMMANDCODE_API_KEY`, `OMNIROUTERS_API_KEY`, `OPENROUTER_API_KEY`, or `LOVABLE_API_KEY`. When `COMMANDCODE_API_KEY` is set it is preferred: text questions use its free models and diagram questions use its vision model, with the other keys as fallback.
 
 `OPENOCR_URL` overrides the local service address. The default is `http://127.0.0.1:8099`.
 

@@ -3,10 +3,12 @@ import { z } from "zod";
 
 import {
   chatCompletionBody,
+  commandCodeApiKey,
   completeChatWithFallback,
   generationChatTargets,
   omniroutersApiKey,
 } from "@/lib/generation/chat-provider";
+import { COMMAND_CODE_VISION_MODELS } from "@/lib/generation/vision-models";
 import { structureOcrText as structureOcrTextOffline } from "@/lib/ocr-structure";
 import { normalizeQuestion, type Question } from "@/lib/question-schema";
 import { openOcrHealthy } from "@/lib/reader/openocr";
@@ -140,6 +142,8 @@ async function structurePlainText(
     omniroutersKey: options.omniroutersKey,
     openRouterKey: options.openRouterKey,
     lovableKey: options.lovableKey,
+    commandCodeKey: commandCodeApiKey(),
+    commandCodeBaseUrl: process.env["COMMANDCODE_BASE_URL"],
     requestedModel: options.model,
     omniroutersModel: process.env["OMNIROUTERS_MODEL"],
     omniroutersBaseUrl: process.env["OMNIROUTERS_BASE_URL"],
@@ -190,6 +194,9 @@ async function digitisePageImage(
     openRouterModel: options.model?.trim() || DEFAULT_OPENROUTER_MODEL,
     openRouterFallbacks: [],
     lovableModel: "google/gemini-3.8-flash",
+    commandCodeKey: commandCodeApiKey(),
+    commandCodeBaseUrl: process.env["COMMANDCODE_BASE_URL"],
+    commandCodeModels: COMMAND_CODE_VISION_MODELS,
     ...(options.omniroutersKey ? { omniroutersKey: options.omniroutersKey } : {}),
     ...(options.openRouterKey ? { openRouterKey: options.openRouterKey } : {}),
     ...(options.lovableKey ? { lovableKey: options.lovableKey } : {}),

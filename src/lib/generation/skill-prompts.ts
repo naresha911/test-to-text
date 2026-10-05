@@ -121,22 +121,24 @@ export function skillDifficultyGuidance(
     grade == null
       ? "Keep the question at the same level as the source."
       : `Write for class ${grade}. Stay within about two grades of that class.`;
-  const harder =
+  const adjust =
     step > 0
       ? "Make it one step harder than the source: more steps, a less obvious rule, or a less famous fact. Stay inside the class ceiling."
-      : "Match the source difficulty.";
+      : step < 0
+        ? "Make it one step easier than the source: smaller or simpler numbers, a more obvious rule, or a more familiar fact. Stay inside the class."
+        : "Match the source difficulty.";
   if (skill === "number_series") {
     const band =
       grade != null && grade <= 5
         ? "Use one arithmetic rule and integers under 30."
         : "A higher class may use two steps or larger integers.";
-    return `${classLine} ${band} ${harder}`;
+    return `${classLine} ${band} ${adjust}`;
   }
   if (skill === "general_knowledge") {
     return `${classLine} Use a real fact from that class syllabus. Harder means a less obvious fact, not a bigger number.`;
   }
   if (skill === "date_puzzle") {
-    return `${classLine} A harder puzzle adds one extra constraint and still leaves exactly one date. ${harder}`;
+    return `${classLine} A harder puzzle adds one extra constraint and still leaves exactly one date. ${adjust}`;
   }
-  return `${classLine} ${harder}`;
+  return `${classLine} ${adjust}`;
 }
