@@ -46,11 +46,13 @@ export function analyzePattern(input: {
   // Prefer an explicit skill on the source; otherwise detect it from the text.
   const explicitSkill =
     source?.skill_type && skillByType(source.skill_type) ? source.skill_type : null;
-  let skillType =
+  const detectInstructions =
+    [input.instructions ?? "", source?.instructions ?? ""].filter(Boolean).join("\n") || null;
+  const skillType =
     explicitSkill ??
     detectSkill({
       stem: source?.stem,
-      instructions,
+      instructions: detectInstructions,
       type: source?.type,
       figureCount: source?.figures.length ?? 0,
       optionImageCount: source?.options.filter((option) => option.image_path).length ?? 0,

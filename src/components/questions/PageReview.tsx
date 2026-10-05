@@ -42,8 +42,8 @@ type Props = {
   /** Open this question for editing, usually one the toolbar just added. */
   focusQuestionId?: string | null | undefined;
   onReviewGenerated?: ((questionId: string, status: "reviewed" | "rejected") => void) | undefined;
-  onRegenerateGenerated?: ((questionId: string) => void) | undefined;
-  onRegenerateFigure?: ((questionId: string) => void) | undefined;
+  onRegenerateGenerated?: ((questionId: string) => void | Promise<void>) | undefined;
+  onRegenerateFigure?: ((questionId: string) => void | Promise<void>) | undefined;
   generatingIds?: Set<string> | undefined;
   onReadCrop?: ((question: Question, layout: CropLayout) => Promise<Question>) | undefined;
   contentModeForPage?: ((page: number | null | undefined) => ContentMode) | undefined;

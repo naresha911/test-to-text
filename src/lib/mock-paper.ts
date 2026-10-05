@@ -1,7 +1,19 @@
 import type { DocumentMeta, MockGenerationState, MockStrategy } from "@/lib/document-types";
 import { mockGenerationTotal } from "@/lib/document-types";
-import { buildQuestionPromptPayload } from "@/lib/question-context";
-import { emptyQuestion, normalizeQuestion, type Question } from "@/lib/question-schema";
+import {
+  buildQuestionPromptPayload,
+  isPrintedDirection,
+  printedInstructionText,
+} from "@/lib/question-context";
+import {
+  emptyQuestion,
+  normalizeQuestion,
+  optionKeyToken,
+  type Figure,
+  type Question,
+} from "@/lib/question-schema";
+
+export { printedInstructionText };
 
 export type MockPaperAudience = {
   subject?: string | null;
@@ -110,7 +122,8 @@ function describeSourceMetadata(question: Question): string[] {
   if (question.marks != null) lines.push(`- marks: ${question.marks}`);
   if (question.section) lines.push(`- section: ${question.section}`);
   if (question.tags.length) lines.push(`- tags: ${question.tags.join(", ")}`);
-  if (question.instructions) lines.push(`- instructions: ${question.instructions}`);
+  if (question.instructions)
+    lines.push(`- instructions: ${printedInstructionText(question.instructions)}`);
   if (question.negative_marks != null) {
     lines.push(`- negative marks: ${question.negative_marks}`);
   }
@@ -254,6 +267,9 @@ export function buildFromSourceUserPrompt(options: {
       ? "You can see the source figure. Invent a new figure of the same skill and describe it in figures[].description. The answer must match the new figure."
       : "For diagram/figure questions, invent a new scenario and describe it in figures[].description.";
 
+  const optionFigureRule =
+    "OPTION FIGURES (must follow): when the answer options are picture choices, do NOT describe them in figures[]. Put a short description of each answer-option figure in that option's \"image_description\" field (option text may stay empty) and describe only the question's own figure in figures[].description.";
+
   const metadataLines: string[] = [];
   const subjects = options.metadataCatalog?.subjects ?? [];
   const topics = options.metadataCatalog?.topics ?? [];
@@ -266,10 +282,13 @@ export function buildFromSourceUserPrompt(options: {
     if (topics.length) metadataLines.push(`- Topics: ${topics.join(", ")}`);
   }
 
+  const printedInstruction = printedInstructionText(options.sourceQuestion.instructions);
+
   return [
     ...intro,
     ...copyright,
     figureRule,
+    optionFigureRule,
     "Return a full Question JSON object with answers, hint, explanation, and difficulty.",
     ...metadataLines,
     "",
@@ -277,6 +296,14 @@ export function buildFromSourceUserPrompt(options: {
       ...(options.audience ? { audience: options.audience } : {}),
       sourceQuestion: options.sourceQuestion,
     }),
+    ...(printedInstruction
+      ? [
+          "",
+          "SOURCE PRINTED INSTRUCTION (must follow for this question):",
+          `"${printedInstruction}"`,
+          "The new question must keep this exact task — new words/content, same requirement. If the source asks to choose the opposite word (antonym), the mock must also ask for the opposite word; a synonym request stays a synonym request. Do not carry over any printed question-number range.",
+        ]
+      : []),
     ...(options.authorInstructions?.trim()
       ? [
           "",
@@ -322,7 +349,7 @@ export function buildFromInstructionsUserPrompt(options: {
     "Create ONE original exam question for an AI mock paper.",
     "Follow the teacher instructions. Choose a suitable type, difficulty, and content.",
     "Include correct answers, a short learner hint, a full explanation, and a difficulty field.",
-    "Use LaTeX for math ($...$ / $$...$$). For diagrams, use figures[].description only.",
+    "Use LaTeX for math ($...$ / $$...$$). For diagrams, describe the question figure in figures[].description; when the answer options are figures, describe each one in its option \"image_description\" field instead; option text may stay empty.",
     "Return a full Question JSON object.",
     "",
     ...buildLevelingGuidance({
@@ -337,6 +364,42 @@ export function buildFromInstructionsUserPrompt(options: {
   ].join("\n");
 }
 
+/**
+ * Match model figure entries whose caption names an option ("A", "Option B",
+ * "Figure C") to that option, mark their role, and copy the description onto
+ * the option so option figures render like the source paper.
+ */
+function attachOptionFigureDescriptions(question: Question): Question {
+  if (!question.figures.length || !question.options.length) return question;
+  const keyByToken = new Map(
+    question.options
+      .map((option) => [optionKeyToken(option.key), option.key] as const)
+      .filter(([token]) => token.length > 0),
+  );
+  if (!keyByToken.size) return question;
+
+  const options = question.options.map((option) => ({ ...option }));
+  const byKey = new Map(options.map((option) => [option.key, option]));
+  const figures: Figure[] = question.figures.map((figure) => {
+    const caption = figure.caption?.trim() ?? "";
+    if (!caption) return figure;
+    const tokens = [caption, caption.replace(/^(?:figure|option|choice)\s*[:.]?\s*/i, "")];
+    const key = tokens
+      .map(optionKeyToken)
+      .map((token) => keyByToken.get(token))
+      .find((found) => found != null);
+    const option = key ? byKey.get(key) : null;
+    if (!option) return figure;
+    const hasOwnDescription = Boolean(option.image_description?.trim());
+    if (option.text.trim() && !hasOwnDescription) return figure;
+    if (!hasOwnDescription && figure.description.trim()) {
+      option.image_description = figure.description;
+    }
+    return { ...figure, role: "option_figure" as const };
+  });
+  return { ...question, options, figures };
+}
+
 /** Normalize model JSON into a canonical Question and assign pairing metadata. */
 export function finalizeMockQuestion(
   raw: unknown,
@@ -349,6 +412,8 @@ export function finalizeMockQuestion(
     sourceDifficulty?: Question["difficulty"] | null;
     /** rewrite pins difficulty to the source; write_new lets the model set it. */
     strategy?: MockStrategy;
+    /** Printed instruction on the source question, copied when the model omits one. */
+    sourceInstructions?: string | null;
     catalog?: {
       subject_id?: number | null;
       topic_id?: number | null;
@@ -367,6 +432,10 @@ export function finalizeMockQuestion(
   question.source_question_id = options.sourceQuestionId ?? null;
   if (options.generationJobId) question.generation_job_id = options.generationJobId;
   if (options.skillType) question.skill_type = options.skillType;
+  const sourceInstruction = printedInstructionText(options.sourceInstructions);
+  question.instructions =
+    question.instructions ??
+    (sourceInstruction && isPrintedDirection(sourceInstruction) ? sourceInstruction : null);
 
   // If the source was a comprehension set (or model returned subs), keep type as comprehension.
   if (
@@ -409,7 +478,7 @@ export function finalizeMockQuestion(
     bbox: null,
     page: null,
   }));
-  return question;
+  return attachOptionFigureDescriptions(question);
 }
 
 /** Throws when a comprehension mock is missing the shared passage or items. */

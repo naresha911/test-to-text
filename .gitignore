@@ -33,3 +33,4 @@ data/
 *.njsproj
 *.sln
 *.sw?
+.commandcode/*

@@ -59,6 +59,11 @@ export type MatchPair = {
   right: string;
 };
 
+/** Normalized option key token used to match figures and captions to options. */
+export function optionKeyToken(value: string | null | undefined): string {
+  return (value ?? "").replace(/[^a-z0-9]/gi, "").toUpperCase();
+}
+
 export const FIGURE_ROLES = [
   "question_figure",
   "option_figure",

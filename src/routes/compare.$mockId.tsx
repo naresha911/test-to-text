@@ -446,7 +446,6 @@ function ComparePage() {
             generation={generation}
             total={totalPlanned}
             generating={generating}
-            detailed
           />
           {generation?.strategy ? (
             <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
@@ -534,7 +533,7 @@ function ComparePage() {
                       saveMock(updated);
                     }}
                     onRegenerateGenerated={(questionId) => {
-                      void regenerateQuestionFn({ data: { documentId: mockId, questionId } })
+                      return regenerateQuestionFn({ data: { documentId: mockId, questionId } })
                         .then(async (result) => {
                           mockQuestionsRef.current = result.questions;
                           setMockQuestions(result.questions);
@@ -565,7 +564,7 @@ function ComparePage() {
                     }}
                     onRegenerateFigure={(questionId) => {
                       const before = mockQuestion;
-                      void regenerateFigureFn({ data: { documentId: mockId, questionId } })
+                      return regenerateFigureFn({ data: { documentId: mockId, questionId } })
                         .then(async (result) => {
                           if (
                             result.question.stem !== before.stem ||

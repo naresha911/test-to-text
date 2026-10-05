@@ -378,7 +378,6 @@ function MockNewPage() {
               generation={liveGeneration.generation}
               total={liveGeneration.total}
               generating
-              detailed
             />
           ) : null}
         </form>

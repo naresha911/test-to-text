@@ -444,10 +444,10 @@ function PaperDetail({ id }: { id: string }) {
     [],
   );
   const onRegenerateGenerated = useCallback((questionId: string) => {
-    void live.current.regenerateQuestion(questionId);
+    return live.current.regenerateQuestion(questionId);
   }, []);
   const onRegenerateFigure = useCallback((questionId: string) => {
-    void live.current.regenerateFigure(questionId);
+    return live.current.regenerateFigure(questionId);
   }, []);
   const resolveFigure = useCallback((path: string) => figureUrls[path], [figureUrls]);
 
@@ -918,7 +918,6 @@ function LibraryPage() {
                         generation={liveGeneration.generation}
                         total={liveGeneration.total}
                         generating
-                        detailed
                       />
                     </div>
                   ) : null}

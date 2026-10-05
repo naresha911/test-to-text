@@ -28,6 +28,75 @@ OUTPUT SHAPE
 {"hint":"...","explanation":"...","answer_keys":["A"],"answer_text":null,"answer_boolean":null,"options":[{"key":"A","text":"...","is_correct":true}],"blanks":[],"match_pairs":[{"left":"...","right":"..."}]}`;
 
 /**
+ * Clean a printed instruction quote: drop the "DIRECTIONS (21-25):" header and
+ * source question-number ranges so a mock does not inherit source numbering.
+ */
+export function printedInstructionText(value: string | null | undefined): string | null {
+  const text = value?.trim();
+  if (!text) return null;
+  let cleaned = text.replace(/^(?:directions?|instructions?)\s*(?:\([^)]*\))?\s*[-:.]?\s*/i, "");
+  const leadingRange = /^\([^)]*\)/.exec(cleaned);
+  if (leadingRange?.[0] && isLeadingRange(leadingRange[0])) {
+    cleaned = cleaned.slice(leadingRange[0].length).replace(/^[-:.]?\s*/, "");
+  }
+  cleaned = cleaned.trim();
+  return cleaned.length ? cleaned : text;
+}
+
+/** "(21-25)" or "(Q. Nos. 71-75)" counts as a source question-number range. */
+function isLeadingRange(match: string): boolean {
+  const inner = match.trim().slice(1, -1).trim();
+  return /^\d/.test(inner) || /^qs?\.?\s*nos?/i.test(inner);
+}
+
+/** A question stem opens with a question word or a pointing article; a printed direction opens with a command. */
+const STEM_STARTERS = new Set([
+  "a",
+  "an",
+  "the",
+  "this",
+  "that",
+  "these",
+  "those",
+  "who",
+  "whose",
+  "whom",
+  "what",
+  "which",
+  "when",
+  "where",
+  "why",
+  "how",
+  "is",
+  "are",
+  "was",
+  "were",
+  "do",
+  "does",
+  "did",
+  "can",
+  "could",
+  "will",
+  "would",
+  "should",
+  "may",
+  "might",
+]);
+
+/**
+ * True when text reads like a printed direction (for example "Choose the word
+ * OPPOSITE in meaning") rather than a question stem. A generated mock only
+ * inherits a source instruction when it is a real direction, so a source
+ * question whose "instructions" were misread as a stem cannot leak onto it.
+ */
+export function isPrintedDirection(value: string | null | undefined): boolean {
+  const text = value?.trim();
+  if (!text || text.includes("?")) return false;
+  const first = /[A-Za-z]+/.exec(text)?.[0]?.toLowerCase();
+  return first != null && !STEM_STARTERS.has(first);
+}
+
+/**
  * Build the typed prompt payload for hint/solution generation.
  * Comprehension subs must receive the shared passage via `parentPassage`.
  */
@@ -46,7 +115,8 @@ export function buildQuestionPromptPayload(
   if (question.number) lines.push(`Question number: ${question.number}`);
   if (question.marks != null) lines.push(`Marks: ${question.marks}`);
   if (question.section) lines.push(`Section: ${question.section}`);
-  if (question.instructions) lines.push(`Instructions: ${question.instructions}`);
+  if (question.instructions)
+    lines.push(`Instructions: ${printedInstructionText(question.instructions) ?? question.instructions}`);
 
   const passage = parentPassage ?? question.passage;
   if (passage) {
@@ -78,7 +148,8 @@ export function buildQuestionPromptPayload(
     lines.push("");
     lines.push("Options:");
     for (const option of question.options) {
-      lines.push(`${option.key}. ${option.text}`);
+      const figure = option.image_description ? ` (figure: ${option.image_description})` : "";
+      lines.push(`${option.key}. ${option.text}${figure}`);
     }
   }
 

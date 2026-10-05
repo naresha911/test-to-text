@@ -6,13 +6,13 @@ const GRAMMAR =
   /\bgrammar\b|\btenses?\b|\bprepositions?\b|\barticles?\b|\bactive and passive\b|\breported speech\b|\bparts of speech\b|\bsynonyms?\b|\bantonyms?\b|\bsubject[- ]verb\b/i;
 
 export type SkillDetectInput = {
-  stem?: string | null;
-  instructions?: string | null;
-  type?: string | null;
+  stem?: string | null | undefined;
+  instructions?: string | null | undefined;
+  type?: string | null | undefined;
   figureCount?: number;
   optionImageCount?: number;
   optionTexts?: string[];
-  passage?: string | null;
+  passage?: string | null | undefined;
 };
 
 function textOf(input: SkillDetectInput): string {
@@ -99,10 +99,19 @@ export function detectSkill(input: SkillDetectInput): string {
     if (/\bidiom/.test(lower) || /piece of one's mind|kill two birds|fool's paradise/i.test(stem)) {
       return "idioms";
     }
-    if (/\bsynonym|\bantonym|\bopposite to\b/i.test(text)) return "synonym_antonym";
+    if (/\bsynonym|\bantonym|\bopposite to\b|\bopposite in meaning\b/i.test(text)) {
+      return "synonym_antonym";
+    }
     return "grammar";
   }
   if (/^[\p{L}][\p{L}\s'-]{2,40}$/u.test(stem) && (input.optionTexts?.length ?? 0) >= 3) {
+    return "synonym_antonym";
+  }
+  if (
+    /\bopposite (?:word|word to|to|in meaning)\b|\bantonym\b|\bsynonym\b|\bsame meaning\b|\bsame in meaning\b|\bsimilar in meaning\b|\bcloses?t in meaning\b/i.test(
+      text,
+    )
+  ) {
     return "synonym_antonym";
   }
 

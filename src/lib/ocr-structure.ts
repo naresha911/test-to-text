@@ -278,7 +278,11 @@ export function structureOcrText(pageText: string, page: number): Question[] {
     }
 
     // Leading text before any question: treat as paper-level instructions.
-    sectionInstructions = sectionInstructions ? `${sectionInstructions} ${line}` : line;
+    // After the first question, an unmatched line is a stray stem fragment, not
+    // a direction, so it must not become the instructions for later questions.
+    if (!drafts.length) {
+      sectionInstructions = sectionInstructions ? `${sectionInstructions} ${line}` : line;
+    }
   }
 
   const grouped = drafts.length ? drafts : groupUnnumberedChoices(rawLines);

@@ -26,9 +26,9 @@ const PROMPTS: Record<string, string> = {
   clock_direction:
     "Write a new clock-direction question. State the facing of one hand at a time and ask for the facing at a later time.",
   embedded_figure:
-    "The attached image is the source figure. Invent a new simple figure and four option figures. Exactly one option contains the new figure embedded. Describe every figure in figures[].description. The answer must match your new figure.",
+    "The attached image is the source figure. Invent a new simple figure and four option figures. Exactly one option contains the new figure embedded. Describe each option figure in its option \"image_description\" field; figures[].description is only for the question figure. The answer must match your new figure.",
   figure_identity:
-    "The attached image is the source figure. Invent a different figure of the same kind and four answer figures. Describe them in figures[].description. Do not copy the source picture onto the new question.",
+    "The attached image is the source figure. Invent a different figure of the same kind and four answer figures. Describe each option figure in its option \"image_description\" field; figures[].description is only for the question figure. Do not copy the source picture onto the new question.",
   meaningful_order:
     "Write a new meaningful-order item: a list of words and options that are sequences. Exactly one sequence is the sensible order.",
   letter_series:
@@ -46,20 +46,20 @@ const PROMPTS: Record<string, string> = {
   odd_one_out:
     "Write an odd-one-out item with four options. Exactly one does not belong, and the explanation names the shared property of the other three.",
   figure_pattern:
-    "The attached image is the source pattern. Invent a new visual pattern of the same kind and four options. Describe the new pattern and options in figures[].description. Exactly one option completes your new pattern.",
+    "The attached image is the source pattern. Invent a new visual pattern of the same kind and four options. Describe the new pattern in figures[].description and each answer option in its option \"image_description\" field. Exactly one option completes your new pattern.",
   figure_analogy:
-    "The attached image shows a source figure analogy. Invent a new pair of figures with the same kind of change, then a third figure and four options. The answer must match the new figures, not the source.",
+    "The attached image shows a source figure analogy. Invent a new pair of figures with the same kind of change, then a third figure and four options. Describe the question figures in figures[].description and each answer option in its option \"image_description\" field. The answer must match the new figures, not the source.",
   word_analogy: "Write a new word analogy A : B :: C : ?. Exactly one option keeps the same relation.",
   number_analogy:
     "Write a new number analogy. The rule that links the first pair must link the second pair to exactly one option.",
   figure_series:
-    "The attached image is the source figure series. Invent a new series of the same kind and four option figures. Describe them in figures[].description. Exactly one option is the next figure.",
+    "The attached image is the source figure series. Invent a new series of the same kind and four option figures. Describe the series in figures[].description and each option figure in its option \"image_description\" field. Exactly one option is the next figure.",
   word_formation:
     "Write a new word-formation item. Give one source word and four candidates. Exactly one cannot be made from those letters.",
   direction_sense:
     "Write a new direction question with turns and distances or a rotated compass. Exactly one option is the final facing or place.",
   venn_diagram:
-    "The attached image shows source Venn options. Write three new sets and four different circle relationships. Describe each option figure. Exactly one diagram matches the sets.",
+    "The attached image shows source Venn options. Write three new sets and four different circle relationships. Describe each option figure in its option \"image_description\" field. Exactly one diagram matches the sets.",
   seating_arrangement:
     "Write a new seating arrangement with a short setup and one question. The setup must make exactly one option true.",
   date_puzzle:
@@ -67,7 +67,7 @@ const PROMPTS: Record<string, string> = {
   ranking:
     "Write a new ranking-in-a-row question. Give the row length and the shift. Exactly one option is the earlier or later position.",
   missing_number_figure:
-    "The attached image is the source number figure. Invent a new figure with a missing number and four options. Describe the figure. The missing number must follow a rule you can explain.",
+    "The attached image is the source number figure. Invent a new figure with a missing number and four options. Describe the figure in figures[].description. The missing number must follow a rule you can explain.",
   profit_loss:
     "Write a new profit-and-loss question with a cost and a gain or loss. Exactly one option is the selling price or gain percent.",
   division:

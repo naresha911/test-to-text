@@ -48,6 +48,8 @@ const OptionSchema = z.object({
   key: z.string(),
   text: z.string(),
   is_correct: z.boolean().nullable().optional(),
+  image_path: z.string().nullable().optional(),
+  image_description: z.string().nullable().optional(),
 });
 
 const QuestionInputSchema: z.ZodType<unknown> = z.lazy(() =>
@@ -167,7 +169,7 @@ RULES
 2. Always include hint and explanation on answerable items (each sub_question for comprehension).
 3. Math/chemistry/logic notation must use LaTeX: $...$ or $$...$$.
 4. COMPREHENSION: when the source is comprehension (or you choose that type), you MUST set type to "comprehension", write a NEW non-empty "passage", and include one or more "sub_questions" based on that passage. Sub-question count may differ. Never return sub_questions alone without a passage. Passage reading level must fit the student standard.
-5. Diagram questions: invent a new figure and describe it in figures[].description. When source images are attached, look at them and invent a different figure of the same kind. Do not copy the source image onto the new question.
+5. Diagram questions: invent a new figure of the same kind. Describe the QUESTION figure in figures[].description; describe each ANSWER-option figure in that option's "image_description" field (option text may stay empty). When source images are attached, look at them and invent a different figure of the same kind. The answer must match your invented figure, not the source. Do not copy the source image onto the new question.
 6. Prefer the same broad type as the source when generating from a source question, unless the source type is unknown or broken.
 7. Preserve learning intent (same concept family) while changing surface details.`;
 
@@ -534,11 +536,21 @@ async function executeMockGeneration(
       const plan = skillAuthorPlan({ skill, grade, difficultyStep, hasImages: false });
       const wantsImages = plan?.requiresImages === true || skillByType(skill)?.visual === true;
       const images = wantsImages && sourceQuestion ? await questionImages(sourceQuestion) : [];
-      const skillNote =
+      let skillNote =
         plan?.systemAddendum ??
         [skillAuthorPrompt(skill), skillDifficultyGuidance(skill, grade, difficultyStep)]
           .filter(Boolean)
           .join("\n");
+      if (skill === "synonym_antonym") {
+        const relationText = (
+          sourceQuestion?.instructions ?? sourceQuestion?.stem ?? ""
+        ).toLowerCase();
+        if (/opposite|antonym/i.test(relationText)) {
+          skillNote += "\n\nThis item must ask for the OPPOSITE (antonym) word. The answer is a word that means the reverse of the stem word.";
+        } else if (/synonym|same meaning|similar meaning|same in meaning/i.test(relationText)) {
+          skillNote += "\n\nThis item must ask for the SYNONYM (same meaning) word. The answer is a word that means the same as the stem word.";
+        }
+      }
       if (data.mode === "from_source") {
         if (!sourceQuestion)
           throw new Error("Source question is required for from_source generation.");
@@ -630,6 +642,7 @@ async function executeMockGeneration(
         sourceType,
         sourceDifficulty,
         strategy,
+        sourceInstructions: sourceQuestion?.instructions ?? null,
         ...(catalog ? { catalog } : {}),
       });
       if (!question.stem.trim() && !question.passage?.trim() && !question.assertion?.trim()) {

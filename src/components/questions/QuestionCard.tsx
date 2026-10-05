@@ -48,6 +48,7 @@ import { applyCropReading, type CropLayout } from "@/lib/reading/crop-layout";
 import type { ContentMode } from "@/lib/reading/mode";
 import { READ_FLAG_LABELS } from "@/lib/reading/read-audit";
 import {
+  optionKeyToken,
   parseDisplayedPage,
   QUESTION_TYPE_LABELS,
   QUESTION_TYPES,
@@ -145,10 +146,6 @@ function nextOptionKey(options: Option[]): string {
   let number = 1;
   while (used.has(String(number))) number += 1;
   return String(number);
-}
-
-function optionKeyToken(value: string): string {
-  return value.replace(/[^a-z0-9]/gi, "").toUpperCase();
 }
 
 /** Option crops live on the option, or on a matching answer figure when the link was not copied across. */
@@ -353,6 +350,12 @@ function OptionList({
                 {...(removeImage ? { onRemoveImage: removeImage } : {})}
               />
               {option.text ? <MathText value={option.text} className="min-w-0" /> : null}
+              {!option.text && option.image_description ? (
+                <MathText
+                  value={option.image_description}
+                  className="min-w-0 text-sm text-muted-foreground"
+                />
+              ) : null}
             </div>
           </li>
         );
@@ -981,8 +984,8 @@ export const QuestionCard = memo(function QuestionCard({
     | undefined;
   onDelete?: ((questionId: string) => void) | undefined;
   onReviewGenerated?: ((questionId: string, status: "reviewed" | "rejected") => void) | undefined;
-  onRegenerateGenerated?: ((questionId: string) => void) | undefined;
-  onRegenerateFigure?: ((questionId: string) => void) | undefined;
+  onRegenerateGenerated?: ((questionId: string) => void | Promise<void>) | undefined;
+  onRegenerateFigure?: ((questionId: string) => void | Promise<void>) | undefined;
   /** Store a pasted image and return its path. Absent on screens that cannot keep figures. */
   onPasteFigure?: ((file: File) => Promise<string>) | undefined;
   /** This question, or one of its sub-questions, is generating. */
@@ -997,6 +1000,8 @@ export const QuestionCard = memo(function QuestionCard({
   const onChange = publish ? update : undefined;
   const [editing, setEditing] = useState(startEditing);
   const [cropOpen, setCropOpen] = useState(false);
+  const [regeneratingQuestion, setRegeneratingQuestion] = useState(false);
+  const [regeneratingFigure, setRegeneratingFigure] = useState(false);
   const articleRef = useRef<HTMLElement>(null);
   const solutionUi = useSolutionUi();
   const canEdit = !!onChange;
@@ -1272,10 +1277,22 @@ export const QuestionCard = memo(function QuestionCard({
                   type="button"
                   size="sm"
                   variant="ghost"
-                  onClick={() => onRegenerateGenerated(question.id)}
+                  disabled={regeneratingQuestion}
+                  onClick={async () => {
+                    setRegeneratingQuestion(true);
+                    try {
+                      await onRegenerateGenerated(question.id);
+                    } finally {
+                      setRegeneratingQuestion(false);
+                    }
+                  }}
                 >
-                  <RefreshCw className="h-3 w-3" aria-hidden="true" />
-                  Regenerate question
+                  {regeneratingQuestion ? (
+                    <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <RefreshCw className="h-3 w-3" aria-hidden="true" />
+                  )}
+                  {regeneratingQuestion ? "Regenerating…" : "Regenerate question"}
                 </Button>
               ) : null}
               {onRegenerateFigure && question.skill_type === "mirror_image" ? (
@@ -1283,9 +1300,22 @@ export const QuestionCard = memo(function QuestionCard({
                   type="button"
                   size="sm"
                   variant="ghost"
-                  onClick={() => onRegenerateFigure(question.id)}
+                  disabled={regeneratingFigure}
+                  onClick={async () => {
+                    setRegeneratingFigure(true);
+                    try {
+                      await onRegenerateFigure(question.id);
+                    } finally {
+                      setRegeneratingFigure(false);
+                    }
+                  }}
                 >
-                  Regenerate figure
+                  {regeneratingFigure ? (
+                    <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                  ) : (
+                    <RefreshCw className="h-3 w-3" aria-hidden="true" />
+                  )}
+                  {regeneratingFigure ? "Regenerating…" : "Regenerate figure"}
                 </Button>
               ) : null}
             </>

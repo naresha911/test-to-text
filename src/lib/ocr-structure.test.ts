@@ -174,6 +174,26 @@ describe("structureOcrText", () => {
     ]);
   });
 
+  test("a stray stem after a section header does not become the section instructions", () => {
+    const questions = structureOcrText(
+      [
+        "100. Who is the Governor of Maharashtra?",
+        "(a) Phagu Chauhan (b) Satya Pal Malik",
+        "(c) Kalraj Mishra (d) Bhagat Singh Koshyari",
+        "Section B",
+        "The light of Sun takes how much time to reach to Farth",
+        "101. Who is the Governor of Uttar Pradesh?",
+        "(a) Anandiben Patel (b) Thawar Chand Gehlot",
+        "(c) R. N. Ravi (d) Acharya Devvrat",
+      ].join("\n"),
+      19,
+    );
+
+    const question101 = questions.find((question) => question.number === "101");
+    expect(question101?.stem).toBe("Who is the Governor of Uttar Pradesh?");
+    expect(question101?.instructions ?? "").not.toContain("light of Sun");
+  });
+
   test("still splits a numbered question", () => {
     const questions = structureOcrText(
       "1. The cat sat on the mat.\n(a) chair (b) mat (c) tree (d) sky",
