@@ -53,8 +53,12 @@ export type RunGenerationInput = {
   existingQuestion?: Question | null;
   assetStore: AssetStore;
   callGrammarModel?: (spec: ReturnType<typeof buildGenerationSpec>) => Promise<unknown>;
-  callLegacyModel?: () => Promise<Question>;
+  callLegacyModel?: (questionId: string, skill: string) => Promise<Question>;
   describeSourceFigure?: () => Promise<string | null>;
+  /** Vision pass that names the source figure's skill when the text is uninformative. */
+  classifySourceFigure?: () => Promise<string | null>;
+  /** A figure skill already named for this source, so the vision pass can be skipped. */
+  sourceSkill?: string | null;
   onCheckpoint?: (snapshot: GenerationCheckpoint) => Promise<void>;
   onProduce?: () => void;
   now?: string;
@@ -92,15 +96,43 @@ export async function runGenerationItem(input: RunGenerationInput): Promise<{
     });
   item = { ...item, status: "running", last_error: null };
 
-  const analysis = analyzePattern({
+  let analysis = analyzePattern({
     source: sourceQuestion,
     instructions: input.instructions ?? null,
     analysisId: `${item.item_id}:analysis`,
+    ...(input.sourceSkill ? { skillTypeOverride: input.sourceSkill } : {}),
     ...(input.now ? { now: input.now } : {}),
   });
   if (!item.completed_stages.includes("analysis")) {
     item = withStage(item, "analysis");
     await checkpoint(input, item, input.existingQuestion ?? null);
+  }
+
+  // A vague figure stem reads as figure_identity. Ask vision to name the real
+  // skill so a mirror question can go to the deterministic generator instead of
+  // a model that would trace the source figure. A cached skill skips the call.
+  let skillFromVision = Boolean(input.sourceSkill);
+  if (
+    !input.sourceSkill &&
+    input.classifySourceFigure &&
+    analysis.skill_type === "figure_identity" &&
+    sourceQuestion?.figures.some((figure) => figure.image_path)
+  ) {
+    try {
+      const classified = await input.classifySourceFigure();
+      if (classified && classified !== analysis.skill_type && skillByType(classified)?.visual) {
+        analysis = analyzePattern({
+          source: sourceQuestion,
+          instructions: input.instructions ?? null,
+          analysisId: analysis.analysis_id,
+          skillTypeOverride: classified,
+          ...(input.now ? { now: input.now } : {}),
+        });
+        skillFromVision = true;
+      }
+    } catch {
+      // A vision failure keeps the text-based skill.
+    }
   }
 
   const skill = skillByType(analysis.skill_type);
@@ -143,7 +175,7 @@ export async function runGenerationItem(input: RunGenerationInput): Promise<{
       });
       return generated.question;
     }
-    if (analysis.skill_type === "mirror_image" && !rewrite) {
+    if (analysis.skill_type === "mirror_image" && (!rewrite || skillFromVision)) {
       if (
         input.describeSourceFigure &&
         sourceQuestion?.figures.some((figure) => figure.image_path)
@@ -213,7 +245,7 @@ export async function runGenerationItem(input: RunGenerationInput): Promise<{
         generation_job_id: input.jobId,
       });
     }
-    const legacy = await input.callLegacyModel();
+    const legacy = await input.callLegacyModel(questionId, analysis.skill_type);
     legacy.id = questionId;
     legacy.approved = false;
     legacy.approval_status = "generated";

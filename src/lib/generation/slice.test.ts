@@ -32,6 +32,7 @@ function document(): DocumentMeta {
     standard_id: null,
     stream_id: null,
     subject_id: null,
+    topic_id: null,
     duration_minutes: null,
     total_marks: 2,
     difficulty: null,
@@ -366,6 +367,107 @@ describe("generation orchestrator", () => {
     });
     expect(saved.items?.[0]?.idempotency_key).toBe(item.idempotency_key);
     expect(saved.items?.[0]?.completed_stages).toEqual(["analysis", "generation"]);
+  });
+});
+
+describe("figure skill vision routing", () => {
+  const figureSource = () =>
+    toSourceQuestionRecord({
+      documentId: "source-doc",
+      question: emptyQuestion({
+        id: "src-fig",
+        type: "diagram",
+        stem: "(a)",
+        figures: [{ description: "Pasted image", image_path: "source-doc/source/fig.png" }],
+      }),
+    });
+
+  test("a vague figure routed to mirror_image uses the deterministic generator", async () => {
+    let legacyCalls = 0;
+    const result = await runGenerationItem({
+      jobId: "job",
+      sequence: 0,
+      documentId: "doc-1",
+      number: "1",
+      now,
+      strategy: "rewrite",
+      source: figureSource(),
+      assetStore: createMemoryAssetStore(),
+      classifySourceFigure: async () => "mirror_image",
+      callLegacyModel: async () => {
+        legacyCalls += 1;
+        throw new Error("the model must not be called for a mirror figure");
+      },
+    });
+
+    expect(legacyCalls).toBe(0);
+    expect(result.question.skill_type).toBe("mirror_image");
+    expect(result.question.visual_spec?.["kind"]).toBe("mirror_image");
+    expect(result.question.options.every((option) => option.image_path)).toBe(true);
+  });
+
+  test("without a classifier the same figure stays on the model path", async () => {
+    let seenSkill = "";
+    const result = await runGenerationItem({
+      jobId: "job",
+      sequence: 0,
+      documentId: "doc-1",
+      number: "1",
+      now,
+      strategy: "rewrite",
+      source: figureSource(),
+      assetStore: createMemoryAssetStore(),
+      callLegacyModel: async (_id, skill) => {
+        seenSkill = skill;
+        return emptyQuestion({ id: "q", type: "diagram", stem: "A new figure." });
+      },
+    });
+
+    expect(seenSkill).toBe("figure_identity");
+    expect(result.question.skill_type).toBe("figure_identity");
+  });
+
+  test("a cached source skill routes without calling vision again", async () => {
+    let classifyCalls = 0;
+    const result = await runGenerationItem({
+      jobId: "job",
+      sequence: 0,
+      documentId: "doc-1",
+      number: "1",
+      now,
+      strategy: "rewrite",
+      source: figureSource(),
+      assetStore: createMemoryAssetStore(),
+      sourceSkill: "mirror_image",
+      classifySourceFigure: async () => {
+        classifyCalls += 1;
+        return "figure_identity";
+      },
+      callLegacyModel: async () => {
+        throw new Error("the model must not be called for a cached mirror skill");
+      },
+    });
+
+    expect(classifyCalls).toBe(0);
+    expect(result.question.skill_type).toBe("mirror_image");
+    expect(result.question.visual_spec?.["kind"]).toBe("mirror_image");
+  });
+});
+
+describe("generation state skills", () => {
+  test("a cached figure skill survives a parse round-trip", () => {
+    const parsed = parseMockGeneration({
+      mode: "from_source",
+      status: "in_progress",
+      instructions: null,
+      planned_count: 1,
+      source_question_ids: ["src-1"],
+      cursor: 0,
+      last_error: null,
+      figure_skills: { "src-1": "mirror_image" },
+    });
+
+    expect(parsed?.figure_skills).toEqual({ "src-1": "mirror_image" });
   });
 });
 

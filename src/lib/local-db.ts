@@ -18,6 +18,7 @@ import {
   isLoadableQuestionImage,
   normalizeStoredImagePath,
 } from "@/lib/question-images";
+import { ensureSvgRootAttributes } from "@/lib/assets/svg-sanitize";
 import { pageImageFilePath, pagesWithLostImage } from "@/lib/page-image-path";
 import type { Question } from "@/lib/question-schema";
 import { CONTENT_MODES, type ContentMode } from "@/lib/reading/mode";
@@ -86,6 +87,7 @@ function schemaSql(): string {
       standard_id INTEGER,
       stream_id INTEGER,
       subject_id INTEGER,
+      topic_id INTEGER,
       duration_minutes INTEGER,
       total_marks REAL,
       difficulty TEXT,
@@ -239,6 +241,7 @@ function rowToMeta(row: Record<string, unknown>): DocumentMeta {
     standard_id: num(row["standard_id"]),
     stream_id: num(row["stream_id"]),
     subject_id: num(row["subject_id"]),
+    topic_id: num(row["topic_id"]),
     duration_minutes: num(row["duration_minutes"]),
     total_marks: num(row["total_marks"]),
     difficulty: (str(row["difficulty"]) as DocumentMeta["difficulty"]) ?? null,
@@ -324,6 +327,9 @@ function ensureDocumentColumns(db: SqlJsDatabase): void {
   if (!names.has("questions_rev")) {
     db.run("ALTER TABLE pp_documents ADD COLUMN questions_rev INTEGER NOT NULL DEFAULT 0");
   }
+  if (!names.has("topic_id")) {
+    db.run("ALTER TABLE pp_documents ADD COLUMN topic_id INTEGER");
+  }
 }
 
 function ensurePageColumns(db: SqlJsDatabase): void {
@@ -398,13 +404,15 @@ async function readImageDataUrl(relativePath: string): Promise<string | undefine
   try {
     const buf = await fs.readFile(abs);
     const lower = relativePath.toLowerCase();
-    const contentType = lower.endsWith(".svg")
-      ? "image/svg+xml"
-      : lower.endsWith(".png")
-        ? "image/png"
-        : lower.endsWith(".webp")
-          ? "image/webp"
-          : "image/jpeg";
+    if (lower.endsWith(".svg")) {
+      const svg = ensureSvgRootAttributes(new TextDecoder().decode(buf));
+      return bytesToDataUrl(new TextEncoder().encode(svg), "image/svg+xml");
+    }
+    const contentType = lower.endsWith(".png")
+      ? "image/png"
+      : lower.endsWith(".webp")
+        ? "image/webp"
+        : "image/jpeg";
     return bytesToDataUrl(new Uint8Array(buf), contentType);
   } catch {
     return undefined;
@@ -815,7 +823,7 @@ export async function updateDocument(
 
     db.run(
       `UPDATE pp_documents SET
-        kind = ?, title = ?, year = ?, standard_id = ?, stream_id = ?, subject_id = ?,
+        kind = ?, title = ?, year = ?, standard_id = ?, stream_id = ?, subject_id = ?, topic_id = ?,
         duration_minutes = ?, total_marks = ?, difficulty = ?, exam = ?, notes = ?,
         source = ?, description = ?, section_timing = ?, negative_marking = ?,
         allow_pause = ?, max_attempts = ?, default_marks = ?, default_negative_marks = ?,
@@ -828,6 +836,7 @@ export async function updateDocument(
         next["standard_id"],
         next["stream_id"],
         next["subject_id"],
+        next["topic_id"] ?? null,
         next["duration_minutes"],
         next["total_marks"],
         next["difficulty"],

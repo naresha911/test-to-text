@@ -272,6 +272,7 @@ function PaperDetail({ id }: { id: string }) {
       negative_marks: doc?.default_negative_marks ?? null,
       difficulty: doc?.difficulty ?? null,
       subject_id: doc?.subject_id ?? null,
+      topic_id: doc?.topic_id ?? null,
       standard_id: doc?.standard_id ?? null,
       stream_id: doc?.stream_id ?? null,
       year: doc?.year ?? null,
@@ -472,6 +473,7 @@ function PaperDetail({ id }: { id: string }) {
         onRegenerate={solution.regenerate}
         onPasteFigure={pasteFigure}
         solutionAudience={audience}
+        catalog={catalog}
         queuedIds={solution.queuedIds}
         promptReveal={solution.promptReveal}
         promptStore={solution.prompts}
@@ -672,6 +674,10 @@ function LibraryPage() {
       for (const topic of catalog.topics) {
         topicsById[topic.id] = topic.name;
       }
+      const catalogOptions = {
+        subjects: catalog.subjects.map((s) => ({ id: s.id, name: s.name })),
+        topics: catalog.topics.map((t) => ({ id: t.id, name: t.name })),
+      };
 
       const result = await resumeMockPaperGeneration({
         mockId,
@@ -683,6 +689,7 @@ function LibraryPage() {
           stream: streamName,
           topicsById,
         },
+        catalogOptions,
         runGenerate: generateFn,
         runSave: saveFn,
         onProgress: ({ generation, total }) => {

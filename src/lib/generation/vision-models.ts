@@ -16,7 +16,7 @@ export const TEXT_EXAM_FALLBACKS = [
 
 /**
  * Command Code Provider API (https://api.commandcode.ai/provider/v1).
- * Text questions ride the free routes, cheapest and most available first.
+ * Text questions ride the free routes only, cheapest and most available first.
  * `/provider/v1/models` lists the live ids; never invent one.
  */
 export const COMMAND_CODE_TEXT_MODEL = "inclusionai/ling-3.1-flash:free";
@@ -25,14 +25,13 @@ export const COMMAND_CODE_TEXT_MODELS = [
   "inclusionai/ling-3.1-flash:free",
   "inclusionai/ling-3.0-flash-sante:free",
   "poolside/laguna-s-2.1-free",
-  "stealth/space-bunny-alpha",
 ] as const;
 
 /**
  * Diagram questions need a vision model, and none of the free routes accept
- * images. These are the Command Code vision-capable routes.
+ * images. These are the Command Code vision-capable routes, most capable first.
  */
 export const COMMAND_CODE_VISION_MODELS = [
-  "deepseek/deepseek-v4-flash-vision-exp",
   "Qwen/Qwen3.8-Omni-Flash",
+  "deepseek/deepseek-v4-flash-vision-exp",
 ] as const;

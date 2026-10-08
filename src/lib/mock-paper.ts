@@ -181,6 +181,9 @@ function appendSubQuestionPattern(lines: string[], question: Question, depth = 0
   });
 }
 
+const FIGURE_SVG_RULE =
+  'DRAWING FIGURES (must follow): also return an inline SVG that draws each figure you describe, in that figure\'s "svg" field, and each answer-option picture, in that option\'s "svg" field. Use only <svg>, <g>, <rect>, <circle>, <ellipse>, <polygon>, <polyline>, <line>, <path>, <text>. Put xmlns="http://www.w3.org/2000/svg" and a viewBox on the root <svg>. Never use <script>, <foreignObject>, external URLs, or on* attributes. Keep each drawing small (a handful of shapes) and make it match your description exactly.';
+
 export function buildFromSourceUserPrompt(options: {
   sourceQuestion: Question;
   index: number;
@@ -244,6 +247,7 @@ export function buildFromSourceUserPrompt(options: {
         "Keep the SAME question: same type, same structure, same number of parts, options and marks, same skill, topic, subject and difficulty.",
         "Change only surface details: names, numbers, values, units, entities and phrasing. The correct answer must stay correct for the new values.",
         "Do not add, remove or reorder parts, options, or sub-questions.",
+        "For diagram questions this still means a NEW figure: keep the skill and the answer logic, but redraw the figure with a different arrangement — never reproduce the source figure (see DRAWING FIGURES).",
       ]
     : [
         "Create ONE original mock exam question inspired by the SOURCE pattern below.",
@@ -256,15 +260,16 @@ export function buildFromSourceUserPrompt(options: {
     "- Do NOT copy or lightly reorder the source stem, passage, options, or distinctive phrasing.",
     "- Replace every name, number, unit and entity. No source token may appear verbatim in your output.",
     "- Never reproduce more than about six consecutive words from the source.",
+    "- Do NOT reproduce the source figure or any of its option pictures. Draw a structurally NEW figure with a different arrangement of shapes — a traced figure is a copyright breach.",
     "- If the source looks like a well-known or standard question, produce a materially different variant — not a near-copy.",
   ];
 
   const figureRule = rewrite
     ? options.hasImages
-      ? "You can see the source figure. Keep the same kind of figure; reword only the surrounding text and its description."
-      : "Keep the same kind of figure the source describes; reword the surrounding text only."
+      ? "You can see the source figure. Draw a NEW figure of the same kind and difficulty: do NOT reproduce the source's shapes, positions, proportions, or arrangement. Change the number, size, orientation and layout of the elements so it is clearly different, while keeping the same skill and answer logic. Reword the surrounding text and description too."
+      : "Invent a NEW figure of the same kind the source describes — do not reuse its arrangement, shapes or proportions. Reword the surrounding text."
     : options.hasImages
-      ? "You can see the source figure. Invent a new figure of the same skill and describe it in figures[].description. The answer must match the new figure."
+      ? "You can see the source figure. Invent a NEW figure of the same skill with a different arrangement (different element count, positions, sizes and orientation). Describe it in figures[].description. The answer must match the new figure."
       : "For diagram/figure questions, invent a new scenario and describe it in figures[].description.";
 
   const optionFigureRule =
@@ -289,6 +294,7 @@ export function buildFromSourceUserPrompt(options: {
     ...copyright,
     figureRule,
     optionFigureRule,
+    FIGURE_SVG_RULE,
     "Return a full Question JSON object with answers, hint, explanation, and difficulty.",
     ...metadataLines,
     "",
@@ -350,6 +356,7 @@ export function buildFromInstructionsUserPrompt(options: {
     "Follow the teacher instructions. Choose a suitable type, difficulty, and content.",
     "Include correct answers, a short learner hint, a full explanation, and a difficulty field.",
     "Use LaTeX for math ($...$ / $$...$$). For diagrams, describe the question figure in figures[].description; when the answer options are figures, describe each one in its option \"image_description\" field instead; option text may stay empty.",
+    FIGURE_SVG_RULE,
     "Return a full Question JSON object.",
     "",
     ...buildLevelingGuidance({

@@ -1,3 +1,11 @@
+import { VISION_SKILLS } from "@/lib/generation/skills/catalog";
+
+const VISION = new Set<string>(VISION_SKILLS);
+
+/** A diagram question's options must carry drawings, not just a description. */
+const DRAW_FIGURES =
+  'Also DRAW every figure: put the question figure\'s inline SVG in figures[].svg and each answer-option figure\'s inline SVG in that option\'s "svg" field, with xmlns="http://www.w3.org/2000/svg" and a viewBox, using only simple shapes (no scripts or external URLs). Describe the figure you drew in the same field\'s "description"/"image_description".';
+
 /** Extra instructions for one skill. Checked oracles do not use these. */
 const PROMPTS: Record<string, string> = {
   jumbled_sentences:
@@ -108,7 +116,9 @@ const PROMPTS: Record<string, string> = {
 };
 
 export function skillAuthorPrompt(skill: string): string | null {
-  return PROMPTS[skill] ?? null;
+  const prompt = PROMPTS[skill];
+  if (!prompt) return null;
+  return VISION.has(skill) ? `${prompt} ${DRAW_FIGURES}` : prompt;
 }
 
 /** How hard this skill should be for a class, and one optional step up. */

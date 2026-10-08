@@ -241,7 +241,7 @@ export function buildExamPrepExport(document: DocumentMeta, questions: Question[
   for (const item of flat) {
     const q = item.question;
     const examType = mapQuestionType(q.type, q);
-    const firstFigure = q.figures.find((f) => f.image_path);
+    const firstFigure = q.figures.find((f) => f.svg || f.image_path);
     const marks = q.marks ?? document.default_marks ?? 1;
     const negative = q.negative_marks ?? document.default_negative_marks ?? 0;
     const sectionName = q.section?.trim() || "General";
@@ -251,12 +251,13 @@ export function buildExamPrepExport(document: DocumentMeta, questions: Question[
       id: q.id,
       question_type: examType,
       subject_id: q.subject_id ?? document.subject_id,
-      topic_id: q.topic_id ?? null,
+      topic_id: q.topic_id ?? document.topic_id ?? null,
       standard_id: q.standard_id ?? document.standard_id,
       stream_id: q.stream_id ?? document.stream_id,
       difficulty: q.difficulty ?? document.difficulty ?? "medium",
       has_diagram: q.figures.length > 0,
       diagram_path: firstFigure?.image_path ?? null,
+      diagram_svg: firstFigure?.svg ?? null,
       marks,
       negative_marks: negative,
       year: q.year ?? document.year,
@@ -275,6 +276,7 @@ export function buildExamPrepExport(document: DocumentMeta, questions: Question[
       question_text: questionText(q),
       explanation: solutionText(q),
       explanation_diagram_path: null,
+      explanation_diagram_svg: null,
       hint: q.hint ?? null,
     });
 
@@ -294,6 +296,7 @@ export function buildExamPrepExport(document: DocumentMeta, questions: Question[
         language_code: "en",
         option_text: option.text,
         option_image_path: option.image_path ?? null,
+        option_svg: option.svg ?? null,
       });
     });
 
@@ -346,6 +349,7 @@ export function buildExamPrepExport(document: DocumentMeta, questions: Question[
           subject_id: q.subject_id ?? document.subject_id,
           standard_id: q.standard_id ?? document.standard_id,
           shared_image_path: firstFigure?.image_path ?? null,
+          shared_image_svg: firstFigure?.svg ?? null,
           created_by: null,
           created_at: document.created_at,
         });

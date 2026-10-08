@@ -37,6 +37,8 @@ export function analyzePattern(input: {
   instructions?: string | null;
   analysisId?: string;
   now?: string;
+  /** A skill named from the source image, used ahead of text detection. */
+  skillTypeOverride?: string | null;
 }): PatternAnalysis {
   const source = input.source ?? null;
   const instructions = input.instructions?.trim() ?? "";
@@ -48,7 +50,10 @@ export function analyzePattern(input: {
     source?.skill_type && skillByType(source.skill_type) ? source.skill_type : null;
   const detectInstructions =
     [input.instructions ?? "", source?.instructions ?? ""].filter(Boolean).join("\n") || null;
+  const overrideSkill =
+    input.skillTypeOverride && skillByType(input.skillTypeOverride) ? input.skillTypeOverride : null;
   const skillType =
+    overrideSkill ??
     explicitSkill ??
     detectSkill({
       stem: source?.stem,

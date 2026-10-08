@@ -37,6 +37,8 @@ export type ExamMessage = {
 };
 
 const MAX_IMAGES = 6;
+/** Room for a question plus inline figure SVGs the model draws for diagram items. */
+const MAX_EXAM_TOKENS = 8000;
 
 export function withImages(messages: ExamMessage[], images: ExamImage[]): ExamMessage[] {
   const usable = images.filter((image) => image.dataUrl.trim()).slice(0, MAX_IMAGES);
@@ -156,7 +158,7 @@ async function sendChat(target: GenerationChatTarget, messages: ExamMessage[]): 
         model: target.model,
         models: target.models,
         messages,
-        maxTokens: 4000,
+        maxTokens: MAX_EXAM_TOKENS,
         stream: false,
       }),
     ),
@@ -209,17 +211,19 @@ async function firstUsable(
     );
   }
   let last = "";
-  let lastError: Error | null = null;
+  let firstError: Error | null = null;
   for (const target of targets) {
     try {
       const text = await deps.send(target, messages);
       last = text;
       if (accept(text)) return { text, accepted: true };
     } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
+      // Keep the primary provider's failure: it is the one that explains why the
+      // chain fell through, not whichever fallback happened to fail last.
+      if (!firstError) firstError = error instanceof Error ? error : new Error(String(error));
     }
   }
-  if (!last && lastError) throw lastError;
+  if (!last && firstError) throw firstError;
   return { text: last, accepted: false };
 }
 

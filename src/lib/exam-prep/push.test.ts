@@ -35,6 +35,7 @@ function document(): DocumentMeta {
     standard_id: 5,
     stream_id: null,
     subject_id: null,
+    topic_id: null,
     duration_minutes: 60,
     total_marks: null,
     difficulty: "medium",

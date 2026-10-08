@@ -101,6 +101,7 @@ const emptyMeta = (
   standard_id: null,
   stream_id: null,
   subject_id: null,
+  topic_id: null,
   duration_minutes: null,
   total_marks: null,
   difficulty: null,
@@ -425,6 +426,7 @@ function HomePage() {
         negative_marks: metaRef.current.default_negative_marks,
         difficulty: metaRef.current.difficulty,
         subject_id: metaRef.current.subject_id,
+        topic_id: metaRef.current.topic_id,
         standard_id: metaRef.current.standard_id,
         stream_id: metaRef.current.stream_id,
         year: metaRef.current.year,
@@ -795,6 +797,7 @@ function HomePage() {
         question.standard_id = metaNow.standard_id;
         question.stream_id = metaNow.stream_id;
         question.subject_id = metaNow.subject_id;
+        question.topic_id = metaNow.topic_id;
         question.year = metaNow.year;
         question.source = metaNow.source || metaNow.exam || null;
         if (question.marks == null) question.marks = metaNow.default_marks;
@@ -907,6 +910,10 @@ function HomePage() {
 
   const streams = catalog.streams.filter(
     (s) => meta.standard_id == null || s.standard_id == null || s.standard_id === meta.standard_id,
+  );
+
+  const topics = catalog.topics.filter(
+    (t) => meta.subject_id == null || t.subject_id == null || t.subject_id === meta.subject_id,
   );
 
   if (loadingDoc) {
@@ -1130,6 +1137,7 @@ function HomePage() {
                     onChange={(event) =>
                       patchMeta({
                         subject_id: event.target.value === "" ? null : Number(event.target.value),
+                        topic_id: null,
                       })
                     }
                   >
@@ -1137,6 +1145,29 @@ function HomePage() {
                     {catalog.subjects.map((s) => (
                       <option key={s.id} value={s.id}>
                         {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <Label htmlFor="topic" className="text-xs text-muted-foreground">
+                    Topic
+                  </Label>
+                  <select
+                    id="topic"
+                    className={selectClass}
+                    value={meta.topic_id ?? ""}
+                    onChange={(event) =>
+                      patchMeta({
+                        topic_id: event.target.value === "" ? null : Number(event.target.value),
+                      })
+                    }
+                  >
+                    <option value="">Unset</option>
+                    {topics.map((t) => (
+                      <option key={t.id} value={t.id}>
+                        {t.name}
                       </option>
                     ))}
                   </select>
@@ -1343,6 +1374,7 @@ function HomePage() {
                   promptReveal={solution.promptReveal}
                   promptStore={solution.prompts}
                   solutionAudience={audience}
+                  catalog={catalog}
                   onReadCrop={onReadCrop}
                   onOpenPage={(displayedPage) => scrollToPage(String(displayedPage))}
                   contentModeForPage={(page) => {

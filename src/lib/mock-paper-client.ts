@@ -199,7 +199,7 @@ export async function resumeMockPaperGeneration(options: {
 
         const catalog = {
           subject_id: sourceQuestion.subject_id ?? options.document.subject_id,
-          topic_id: topicId ?? null,
+          topic_id: topicId ?? options.document.topic_id,
           standard_id: sourceQuestion.standard_id ?? options.document.standard_id,
           stream_id: sourceQuestion.stream_id ?? options.document.stream_id,
         };
@@ -249,6 +249,7 @@ export async function resumeMockPaperGeneration(options: {
         }
         const catalog = {
           subject_id: options.document.subject_id,
+          topic_id: options.document.topic_id,
           standard_id: options.document.standard_id,
           stream_id: options.document.stream_id,
         };
@@ -269,6 +270,7 @@ export async function resumeMockPaperGeneration(options: {
             generation: state,
             savedQuestions: questions,
             existingQuestion: already ?? null,
+            ...(options.catalogOptions ? { catalogOptions: options.catalogOptions } : {}),
             questions_rev: questionsRev,
           },
         });

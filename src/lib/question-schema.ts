@@ -52,6 +52,8 @@ export type Option = {
   /** Local compatibility path. Production identity is the asset id, not this path. */
   image_path?: string | null;
   image_description?: string | null;
+  /** Inline SVG markup for a generated option figure, pushed to exam-prep as text. */
+  svg?: string | null;
 };
 
 export type MatchPair = {
@@ -109,6 +111,8 @@ export type Figure = {
   page?: number | null;
   /** Storage path of the cropped figure image, once uploaded. */
   image_path?: string | null;
+  /** Inline SVG markup for a generated figure, pushed to exam-prep as text. */
+  svg?: string | null;
   id?: string | null;
   role?: FigureRole | null;
   generation_method?: GenerationMethod | null;
@@ -394,6 +398,7 @@ export function normalizeQuestion(raw: unknown, page: number): Question {
       is_correct: typeof oo["is_correct"] === "boolean" ? (oo["is_correct"] as boolean) : null,
       image_path: localAssetPath(oo["image_path"]),
       image_description: str(oo["image_description"]),
+      svg: str(oo["svg"]) ?? str(oo["image_svg"]),
     };
   });
 
@@ -450,6 +455,7 @@ export function normalizeQuestion(raw: unknown, page: number): Question {
         bbox: bbox(ff["bbox"]) ?? null,
         page: typeof ff["page"] === "number" ? (ff["page"] as number) : page,
         image_path: localAssetPath(ff["image_path"]),
+        svg: str(ff["svg"]) ?? str(ff["image_svg"]),
         id: str(ff["id"]),
         role,
         generation_method: generationMethod,

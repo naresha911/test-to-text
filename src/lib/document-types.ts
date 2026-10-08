@@ -55,6 +55,8 @@ export type MockGenerationState = {
   difficulty_step?: number;
   /** Set when the mock practises one skill instead of copying a paper. */
   drill_skill?: string | null;
+  /** Figure skill named by vision for each source question, so repeat runs skip the vision call. */
+  figure_skills?: Record<string, string>;
 };
 
 export type DocumentMeta = {
@@ -65,6 +67,7 @@ export type DocumentMeta = {
   standard_id: number | null;
   stream_id: number | null;
   subject_id: number | null;
+  topic_id: number | null;
   duration_minutes: number | null;
   total_marks: number | null;
   difficulty: Difficulty | null;
@@ -224,6 +227,15 @@ export function parseMockGeneration(raw: unknown): MockGenerationState | null {
       : obj["drill_skill"] === null
         ? { drill_skill: null }
         : {}),
+    ...(obj["figure_skills"] && typeof obj["figure_skills"] === "object" && !Array.isArray(obj["figure_skills"])
+      ? {
+          figure_skills: Object.fromEntries(
+            Object.entries(obj["figure_skills"] as Record<string, unknown>).filter(
+              (entry): entry is [string, string] => typeof entry[1] === "string",
+            ),
+          ),
+        }
+      : {}),
   };
 }
 

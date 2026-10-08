@@ -66,6 +66,7 @@ export const GenerationSchema = z.object({
   strategy: z.enum(["rewrite", "write_new"]).optional(),
   difficulty_step: z.number().int().min(-1).max(2).optional(),
   drill_skill: z.string().max(80).nullable().optional(),
+  figure_skills: z.record(z.string(), z.string().max(40)).optional(),
 });
 
 export const listLocalDocuments = createServerFn({ method: "GET" }).handler(async () =>
@@ -102,6 +103,7 @@ const MetaPatch = z.object({
   standard_id: z.number().int().nullable().optional(),
   stream_id: z.number().int().nullable().optional(),
   subject_id: z.number().int().nullable().optional(),
+  topic_id: z.number().int().nullable().optional(),
   duration_minutes: z.number().int().nullable().optional(),
   total_marks: z.number().nullable().optional(),
   difficulty: z.enum(["easy", "medium", "hard"]).nullable().optional(),
@@ -132,6 +134,7 @@ export const saveLocalDocument = createServerFn({ method: "POST" })
     if (src.standard_id !== undefined) patch.standard_id = src.standard_id;
     if (src.stream_id !== undefined) patch.stream_id = src.stream_id;
     if (src.subject_id !== undefined) patch.subject_id = src.subject_id;
+    if (src.topic_id !== undefined) patch.topic_id = src.topic_id;
     if (src.duration_minutes !== undefined) patch.duration_minutes = src.duration_minutes;
     if (src.total_marks !== undefined) patch.total_marks = src.total_marks;
     if (src.difficulty !== undefined) patch.difficulty = src.difficulty;
@@ -293,6 +296,7 @@ export const createAiMockFromSource = createServerFn({ method: "POST" })
       standard_id: loaded.document.standard_id,
       stream_id: loaded.document.stream_id,
       subject_id: loaded.document.subject_id,
+      topic_id: loaded.document.topic_id,
       duration_minutes: loaded.document.duration_minutes,
       total_marks: loaded.document.total_marks,
       difficulty: loaded.document.difficulty,
@@ -328,6 +332,7 @@ export const createAiMockFromInstructions = createServerFn({ method: "POST" })
         standard_id: z.number().int().nullable().optional(),
         stream_id: z.number().int().nullable().optional(),
         subject_id: z.number().int().nullable().optional(),
+        topic_id: z.number().int().nullable().optional(),
         difficulty: z.enum(["easy", "medium", "hard"]).nullable().optional(),
         exam: z.string().max(200).nullable().optional(),
         duration_minutes: z.number().int().nullable().optional(),
@@ -387,6 +392,7 @@ export const createAiMockFromInstructions = createServerFn({ method: "POST" })
       standard_id: data.standard_id ?? null,
       stream_id: data.stream_id ?? null,
       subject_id: data.subject_id ?? null,
+      topic_id: data.topic_id ?? null,
       difficulty: data.difficulty ?? null,
       exam: data.exam ?? null,
       duration_minutes: data.duration_minutes ?? null,

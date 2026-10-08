@@ -7,6 +7,7 @@ import { SolutionUiContext, type SolutionUiValue } from "@/components/questions/
 import { questionFamilyBusy } from "@/components/questions/use-question-draft";
 import { Badge } from "@/components/ui/badge";
 import type { SolutionPromptReveal } from "@/hooks/useSolutionGeneration";
+import type { Catalog } from "@/lib/document-types";
 import { sortQuestions } from "@/lib/question-order";
 import type { SolutionAudience } from "@/lib/question-context";
 import type { Question } from "@/lib/question-schema";
@@ -31,6 +32,8 @@ type Props = {
     | ((questionId: string, options?: { userPrompt?: string }) => void)
     | undefined;
   solutionAudience?: SolutionAudience | undefined;
+  /** Reference catalog backing the per-question subject/topic pickers. */
+  catalog?: Catalog | undefined;
   queuedIds?: Set<string> | undefined;
   promptReveal?: SolutionPromptReveal | null | undefined;
   /** Latest edited prompt for each question, shared with solution generation. */
@@ -69,6 +72,7 @@ export function PageReview({
   onRegenerateFigure,
   generatingIds,
   solutionAudience,
+  catalog,
   queuedIds,
   promptReveal,
   promptStore,
@@ -86,12 +90,13 @@ export function PageReview({
   const solutionUi = useMemo<SolutionUiValue>(
     () => ({
       ...(solutionAudience ? { audience: solutionAudience } : {}),
+      ...(catalog ? { catalog } : {}),
       promptReveal: promptReveal ?? null,
       prompts,
       generatingIdsRef,
       queuedIdsRef,
     }),
-    [solutionAudience, promptReveal, prompts, generatingIdsRef, queuedIdsRef],
+    [solutionAudience, catalog, promptReveal, prompts, generatingIdsRef, queuedIdsRef],
   );
   const sorted = sortQuestions(questions);
 

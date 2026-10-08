@@ -43,4 +43,15 @@ describe("skillAuthorPlan", () => {
     );
     expect(plan?.systemAddendum).toContain(guidance);
   });
+
+  test("vision skills require a drawing for the question and each option", () => {
+    const prompt = skillAuthorPrompt("figure_identity") ?? "";
+    expect(prompt).toContain("figures[].svg");
+    expect(prompt).toContain('answer-option figure');
+    expect(prompt).toContain('xmlns="http://www.w3.org/2000/svg"');
+  });
+
+  test("language skills are not told to draw figures", () => {
+    expect(skillAuthorPrompt("grammar") ?? "").not.toContain("figures[].svg");
+  });
 });

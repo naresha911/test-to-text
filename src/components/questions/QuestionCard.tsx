@@ -1010,6 +1010,12 @@ export const QuestionCard = memo(function QuestionCard({
     (question.type !== "comprehension" || question.sub_questions.length === 0);
   const showSolutionPrompt = canRegenerateSolution && !question.approval_status;
   const audience = solutionUi?.audience;
+  const catalog = solutionUi?.catalog;
+  const subjectTopics = (() => {
+    const all = catalog?.topics ?? [];
+    if (question.subject_id == null) return all;
+    return all.filter((t) => t.subject_id == null || t.subject_id === question.subject_id);
+  })();
   const builtPrompt = useMemo(
     () =>
       buildSolutionUserPrompt(question, {
@@ -1489,30 +1495,73 @@ export const QuestionCard = memo(function QuestionCard({
             </select>
           </div>
           <div>
-            <FieldLabel>Subject ID</FieldLabel>
-            <Input
-              type="number"
-              value={question.subject_id ?? ""}
-              onChange={(event) =>
-                onChange({
-                  ...question,
-                  subject_id: event.target.value === "" ? null : Number(event.target.value),
-                })
-              }
-            />
+            <FieldLabel>Subject</FieldLabel>
+            {catalog?.subjects.length ? (
+              <select
+                className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                value={question.subject_id ?? ""}
+                aria-label="Question subject"
+                onChange={(event) =>
+                  onChange({
+                    ...question,
+                    subject_id: event.target.value === "" ? null : Number(event.target.value),
+                    topic_id: null,
+                  })
+                }
+              >
+                <option value="">Unset</option>
+                {catalog.subjects.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <Input
+                type="number"
+                value={question.subject_id ?? ""}
+                onChange={(event) =>
+                  onChange({
+                    ...question,
+                    subject_id: event.target.value === "" ? null : Number(event.target.value),
+                  })
+                }
+              />
+            )}
           </div>
           <div>
-            <FieldLabel>Topic ID</FieldLabel>
-            <Input
-              type="number"
-              value={question.topic_id ?? ""}
-              onChange={(event) =>
-                onChange({
-                  ...question,
-                  topic_id: event.target.value === "" ? null : Number(event.target.value),
-                })
-              }
-            />
+            <FieldLabel>Topic</FieldLabel>
+            {catalog?.topics.length ? (
+              <select
+                className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm"
+                value={question.topic_id ?? ""}
+                aria-label="Question topic"
+                onChange={(event) =>
+                  onChange({
+                    ...question,
+                    topic_id: event.target.value === "" ? null : Number(event.target.value),
+                  })
+                }
+              >
+                <option value="">Unset</option>
+                {subjectTopics.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <Input
+                type="number"
+                value={question.topic_id ?? ""}
+                onChange={(event) =>
+                  onChange({
+                    ...question,
+                    topic_id: event.target.value === "" ? null : Number(event.target.value),
+                  })
+                }
+              />
+            )}
           </div>
           <div className="sm:col-span-3">
             <FieldLabel>Tags (comma separated)</FieldLabel>

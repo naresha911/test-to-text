@@ -90,6 +90,57 @@ describe("from-source prompt honors printed instructions", () => {
     });
     expect(prompt).not.toContain("SOURCE PRINTED INSTRUCTION");
   });
+
+  test("asks the model to draw the question and each option figure as SVG", () => {
+    const prompt = buildFromSourceUserPrompt({
+      sourceQuestion: emptyQuestion({
+        number: "5",
+        type: "diagram",
+        stem: "(a)",
+        options: wordOptions(),
+      }),
+      index: 0,
+      total: 1,
+      strategy: "write_new",
+    });
+    expect(prompt).toContain("DRAWING FIGURES");
+    expect(prompt).toContain('option\'s "svg" field');
+  });
+
+  test("rewrite still requires a newly drawn figure, never the source", () => {
+    const prompt = buildFromSourceUserPrompt({
+      sourceQuestion: emptyQuestion({
+        number: "5",
+        type: "diagram",
+        stem: "(a)",
+        figures: [{ description: "A square with a mirror line to its right." }],
+      }),
+      index: 0,
+      total: 1,
+      strategy: "rewrite",
+      hasImages: true,
+    });
+    expect(prompt).toContain("Draw a NEW figure");
+    expect(prompt).not.toContain("Keep the same kind of figure");
+    expect(prompt).toContain("copyright breach");
+  });
+
+  test("write_new asks for a different arrangement of the source figure", () => {
+    const prompt = buildFromSourceUserPrompt({
+      sourceQuestion: emptyQuestion({
+        number: "5",
+        type: "diagram",
+        stem: "(a)",
+        figures: [{ description: "A square with a mirror line to its right." }],
+      }),
+      index: 0,
+      total: 1,
+      strategy: "write_new",
+      hasImages: true,
+    });
+    expect(prompt).toContain("Invent a NEW figure");
+    expect(prompt).toContain("different arrangement");
+  });
 });
 
 describe("synonym/antonym detection", () => {

@@ -11,10 +11,13 @@ import {
   omniroutersApiKey,
 } from "@/lib/generation/chat-provider";
 import { completeExamChat, type ExamImage } from "@/lib/generation/exam-chat";
-import { detectSkill } from "@/lib/generation/skill-detect";
 import { skillAuthorPlan } from "@/lib/generation/skills/author-plan";
 import { skillAuthorPrompt, skillDifficultyGuidance } from "@/lib/generation/skill-prompts";
 import { buildSearchQuery } from "@/lib/generation/web-search";
+import {
+  COMMAND_CODE_TEXT_MODELS,
+  COMMAND_CODE_VISION_MODELS,
+} from "@/lib/generation/vision-models";
 import { skillByType } from "@/lib/question-taxonomy";
 import {
   emptyGenerationItem,
@@ -24,6 +27,7 @@ import {
 import { runGenerationItem } from "@/lib/generation/orchestrator";
 import { buildGrammarUserPrompt } from "@/lib/generation/textual/prompt";
 import { redrawMirrorFigure } from "@/lib/generation/visual/assets";
+import { attachModelFigures } from "@/lib/generation/visual/model-figures";
 import { getDocument, readLocalImageDataUrl, updateDocument } from "@/lib/local-db";
 import {
   assertMockQuestionComplete,
@@ -139,6 +143,8 @@ const InputSchema = z.object({
   generation: z.unknown().optional(),
   savedQuestions: z.array(z.unknown()).optional(),
   existingQuestion: z.unknown().optional(),
+  /** Regeneration keeps the old question until the new one is ready, so checkpoints must not rewrite the list. */
+  checkpointQuestions: z.boolean().optional(),
   questions_rev: z.number().int().nonnegative(),
 });
 
@@ -169,9 +175,24 @@ RULES
 2. Always include hint and explanation on answerable items (each sub_question for comprehension).
 3. Math/chemistry/logic notation must use LaTeX: $...$ or $$...$$.
 4. COMPREHENSION: when the source is comprehension (or you choose that type), you MUST set type to "comprehension", write a NEW non-empty "passage", and include one or more "sub_questions" based on that passage. Sub-question count may differ. Never return sub_questions alone without a passage. Passage reading level must fit the student standard.
-5. Diagram questions: invent a new figure of the same kind. Describe the QUESTION figure in figures[].description; describe each ANSWER-option figure in that option's "image_description" field (option text may stay empty). When source images are attached, look at them and invent a different figure of the same kind. The answer must match your invented figure, not the source. Do not copy the source image onto the new question.
+5. Diagram questions: invent a NEW figure of the same kind. Change the number, size, orientation and layout of the shapes so the new figure is clearly different — never trace or reproduce the source figure or its options (that is a copyright breach). Describe the QUESTION figure in figures[].description; describe each ANSWER-option figure in that option's "image_description" field (option text may stay empty). When source images are attached, look at them only to learn the skill, then invent a different figure. The answer must match your invented figure, not the source. Do not copy the source image onto the new question. Also DRAW each figure: return it as an inline SVG in figures[].svg and each answer-option figure as options[].svg, with xmlns="http://www.w3.org/2000/svg" and a viewBox, using only simple shapes (no scripts or external URLs).
 6. Prefer the same broad type as the source when generating from a source question, unless the source type is unknown or broken.
 7. Preserve learning intent (same concept family) while changing surface details.`;
+
+/** Skills a vision pass may name for a figure whose stem carries no clue. */
+const FIGURE_SKILLS = new Set<string>([
+  "mirror_image",
+  "embedded_figure",
+  "figure_pattern",
+  "figure_analogy",
+  "figure_series",
+  "venn_diagram",
+  "missing_number_figure",
+  "figure_identity",
+]);
+
+const CLASSIFY_FIGURE_PROMPT =
+  'Name the non-verbal reasoning skill this exam figure belongs to. Return JSON {"skill":"..."} with exactly one of: mirror_image, embedded_figure, figure_pattern, figure_analogy, figure_series, venn_diagram, missing_number_figure, figure_identity, other. mirror_image = a mirror/water reflection or a figure with a mirror line drawn beside it. embedded_figure = find a shape hidden inside another. figure_pattern = complete a matrix or pattern of figures. figure_analogy = A is to B as C is to ?. figure_series = the next figure in a sequence. venn_diagram = set relationships in circles. missing_number_figure = a diagram with a missing number. figure_identity = choose the identical or rotated copy of a figure. Judge only from the picture.';
 
 async function questionImages(question: Question): Promise<ExamImage[]> {
   const labeled: { path: string; label: string }[] = [];
@@ -385,6 +406,7 @@ function matchCatalogId(
 async function executeMockGeneration(
   data: z.infer<typeof InputSchema>,
 ): Promise<{ question: Question; item: GenerationItem; questions_rev: number }> {
+  const commandCodeKey = commandCodeApiKey();
   const omniroutersKey = omniroutersApiKey();
   const openRouterKey = process.env["OPENROUTER_API_KEY"];
   const lovableKey = process.env["LOVABLE_API_KEY"];
@@ -433,17 +455,26 @@ async function executeMockGeneration(
       sequence: data.index,
       sourceQuestionId: data.sourceQuestionId ?? sourceQuestion?.id ?? null,
     });
+  const assetStore = createLocalImageAssetStore();
 
   async function completeChat(
     messages: { role: "system" | "user"; content: string | unknown[] }[],
+    options?: { vision?: boolean },
   ): Promise<string> {
+    const requestedModel = data.model?.trim();
+    const commandCodeModels: readonly string[] = options?.vision
+      ? COMMAND_CODE_VISION_MODELS
+      : COMMAND_CODE_TEXT_MODELS;
     const targets = generationChatTargets({
       omniroutersKey,
       openRouterKey,
       lovableKey,
-      commandCodeKey: commandCodeApiKey(),
+      commandCodeKey,
       commandCodeBaseUrl: process.env["COMMANDCODE_BASE_URL"],
-      requestedModel: data.model,
+      commandCodeModels: requestedModel
+        ? [requestedModel, ...commandCodeModels.filter((model) => model !== requestedModel)]
+        : commandCodeModels,
+      requestedModel,
       omniroutersModel: process.env["OMNIROUTERS_MODEL"],
       omniroutersBaseUrl: process.env["OMNIROUTERS_BASE_URL"],
       openRouterModel: DEFAULT_MOCK_MODEL,
@@ -475,6 +506,54 @@ async function executeMockGeneration(
       ? data.instructions?.trim() || generationState?.instructions?.trim() || null
       : null;
 
+  // The source is read-only, so a vision-named figure skill is cached on this
+  // mock's generation state. Later regenerations of the same source skip vision.
+  const sourceKey = data.sourceQuestionId ?? sourceQuestion?.id ?? null;
+  const cachedFigureSkill = sourceKey ? generationState?.figure_skills?.[sourceKey] : undefined;
+  const sourceHasFigure = Boolean(sourceQuestion?.figures.some((figure) => figure.image_path));
+  const needsFigureVision =
+    sourceHasFigure &&
+    !cachedFigureSkill &&
+    Boolean(commandCodeKey || omniroutersKey || openRouterKey || lovableKey);
+
+  async function classifySourceFigure(): Promise<string | null> {
+    const figure = sourceQuestion?.figures.find((entry) => entry.image_path);
+    if (!figure?.image_path) return null;
+    const dataUrl = await readLocalImageDataUrl(figure.image_path);
+    if (!dataUrl) return null;
+    try {
+      const text = await completeChat(
+        [
+          {
+            role: "user",
+            content: [
+              { type: "text", text: CLASSIFY_FIGURE_PROMPT },
+              { type: "image_url", image_url: { url: dataUrl } },
+            ],
+          },
+        ],
+        { vision: true },
+      );
+      const parsed = extractJson(text) as { skill?: unknown } | null;
+      const skill = typeof parsed?.skill === "string" ? parsed.skill.trim().toLowerCase() : "";
+      if (!FIGURE_SKILLS.has(skill)) return null;
+      if (sourceKey && generationState) {
+        generationState = {
+          ...generationState,
+          figure_skills: { ...(generationState.figure_skills ?? {}), [sourceKey]: skill },
+        };
+        try {
+          await updateDocument(data.documentId, { generation: generationState });
+        } catch {
+          // The cache write is best effort; the skill still applies to this run.
+        }
+      }
+      return skill;
+    } catch {
+      return null;
+    }
+  }
+
   const result = await runGenerationItem({
     item,
     jobId,
@@ -504,7 +583,9 @@ async function executeMockGeneration(
       data.existingQuestion && typeof data.existingQuestion === "object"
         ? (data.existingQuestion as Question)
         : null,
-    assetStore: createLocalImageAssetStore(),
+    assetStore,
+    ...(needsFigureVision ? { classifySourceFigure } : {}),
+    ...(cachedFigureSkill ? { sourceSkill: cachedFigureSkill } : {}),
     callGrammarModel: async (spec) => {
       const text = await completeChat([
         {
@@ -517,20 +598,10 @@ async function executeMockGeneration(
       if (!parsed) throw new Error("The grammar model returned unreadable output. Try again.");
       return parsed;
     },
-    callLegacyModel: async () => {
+    callLegacyModel: async (questionId, skill) => {
       let userContent: string;
       let sourceType: Question["type"] | null = null;
       let sourceDifficulty: Question["difficulty"] | null = null;
-      const skill = detectSkill({
-        stem: sourceQuestion?.stem,
-        instructions: data.mode === "from_source" ? sourceQuestion?.instructions : data.instructions,
-        type: sourceQuestion?.type,
-        figureCount: sourceQuestion?.figures.length ?? 0,
-        optionImageCount:
-          sourceQuestion?.options.filter((option) => option.image_path).length ?? 0,
-        optionTexts: sourceQuestion?.options.map((option) => option.text) ?? [],
-        passage: sourceQuestion?.passage,
-      });
       const grade = parseGradeFromStandardName(audience?.standard ?? null);
       const difficultyStep = generationState?.difficulty_step ?? 0;
       const plan = skillAuthorPlan({ skill, grade, difficultyStep, hasImages: false });
@@ -635,40 +706,52 @@ async function executeMockGeneration(
         : resolvedSubjectId != null || resolvedTopicId != null
           ? { subject_id: resolvedSubjectId, topic_id: resolvedTopicId }
           : null;
-      const question = finalizeMockQuestion(parsed, {
-        number,
-        sourceQuestionId: data.sourceQuestionId ?? null,
-        generationJobId: jobId,
-        sourceType,
-        sourceDifficulty,
-        strategy,
-        sourceInstructions: sourceQuestion?.instructions ?? null,
-        ...(catalog ? { catalog } : {}),
-      });
+      const question = {
+        ...finalizeMockQuestion(parsed, {
+          number,
+          sourceQuestionId: data.sourceQuestionId ?? null,
+          generationJobId: jobId,
+          sourceType,
+          sourceDifficulty,
+          strategy,
+          sourceInstructions: sourceQuestion?.instructions ?? null,
+          ...(catalog ? { catalog } : {}),
+        }),
+        id: questionId,
+      };
       if (!question.stem.trim() && !question.passage?.trim() && !question.assertion?.trim()) {
         throw new Error("The mock model did not return a usable question stem. Try again.");
       }
       assertMockQuestionComplete(question, sourceType);
-      return question;
+      return attachModelFigures({
+        question,
+        store: assetStore,
+        documentId: data.documentId,
+      });
     },
     describeSourceFigure: async () => {
       const figure = sourceQuestion?.figures.find((entry) => entry.image_path);
       if (!figure?.image_path) return null;
       const dataUrl = await readLocalImageDataUrl(figure.image_path);
-      if (!dataUrl || (!omniroutersKey && !openRouterKey && !lovableKey)) return null;
+      if (!dataUrl || (!commandCodeKey && !omniroutersKey && !openRouterKey && !lovableKey)) {
+        return null;
+      }
       try {
-        const text = await completeChat([
-          {
-            role: "user",
-            content: [
-              {
-                type: "text",
-                text: 'Describe only the asymmetry of this figure in one sentence. Return JSON {"summary":"..."}. Do not return coordinates, SVG, or an image.',
-              },
-              { type: "image_url", image_url: { url: dataUrl } },
-            ],
-          },
-        ]);
+        const text = await completeChat(
+          [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "text",
+                  text: 'Describe only the asymmetry of this figure in one sentence. Return JSON {"summary":"..."}. Do not return coordinates, SVG, or an image.',
+                },
+                { type: "image_url", image_url: { url: dataUrl } },
+              ],
+            },
+          ],
+          { vision: true },
+        );
         const parsed = extractJson(text) as { summary?: string } | null;
         return parsed?.summary ?? null;
       } catch {
@@ -693,12 +776,12 @@ async function executeMockGeneration(
           ? items.map((entry) => (entry.item_id === nextItem.item_id ? nextItem : entry))
           : [...items, nextItem],
       };
+      const writeQuestions = data.checkpointQuestions !== false;
       const saved = await updateDocument(data.documentId, {
-        questions: savedQuestions,
         generation: generationState,
-        questions_rev: questionsRev,
+        ...(writeQuestions ? { questions: savedQuestions, questions_rev: questionsRev } : {}),
       });
-      if (saved) questionsRev = saved.questions_rev;
+      if (saved && writeQuestions) questionsRev = saved.questions_rev;
     },
   });
 
@@ -799,10 +882,11 @@ export const regenerateMockQuestion = createServerFn({ method: "POST" })
       item: fresh,
       generation,
       savedQuestions: loaded.questions.filter((entry) => entry.id !== current.id),
+      checkpointQuestions: false,
       questions_rev: loaded.document.questions_rev,
       catalog: {
         subject_id: source?.question.subject_id ?? loaded.document.subject_id,
-        topic_id: source?.question.topic_id ?? null,
+        topic_id: source?.question.topic_id ?? loaded.document.topic_id,
         standard_id: source?.question.standard_id ?? loaded.document.standard_id,
         stream_id: source?.question.stream_id ?? loaded.document.stream_id,
       },
@@ -815,17 +899,24 @@ export const regenerateMockQuestion = createServerFn({ method: "POST" })
     const questions = loaded.questions.map((entry) =>
       entry.id === current.id ? generated.question : entry,
     );
+    // Checkpoints saved the new item and any cached figure skill while the run
+    // went on, so read the current state back instead of rebuilding from the
+    // pre-run snapshot (which would drop them).
+    const persisted = (await getDocument(data.documentId))?.document.generation ?? generation;
+    const items = (persisted.items ?? []).filter(
+      (entry) =>
+        entry.candidate_question_id !== current.id && entry.item_id !== generated.item.item_id,
+    );
+    items.push(generated.item);
     const nextGeneration: MockGenerationState = {
-      ...generation,
+      ...persisted,
       job_id: jobId,
-      pairs: generation.pairs.map((pair) =>
+      pairs: persisted.pairs.map((pair) =>
         pair.mock_question_id === current.id
           ? { ...pair, mock_question_id: generated.question.id }
           : pair,
       ),
-      items: (generation.items ?? []).map((entry) =>
-        entry.candidate_question_id === current.id ? generated.item : entry,
-      ),
+      items,
     };
     const saved = await updateDocument(data.documentId, {
       questions,

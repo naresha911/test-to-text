@@ -56,6 +56,7 @@ function MockNewPage() {
   const [standardId, setStandardId] = useState<number | "">("");
   const [streamId, setStreamId] = useState<number | "">("");
   const [subjectId, setSubjectId] = useState<number | "">("");
+  const [topicId, setTopicId] = useState<number | "">("");
   const [difficulty, setDifficulty] = useState<Difficulty | "">("");
   const [exam, setExam] = useState("");
   const [duration, setDuration] = useState<number | "">("");
@@ -71,6 +72,12 @@ function MockNewPage() {
     if (standardId === "") return all;
     return all.filter((s) => s.standard_id == null || s.standard_id === standardId);
   }, [catalog.data?.streams, standardId]);
+
+  const topics = useMemo(() => {
+    const all = catalog.data?.topics ?? [];
+    if (subjectId === "") return all;
+    return all.filter((t) => t.subject_id == null || t.subject_id === subjectId);
+  }, [catalog.data?.topics, subjectId]);
 
   async function onSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -97,6 +104,7 @@ function MockNewPage() {
           standard_id: standardId === "" ? null : standardId,
           stream_id: streamId === "" ? null : streamId,
           subject_id: subjectId === "" ? null : subjectId,
+          topic_id: topicId === "" ? null : topicId,
           difficulty: difficulty === "" ? null : difficulty,
           exam: exam.trim() || null,
           duration_minutes: duration === "" ? null : duration,
@@ -114,6 +122,12 @@ function MockNewPage() {
       for (const topic of catalog.data?.topics ?? []) {
         topicsById[topic.id] = topic.name;
       }
+      const catalogOptions = catalog.data
+        ? {
+            subjects: catalog.data.subjects.map((s) => ({ id: s.id, name: s.name })),
+            topics: topics.map((t) => ({ id: t.id, name: t.name })),
+          }
+        : undefined;
 
       setProgress("Generating questions…");
       const result = await resumeMockPaperGeneration({
@@ -126,6 +140,7 @@ function MockNewPage() {
           stream: streamName,
           topicsById,
         },
+        ...(catalogOptions ? { catalogOptions } : {}),
         runGenerate: generateFn,
         runSave: saveFn,
         onProgress: ({ cursor, total, generation }) => {
@@ -320,12 +335,36 @@ function MockNewPage() {
                 id="subject"
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
                 value={subjectId}
-                onChange={(e) => setSubjectId(e.target.value ? Number(e.target.value) : "")}
+                onChange={(e) => {
+                  const next = e.target.value ? Number(e.target.value) : "";
+                  setSubjectId(next);
+                  const firstTopic =
+                    next === ""
+                      ? undefined
+                      : (catalog.data?.topics ?? []).find((t) => t.subject_id === next);
+                  setTopicId(firstTopic ? firstTopic.id : "");
+                }}
               >
                 <option value="">Optional</option>
                 {(catalog.data?.subjects ?? []).map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="topic">Topic</Label>
+              <select
+                id="topic"
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+                value={topicId}
+                onChange={(e) => setTopicId(e.target.value ? Number(e.target.value) : "")}
+              >
+                <option value="">Optional</option>
+                {topics.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
                   </option>
                 ))}
               </select>
