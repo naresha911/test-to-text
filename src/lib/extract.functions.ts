@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 
+import { logAiAttempt, type AiGenerationContext } from "@/lib/ai-generation-log";
 import {
   chatCompletionBody,
   commandCodeApiKey,
@@ -135,6 +136,7 @@ async function structurePlainText(
     openRouterKey?: string | undefined;
     lovableKey?: string | undefined;
     model?: string | undefined;
+    context?: AiGenerationContext | undefined;
   },
 ): Promise<{ text: string } | { questions: Question[] }> {
   const messages = structureTextMessages(pageText, options.hint);
@@ -154,19 +156,22 @@ async function structurePlainText(
   if (targets.length === 0) {
     return { questions: structureOcrTextOffline(pageText, options.page) };
   }
+  const context = options.context;
   try {
     const text = await completeChatWithFallback(
       targets,
       (target) =>
-        callChat({
-          url: target.url,
-          headers: target.headers,
-          model: target.model,
-          ...(target.models ? { models: target.models } : {}),
-          messages,
-          label: target.label,
-          maxTokens: 12000,
-        }),
+        logAiAttempt(target, context, messages, () =>
+          callChat({
+            url: target.url,
+            headers: target.headers,
+            model: target.model,
+            ...(target.models ? { models: target.models } : {}),
+            messages,
+            label: target.label,
+            maxTokens: 12000,
+          }),
+        ),
       "No AI key is configured to clean up OCR text.",
     );
     return { text };
@@ -186,6 +191,7 @@ async function digitisePageImage(
     openRouterKey?: string | undefined;
     lovableKey?: string | undefined;
     model?: string | undefined;
+    context?: AiGenerationContext | undefined;
   },
 ): Promise<Question[] | null> {
   const omniroutersModel = process.env["OMNIROUTERS_MODEL"];
@@ -205,18 +211,22 @@ async function digitisePageImage(
     ...(omniroutersBaseUrl ? { omniroutersBaseUrl } : {}),
   });
   if (targets.length === 0) return null;
+  const context = options.context;
+  const visionInput = visionMessages(imageDataUrl, options.hint);
   const text = await completeChatWithFallback(
     targets,
     (target) =>
-      callChat({
-        url: target.url,
-        headers: target.headers,
-        model: target.model,
-        ...(target.models ? { models: target.models } : {}),
-        messages: visionMessages(imageDataUrl, options.hint),
-        label: target.label,
-        maxTokens: 12000,
-      }),
+      logAiAttempt(target, context, visionInput, () =>
+        callChat({
+          url: target.url,
+          headers: target.headers,
+          model: target.model,
+          ...(target.models ? { models: target.models } : {}),
+          messages: visionInput,
+          label: target.label,
+          maxTokens: 12000,
+        }),
+      ),
     "No AI key is configured to read this page.",
   );
   const questions = questionsFromText(text, options.page);
@@ -366,24 +376,44 @@ export const extractPage = createServerFn({ method: "POST" })
           ? suppliedOcrSpaceKey || ocrSpaceKey
           : ocrSpaceKey;
 
+    const pageContext: AiGenerationContext = {
+      kind: "ocr_page",
+      label: `Page ${data.page + 1}`,
+    };
+
     const openRouter = (messages: ChatMessage[]) =>
-      callChat({
-        url: "https://openrouter.ai/api/v1/chat/completions",
-        headers: { Authorization: `Bearer ${effectiveOpenRouterKey}` },
-        model: data.model?.trim() || DEFAULT_OPENROUTER_MODEL,
+      logAiAttempt(
+        {
+          model: data.model?.trim() || DEFAULT_OPENROUTER_MODEL,
+          label: "OpenRouter",
+        },
+        pageContext,
         messages,
-        label: "OpenRouter",
-        maxTokens: 2000,
-      });
+        () =>
+          callChat({
+            url: "https://openrouter.ai/api/v1/chat/completions",
+            headers: { Authorization: `Bearer ${effectiveOpenRouterKey}` },
+            model: data.model?.trim() || DEFAULT_OPENROUTER_MODEL,
+            messages,
+            label: "OpenRouter",
+            maxTokens: 2000,
+          }),
+      );
 
     const lovable = (messages: ChatMessage[]) =>
-      callChat({
-        url: "https://ai.gateway.lovable.dev/v1/chat/completions",
-        headers: { "Lovable-API-Key": lovableKey ?? "", "X-Lovable-AIG-SDK": "fetch" },
-        model: "google/gemini-3.8-flash",
+      logAiAttempt(
+        { model: "google/gemini-3.8-flash", label: "The built-in AI reader" },
+        pageContext,
         messages,
-        label: "The built-in AI reader",
-      });
+        () =>
+          callChat({
+            url: "https://ai.gateway.lovable.dev/v1/chat/completions",
+            headers: { "Lovable-API-Key": lovableKey ?? "", "X-Lovable-AIG-SDK": "fetch" },
+            model: "google/gemini-3.8-flash",
+            messages,
+            label: "The built-in AI reader",
+          }),
+      );
 
     const asText = (result: { questions: Question[]; raw: string }) =>
       data.contentMode === "text"
@@ -407,6 +437,7 @@ export const extractPage = createServerFn({ method: "POST" })
             ...(effectiveOpenRouterKey ? { openRouterKey: effectiveOpenRouterKey } : {}),
             ...(lovableKey ? { lovableKey } : {}),
             ...(data.model ? { model: data.model } : {}),
+            context: pageContext,
           });
           return resolvedQuestions(structured, pageText, data.page).questions;
         },
@@ -418,6 +449,7 @@ export const extractPage = createServerFn({ method: "POST" })
             ...(effectiveOpenRouterKey ? { openRouterKey: effectiveOpenRouterKey } : {}),
             ...(lovableKey ? { lovableKey } : {}),
             ...(data.model ? { model: data.model } : {}),
+            context: pageContext,
           }),
       });
     }
@@ -456,6 +488,7 @@ export const extractPage = createServerFn({ method: "POST" })
         openRouterKey: effectiveOpenRouterKey,
         lovableKey,
         model: data.model,
+        context: pageContext,
       });
       return asText(resolvedQuestions(structured, pageText, data.page));
     } else {
@@ -485,6 +518,7 @@ export const structureOcrText = createServerFn({ method: "POST" })
       openRouterKey: suppliedApiKey || openRouterKey,
       lovableKey,
       model: data.model,
+      context: { kind: "ocr_structure", label: `Page ${data.page + 1}` },
     });
 
     return resolvedQuestions(structured, data.text, data.page);
@@ -569,6 +603,10 @@ async function readEquationCrop(
     ...(openRouterKey ? { openRouterKey } : {}),
     ...(lovableKey ? { lovableKey } : {}),
     ...(data.model ? { model: data.model } : {}),
+    context: {
+      kind: "ocr_crop",
+      label: number ? `Question ${number}` : "Question crop",
+    },
   });
   const question = oneCropQuestion(questions ?? [], number);
   if (!question) {

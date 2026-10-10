@@ -1,6 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
 
+import { type AiGenerationContext } from "@/lib/ai-generation-log";
 import { completeExamChat, type ExamImage } from "@/lib/generation/exam-chat";
 import { localCheckedSolution } from "@/lib/generation/hint-solve";
 import { buildSearchQuery } from "@/lib/generation/web-search";
@@ -329,6 +330,10 @@ export const generateHintSolution = createServerFn({ method: "POST" })
         exam: audience?.exam,
       }),
       accept: (text) => solutionAcceptable(text, question),
+      context: {
+        kind: "hint_solution",
+        label: `Q${question.number ?? "?"}`,
+      } satisfies AiGenerationContext,
     });
 
     const parsed = extractJson(chat.text);

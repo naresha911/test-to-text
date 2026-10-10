@@ -5,10 +5,7 @@ import {
 } from "@/lib/generation/chat-transport";
 import { emptyGenerationItem } from "@/lib/generation/job-types";
 import { runGenerationItem, type RunGenerationInput } from "@/lib/generation/orchestrator";
-import {
-  difficultyBiasFor,
-  loadExemplars,
-} from "@/lib/generation/agents/question-author";
+import { difficultyBiasFor, loadExemplars } from "@/lib/generation/agents/question-author";
 import { skillAuthorPlan } from "@/lib/generation/skills/author-plan";
 import { skillAuthorPrompt, skillDifficultyGuidance } from "@/lib/generation/skill-prompts";
 import { buildGrammarUserPrompt } from "@/lib/generation/textual/prompt";
@@ -63,8 +60,7 @@ export async function authorCalibrationQuestion(input: {
   const assetStore = createMemoryAssetStore();
   // Calibration may have tuned how hard this skill should land in this
   // scope; the bias shifts the difficulty guidance the model receives.
-  const difficultyStep =
-    input.difficultyStep + (await difficultyBiasFor(input.scope, input.skill));
+  const difficultyStep = input.difficultyStep + (await difficultyBiasFor(input.scope, input.skill));
 
   const callLegacyModel: NonNullable<RunGenerationInput["callLegacyModel"]> = async (
     questionId,
@@ -97,7 +93,13 @@ export async function authorCalibrationQuestion(input: {
       },
       { role: "user", content: userContent },
     ];
-    const text = await completeGenerationChat({ messages });
+    const text = await completeGenerationChat({
+      messages,
+      context: {
+        kind: "calibration_generate",
+        label: `Calibration ${input.runId} #${input.index}`,
+      },
+    });
     const parsed = extractJson(text);
     if (!parsed || typeof parsed !== "object") {
       throw new Error("The calibration model returned unreadable output.");
@@ -121,7 +123,13 @@ export async function authorCalibrationQuestion(input: {
       },
       { role: "user", content: buildGrammarUserPrompt(spec, null) },
     ];
-    const text = await completeGenerationChat({ messages });
+    const text = await completeGenerationChat({
+      messages,
+      context: {
+        kind: "calibration_grammar",
+        label: `Calibration ${input.runId} #${input.index}`,
+      },
+    });
     const parsed = extractJson(text);
     if (!parsed) throw new Error("The calibration grammar model returned unreadable output.");
     return parsed;

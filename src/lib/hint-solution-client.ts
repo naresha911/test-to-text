@@ -84,6 +84,8 @@ export async function generateForApprovedQuestion(options: {
   promptFor?: ((questionId: string) => string | undefined) | undefined;
   runGenerate: RunGenerate;
   onProgress?: ((ids: string[]) => void) | undefined;
+  /** Fires after each question (root or sub-question) attempt settles. */
+  onTargetComplete?: ((questionId: string, ok: boolean) => void) | undefined;
 }): Promise<{ generated: GeneratedSolution[]; generatedIds: string[]; error: string | null }> {
   const root = findQuestionById(options.questions, options.questionId);
   if (!root) return { generated: [], generatedIds: [], error: null };
@@ -125,8 +127,10 @@ export async function generateForApprovedQuestion(options: {
       next = updateQuestionById(next, current.id, (question) =>
         applyHintSolution(question, result, force),
       );
+      options.onTargetComplete?.(current.id, true);
     } catch (caught) {
       error = caught instanceof Error ? caught.message : "Could not generate hint and solution.";
+      options.onTargetComplete?.(current.id, false);
       break;
     }
   }

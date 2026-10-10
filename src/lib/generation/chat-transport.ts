@@ -5,6 +5,7 @@ import {
   generationChatTargets,
   omniroutersApiKey,
 } from "@/lib/generation/chat-provider";
+import { logAiAttempt, type AiGenerationContext } from "@/lib/ai-generation-log";
 import {
   COMMAND_CODE_TEXT_MODELS,
   COMMAND_CODE_VISION_MODELS,
@@ -133,7 +134,7 @@ export async function callChat(options: {
           throw new Error(
             typeof chunk.error === "string"
               ? chunk.error
-              : (chunk.error.message || `${options.label} returned an error`),
+              : chunk.error.message || `${options.label} returned an error`,
           );
         }
         text += chunk.choices?.[0]?.delta?.content ?? "";
@@ -170,6 +171,8 @@ export async function completeGenerationChat(input: {
   messages: GenerationChatMessage[];
   vision?: boolean;
   requestedModel?: string | null;
+  /** When set, every provider attempt is recorded in the AI generation log. */
+  context?: AiGenerationContext;
 }): Promise<string> {
   const key = generationKeys();
   const requestedModel = input.requestedModel?.trim();
@@ -184,10 +187,7 @@ export async function completeGenerationChat(input: {
     commandCodeBaseUrl: process.env["COMMANDCODE_BASE_URL"] ?? null,
     commandCodeModels:
       requestedModel && !requestedModel.includes(":free")
-        ? [
-            requestedModel,
-            ...commandCodeModels.filter((model) => model !== requestedModel),
-          ]
+        ? [requestedModel, ...commandCodeModels.filter((model) => model !== requestedModel)]
         : commandCodeModels,
     requestedModel: requestedModel ?? null,
     omniroutersModel: process.env["OMNIROUTERS_MODEL"] ?? null,
@@ -196,17 +196,20 @@ export async function completeGenerationChat(input: {
     openRouterFallbacks: MOCK_MODEL_FALLBACKS,
     lovableModel: LOVABLE_MOCK_MODEL,
   });
+  const context = input.context;
   return completeChatWithFallback(
     targets,
     (target) =>
-      callChat({
-        url: target.url,
-        headers: target.headers,
-        model: target.model,
-        ...(target.models ? { models: target.models } : {}),
-        messages: input.messages,
-        label: target.label,
-      }),
+      logAiAttempt(target, context, input.messages, () =>
+        callChat({
+          url: target.url,
+          headers: target.headers,
+          model: target.model,
+          ...(target.models ? { models: target.models } : {}),
+          messages: input.messages,
+          label: target.label,
+        }),
+      ),
     NO_PROVIDER_MESSAGE,
   );
 }

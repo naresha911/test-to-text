@@ -9,11 +9,8 @@ import {
   providerFailureMessage,
   type GenerationChatTarget,
 } from "@/lib/generation/chat-provider";
-import {
-  formatSnippets,
-  searchWeb,
-  type WebSnippet,
-} from "@/lib/generation/web-search";
+import { logAiAttempt, type AiGenerationContext } from "@/lib/ai-generation-log";
+import { formatSnippets, searchWeb, type WebSnippet } from "@/lib/generation/web-search";
 import {
   COMMAND_CODE_VISION_MODELS,
   OMNI_VISION_MODELS,
@@ -28,8 +25,7 @@ export type ExamImage = {
 };
 
 export type ExamPart =
-  | { type: "text"; text: string }
-  | { type: "image_url"; image_url: { url: string } };
+  { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
 
 export type ExamMessage = {
   role: "system" | "user";
@@ -237,12 +233,21 @@ export async function completeExamChat(input: {
   searchQuery?: string;
   accept: (text: string) => boolean;
   deps?: ExamChatDeps;
+  /** When set, every provider attempt is recorded in the AI generation log. */
+  context?: AiGenerationContext;
 }): Promise<{ text: string; searched: boolean; accepted: boolean }> {
   const images = input.images ?? [];
   const vision = images.length > 0;
   const deps = input.deps ?? defaultDeps();
+  const context = input.context;
+  const send: ExamChatDeps["send"] =
+    context == null
+      ? deps.send
+      : (target, messages) =>
+          logAiAttempt(target, context, messages, () => deps.send(target, messages));
+  const loggedDeps: ExamChatDeps = context == null ? deps : { ...deps, send };
   const firstMessages = withImages(input.messages, images);
-  const first = await firstUsable(deps, firstMessages, vision, input.accept);
+  const first = await firstUsable(loggedDeps, firstMessages, vision, input.accept);
   if (first.accepted) return { text: first.text, searched: false, accepted: true };
 
   const query = input.searchQuery?.trim() ?? "";
@@ -251,7 +256,7 @@ export async function completeExamChat(input: {
   if (!snippets.length) return { text: first.text, searched: false, accepted: false };
 
   const retry = await firstUsable(
-    deps,
+    loggedDeps,
     [
       ...firstMessages,
       {

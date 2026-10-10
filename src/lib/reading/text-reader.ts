@@ -1,3 +1,4 @@
+import { logAiCall } from "@/lib/ai-generation-log";
 import { readOpenOcrPage } from "@/lib/reader/openocr";
 import type { ReaderBlock } from "@/lib/reader/types";
 import type { TextLineBox } from "@/lib/reader/parse-blocks";
@@ -92,6 +93,20 @@ export async function readPrintedText(options: {
 }
 
 export async function ocrSpaceText(
+  apiKey: string,
+  imageDataUrl: string,
+  size?: { width: number; height: number },
+): Promise<{ text: string; lines: TextLineBox[]; words: PlacedWord[] }> {
+  return logAiCall(
+    { model: "ocr.space", label: "OCR.space" },
+    { kind: "ocr_service" },
+    "[page image]",
+    () => ocrSpaceTextUnlogged(apiKey, imageDataUrl, size),
+    (reading) => reading.text,
+  );
+}
+
+async function ocrSpaceTextUnlogged(
   apiKey: string,
   imageDataUrl: string,
   size?: { width: number; height: number },
@@ -228,6 +243,16 @@ export async function ocrSpaceText(
 }
 
 export async function optiicText(apiKey: string, imageDataUrl: string): Promise<string> {
+  return logAiCall(
+    { model: "optiic", label: "Optiic" },
+    { kind: "ocr_service" },
+    "[page image]",
+    () => optiicTextUnlogged(apiKey, imageDataUrl),
+    (text) => text,
+  );
+}
+
+async function optiicTextUnlogged(apiKey: string, imageDataUrl: string): Promise<string> {
   const blob = dataUrlToBlob(imageDataUrl);
   const formData = new FormData();
   formData.append("apiKey", apiKey);

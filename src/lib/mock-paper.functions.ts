@@ -2,6 +2,7 @@
 import { z } from "zod";
 
 import { createLocalImageAssetStore } from "@/lib/assets/store";
+import { type AiGenerationContext } from "@/lib/ai-generation-log";
 import { parseMockGeneration, type MockGenerationState } from "@/lib/document-types";
 import { commandCodeApiKey, omniroutersApiKey } from "@/lib/generation/chat-provider";
 import {
@@ -13,10 +14,7 @@ import {
 import { completeExamChat, type ExamImage } from "@/lib/generation/exam-chat";
 import { expandSlots } from "@/lib/generation/agents/paper-architect";
 import { sourceAgent } from "@/lib/generation/agents/source-agents";
-import {
-  difficultyBiasFor,
-  loadExemplars,
-} from "@/lib/generation/agents/question-author";
+import { difficultyBiasFor, loadExemplars } from "@/lib/generation/agents/question-author";
 import { skillAuthorPlan } from "@/lib/generation/skills/author-plan";
 import {
   applyPromptOverrides,
@@ -376,12 +374,13 @@ async function executeMockGeneration(
 
   async function completeChat(
     messages: GenerationChatMessage[],
-    options?: { vision?: boolean },
+    options?: { vision?: boolean; context?: AiGenerationContext },
   ): Promise<string> {
     return completeGenerationChat({
       messages,
       ...(options?.vision ? { vision: true } : {}),
       requestedModel: data.model?.trim() ?? null,
+      ...(options?.context ? { context: options.context } : {}),
     });
   }
 
@@ -425,7 +424,13 @@ async function executeMockGeneration(
             ],
           },
         ],
-        { vision: true },
+        {
+          vision: true,
+          context: {
+            kind: "mock_figure",
+            label: `Q${number} figure classify`,
+          },
+        },
       );
       const parsed = extractJson(text) as { skill?: unknown } | null;
       const skill = typeof parsed?.skill === "string" ? parsed.skill.trim().toLowerCase() : "";
@@ -492,13 +497,17 @@ async function executeMockGeneration(
     ...(needsFigureVision ? { classifySourceFigure } : {}),
     ...(cachedFigureSkill ? { sourceSkill: cachedFigureSkill } : {}),
     callGrammarModel: async (spec) => {
-      const text = await completeChat([
-        {
-          role: "system",
-          content: "You write original grammar questions. Return one JSON object and nothing else.",
-        },
-        { role: "user", content: buildGrammarUserPrompt(spec, authorInstructions) },
-      ]);
+      const text = await completeChat(
+        [
+          {
+            role: "system",
+            content:
+              "You write original grammar questions. Return one JSON object and nothing else.",
+          },
+          { role: "user", content: buildGrammarUserPrompt(spec, authorInstructions) },
+        ],
+        { context: { kind: "mock_grammar", label: `Q${number}` } },
+      );
       const parsed = extractJson(text);
       if (!parsed) throw new Error("The grammar model returned unreadable output. Try again.");
       return parsed;
@@ -610,6 +619,7 @@ async function executeMockGeneration(
             (typeof passage === "string" && passage.trim().length > 0)
           );
         },
+        context: { kind: "mock_author", label: `Q${number}` },
       });
       if (!chat.accepted) {
         throw new Error("The mock model did not return a usable question stem. Try again.");
@@ -675,7 +685,13 @@ async function executeMockGeneration(
               ],
             },
           ],
-          { vision: true },
+          {
+            vision: true,
+            context: {
+              kind: "mock_figure",
+              label: `Q${number} figure describe`,
+            },
+          },
         );
         const parsed = extractJson(text) as { summary?: string } | null;
         return parsed?.summary ?? null;

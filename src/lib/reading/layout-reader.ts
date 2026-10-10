@@ -1,3 +1,4 @@
+import { logAiCall } from "@/lib/ai-generation-log";
 import { openOcrUrl } from "@/lib/reader/openocr";
 import type { ReaderBlock } from "@/lib/reader/types";
 
@@ -14,6 +15,19 @@ type LayoutPayload = {
 
 /** Ask the local PP-DocLayout service for diagram regions. Text regions are dropped. */
 export async function readLayoutRegions(
+  imageDataUrl: string,
+  timeoutMs = 180_000,
+): Promise<ReaderBlock[]> {
+  return logAiCall(
+    { model: "pp-doclayout (local)", label: "Local layout service" },
+    { kind: "layout_service" },
+    "[page image]",
+    () => readLayoutRegionsUnlogged(imageDataUrl, timeoutMs),
+    (blocks) => JSON.stringify(blocks),
+  );
+}
+
+async function readLayoutRegionsUnlogged(
   imageDataUrl: string,
   timeoutMs = 180_000,
 ): Promise<ReaderBlock[]> {

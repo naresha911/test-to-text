@@ -1,3 +1,4 @@
+import { logAiCall } from "@/lib/ai-generation-log";
 import type {
   RawReaderResult,
   ReaderBlock,
@@ -116,6 +117,19 @@ export async function cropOpenOcrRegion(
 }
 
 export async function readOpenOcrPage(
+  imageDataUrl: string,
+  timeoutMs = 25_000,
+): Promise<RawReaderResult> {
+  return logAiCall(
+    { model: "openocr (local)", label: "Local OpenOCR" },
+    { kind: "ocr_service" },
+    "[page image]",
+    () => readOpenOcrPageUnlogged(imageDataUrl, timeoutMs),
+    (result) => JSON.stringify(result),
+  );
+}
+
+async function readOpenOcrPageUnlogged(
   imageDataUrl: string,
   timeoutMs = 25_000,
 ): Promise<RawReaderResult> {

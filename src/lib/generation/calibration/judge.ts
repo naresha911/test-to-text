@@ -107,8 +107,7 @@ export function assessStructure(input: {
   // The calibration generator force-stamps skill_type, so a question whose
   // own text detects nothing ("unsupported") still matches its stamp.
   const skillMatch =
-    detected === skill ||
-    (generated.skill_type === skill && detected === "unsupported");
+    detected === skill || (generated.skill_type === skill && detected === "unsupported");
   if (!skillMatch) notes.push(`Generated question reads as "${detected}", not "${skill}".`);
 
   // Short numeric choices coincide across questions, so one shared option is
@@ -222,7 +221,11 @@ export const JUDGE_RUBRIC_KEYS =
 /** Ask the free-model router whether the generated question matches the reference. */
 export async function judgeWithModel(
   input: { generated: Question; reference: Question; skill: string },
-  call: JudgeModelCall = (messages) => completeGenerationChat({ messages }),
+  call: JudgeModelCall = (messages) =>
+    completeGenerationChat({
+      messages,
+      context: { kind: "calibration_judge" },
+    }),
 ): Promise<JudgeVerdict | null> {
   const skillLabel = skillByType(input.skill)?.family ?? "unknown";
   const messages: GenerationChatMessage[] = [

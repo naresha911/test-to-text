@@ -2,6 +2,7 @@ import { Plus } from "lucide-react";
 import { useId, useState } from "react";
 
 import { AddQuestionForm, type NewQuestionInput } from "@/components/questions/AddQuestionForm";
+import { GenerationProgressControl } from "@/components/questions/GenerationProgressControl";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -12,6 +13,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import type { GenerationStatus } from "@/hooks/useSolutionGeneration";
 import type { Question } from "@/lib/question-schema";
 import { cn } from "@/lib/utils";
 
@@ -24,6 +26,8 @@ type Props = {
   onAdd: (input: NewQuestionInput) => void;
   onScrollToPage: (label: string) => void;
   onScrollToQuestion: (label: string) => void;
+  generation?: GenerationStatus | undefined;
+  onClearGenerationLog?: (() => void) | undefined;
 };
 
 export function ReviewToolbar({
@@ -33,6 +37,8 @@ export function ReviewToolbar({
   onAdd,
   onScrollToPage,
   onScrollToQuestion,
+  generation,
+  onClearGenerationLog,
 }: Props) {
   return (
     <div className="sticky top-[4.25rem] z-10 flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-lg border border-border bg-card/95 px-2 py-1 shadow-[var(--shadow-paper)] backdrop-blur">
@@ -44,6 +50,14 @@ export function ReviewToolbar({
         value={approvalFilter}
         onChange={onApprovalFilterChange}
       />
+      {generation ? (
+        <div className="ml-auto">
+          <GenerationProgressControl
+            status={generation}
+            onClear={onClearGenerationLog ?? (() => undefined)}
+          />
+        </div>
+      ) : null}
     </div>
   );
 }
