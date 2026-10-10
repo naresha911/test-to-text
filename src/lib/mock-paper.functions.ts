@@ -3,21 +3,28 @@ import { z } from "zod";
 
 import { createLocalImageAssetStore } from "@/lib/assets/store";
 import { parseMockGeneration, type MockGenerationState } from "@/lib/document-types";
+import { commandCodeApiKey, omniroutersApiKey } from "@/lib/generation/chat-provider";
 import {
-  chatCompletionBody,
-  commandCodeApiKey,
-  completeChatWithFallback,
-  generationChatTargets,
-  omniroutersApiKey,
-} from "@/lib/generation/chat-provider";
+  completeGenerationChat,
+  DEFAULT_MOCK_MODEL,
+  MOCK_MODEL_FALLBACKS,
+  type GenerationChatMessage,
+} from "@/lib/generation/chat-transport";
 import { completeExamChat, type ExamImage } from "@/lib/generation/exam-chat";
-import { skillAuthorPlan } from "@/lib/generation/skills/author-plan";
-import { skillAuthorPrompt, skillDifficultyGuidance } from "@/lib/generation/skill-prompts";
-import { buildSearchQuery } from "@/lib/generation/web-search";
+import { expandSlots } from "@/lib/generation/agents/paper-architect";
+import { sourceAgent } from "@/lib/generation/agents/source-agents";
 import {
-  COMMAND_CODE_TEXT_MODELS,
-  COMMAND_CODE_VISION_MODELS,
-} from "@/lib/generation/vision-models";
+  difficultyBiasFor,
+  loadExemplars,
+} from "@/lib/generation/agents/question-author";
+import { skillAuthorPlan } from "@/lib/generation/skills/author-plan";
+import {
+  applyPromptOverrides,
+  skillAuthorPrompt,
+  skillDifficultyGuidance,
+} from "@/lib/generation/skill-prompts";
+import { buildSearchQuery } from "@/lib/generation/web-search";
+import { SYSTEM_PROMPT } from "@/lib/generation/generation-system-prompt";
 import { skillByType } from "@/lib/question-taxonomy";
 import {
   emptyGenerationItem,
@@ -28,7 +35,12 @@ import { runGenerationItem } from "@/lib/generation/orchestrator";
 import { buildGrammarUserPrompt } from "@/lib/generation/textual/prompt";
 import { redrawMirrorFigure } from "@/lib/generation/visual/assets";
 import { attachModelFigures } from "@/lib/generation/visual/model-figures";
-import { getDocument, readLocalImageDataUrl, updateDocument } from "@/lib/local-db";
+import {
+  getDocument,
+  listAppliedPromptOverrides,
+  readLocalImageDataUrl,
+  updateDocument,
+} from "@/lib/local-db";
 import {
   assertMockQuestionComplete,
   buildFromInstructionsUserPrompt,
@@ -40,13 +52,7 @@ import {
 import { emptyQuestion, type Question } from "@/lib/question-schema";
 import { toSourceQuestionRecord } from "@/lib/source/source-record";
 
-/** OpenRouter fallback when OmniRouters is unset or fails. models[] lets OpenRouter try the next free route. */
-export const DEFAULT_MOCK_MODEL = "google/gemma-4-26b-a4b-it:free";
-export const MOCK_MODEL_FALLBACKS = [
-  "google/gemma-4-26b-a4b-it:free",
-  "google/gemma-4-31b-it:free",
-  "openrouter/free",
-] as const;
+export { DEFAULT_MOCK_MODEL, MOCK_MODEL_FALLBACKS };
 
 const OptionSchema = z.object({
   key: z.string(),
@@ -123,6 +129,9 @@ const InputSchema = z.object({
     })
     .optional(),
   strategy: z.enum(["rewrite", "write_new"]).optional(),
+  /** Forced skill for a full-syllabus slot (added to the instructions). */
+  skill: z.string().min(1).max(80).optional(),
+  pattern_subtype: z.string().max(60).nullable().optional(),
   catalogOptions: z
     .object({
       subjects: z
@@ -148,40 +157,12 @@ const InputSchema = z.object({
   questions_rev: z.number().int().nonnegative(),
 });
 
-const SYSTEM_PROMPT = `You are an expert exam-paper author creating ORIGINAL mock questions for students.
-
-GOALS
-- Transform the skill, pattern, and difficulty of the source (or follow teacher instructions).
-- Respect student STANDARD / grade, SOURCE difficulty, learning INTENT, and other metadata in the prompt.
-- Avoid copyright infringement: never copy distinctive wording, passages, numbers, or option text â€” invent new ones.
-- If the source is OCR-damaged or incomplete, infer the intended skill and invent a correct new question at an appropriate level.
-
-LEVELING
-- Aim questions at the student's stated standard (e.g. Class 6).
-- You MAY stretch slightly harder â€” at most about +2 grades (Class 6 â†’ up to ~Class 8) when the source is hard or stretch is useful for practice.
-- Never jump far above that band (no Class 11 methods for a Class 6 paper).
-- Mirror source difficulty (easy/medium/hard) unless leveling rules say otherwise. Always set output "difficulty".
-
-OUTPUT
-- Return ONLY one JSON object (no markdown fences, no prose).
-- Shape matches the app Question schema.
-- Example for a normal MCQ:
-  {"number":"1","type":"mcq","stem":"...","passage":null,"options":[{"key":"A","text":"...","is_correct":true}],"sub_questions":[],"answer_keys":["A"],"hint":"...","explanation":"...","marks":1,"difficulty":"medium","tags":[],"figures":[]}
-- Example for comprehension (passage is REQUIRED â€” never omit):
-  {"number":"3","type":"comprehension","stem":"Read the passage and answer the questions.","passage":"A full original multi-sentence passage invented by you...","options":[],"sub_questions":[{"number":"3.1","type":"mcq","stem":"...","options":[{"key":"A","text":"...","is_correct":true}],"sub_questions":[],"answer_keys":["A"],"hint":"...","explanation":"...","marks":1,"difficulty":"medium"}],"answer_keys":[],"hint":null,"explanation":null,"marks":null,"difficulty":"medium","tags":[],"figures":[]}
-
-RULES
-1. Always include correct answers for the type (answer_keys / is_correct / blanks / answer_text / answer_boolean / match_pairs).
-2. Always include hint and explanation on answerable items (each sub_question for comprehension).
-3. Math/chemistry/logic notation must use LaTeX: $...$ or $$...$$.
-4. COMPREHENSION: when the source is comprehension (or you choose that type), you MUST set type to "comprehension", write a NEW non-empty "passage", and include one or more "sub_questions" based on that passage. Sub-question count may differ. Never return sub_questions alone without a passage. Passage reading level must fit the student standard.
-5. Diagram questions: invent a NEW figure of the same kind. Change the number, size, orientation and layout of the shapes so the new figure is clearly different — never trace or reproduce the source figure or its options (that is a copyright breach). Describe the QUESTION figure in figures[].description; describe each ANSWER-option figure in that option's "image_description" field (option text may stay empty). When source images are attached, look at them only to learn the skill, then invent a different figure. The answer must match your invented figure, not the source. Do not copy the source image onto the new question. Also DRAW each figure: return it as an inline SVG in figures[].svg and each answer-option figure as options[].svg, with xmlns="http://www.w3.org/2000/svg" and a viewBox, using only simple shapes (no scripts or external URLs).
-6. Prefer the same broad type as the source when generating from a source question, unless the source type is unknown or broken.
-7. Preserve learning intent (same concept family) while changing surface details.`;
+// The authoring system prompt lives in a plain module so server code can share it.
 
 /** Skills a vision pass may name for a figure whose stem carries no clue. */
 const FIGURE_SKILLS = new Set<string>([
   "mirror_image",
+  "water_image",
   "embedded_figure",
   "figure_pattern",
   "figure_analogy",
@@ -192,7 +173,7 @@ const FIGURE_SKILLS = new Set<string>([
 ]);
 
 const CLASSIFY_FIGURE_PROMPT =
-  'Name the non-verbal reasoning skill this exam figure belongs to. Return JSON {"skill":"..."} with exactly one of: mirror_image, embedded_figure, figure_pattern, figure_analogy, figure_series, venn_diagram, missing_number_figure, figure_identity, other. mirror_image = a mirror/water reflection or a figure with a mirror line drawn beside it. embedded_figure = find a shape hidden inside another. figure_pattern = complete a matrix or pattern of figures. figure_analogy = A is to B as C is to ?. figure_series = the next figure in a sequence. venn_diagram = set relationships in circles. missing_number_figure = a diagram with a missing number. figure_identity = choose the identical or rotated copy of a figure. Judge only from the picture.';
+  'Name the non-verbal reasoning skill this exam figure belongs to. Return JSON {"skill":"..."} with exactly one of: mirror_image, water_image, embedded_figure, figure_pattern, figure_analogy, figure_series, venn_diagram, missing_number_figure, figure_identity, other. mirror_image = a mirror reflection or a figure with a vertical mirror line drawn beside it. water_image = a reflection in water, or a horizontal mirror line drawn below or beside the figure. embedded_figure = find a shape hidden inside another. figure_pattern = complete a matrix or pattern of figures. figure_analogy = A is to B as C is to ?. figure_series = the next figure in a sequence. venn_diagram = set relationships in circles. missing_number_figure = a diagram with a missing number. figure_identity = choose the identical or rotated copy of a figure. Judge only from the picture.';
 
 async function questionImages(question: Question): Promise<ExamImage[]> {
   const labeled: { path: string; label: string }[] = [];
@@ -234,81 +215,6 @@ function extractJson(text: string): unknown {
     }
     return null;
   }
-}
-
-async function callChat(options: {
-  url: string;
-  headers: Record<string, string>;
-  model?: string | null;
-  models?: string[];
-  messages: { role: "system" | "user"; content: string | unknown[] }[];
-  label: string;
-}): Promise<string> {
-  const response = await fetch(options.url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...options.headers,
-    },
-    body: JSON.stringify(
-      chatCompletionBody({
-        model: options.model,
-        models: options.models,
-        messages: options.messages,
-        maxTokens: 6000,
-      }),
-    ),
-  });
-
-  if (!response.ok || !response.body) {
-    const body = await response.text().catch(() => "");
-    let message = body;
-    try {
-      const parsed = JSON.parse(body) as { error?: { message?: string }; message?: string };
-      message = parsed.error?.message ?? parsed.message ?? body;
-    } catch {
-      /* keep raw */
-    }
-    if (response.status === 429) {
-      throw new Error(`${options.label} is busy or rate limited. Wait a moment and try again.`);
-    }
-    if (response.status === 401) {
-      throw new Error(`${options.label} rejected the API key. Check the key in Settings.`);
-    }
-    if (response.status === 402 || response.status === 403) {
-      throw new Error(`AI_CREDITS: ${message || `${options.label} has no credits left.`}`);
-    }
-    throw new Error(message || `${options.label} failed (${response.status}).`);
-  }
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let text = "";
-
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() ?? "";
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("data:")) continue;
-      const payload = trimmed.slice(5).trim();
-      if (!payload || payload === "[DONE]") continue;
-      try {
-        const chunk = JSON.parse(payload) as {
-          choices?: { delta?: { content?: string } }[];
-        };
-        text += chunk.choices?.[0]?.delta?.content ?? "";
-      } catch {
-        /* ignore keep-alive */
-      }
-    }
-  }
-
-  return text;
 }
 
 function asQuestion(raw: unknown): Question {
@@ -389,8 +295,6 @@ function asQuestion(raw: unknown): Question {
   });
 }
 
-const LOVABLE_MOCK_MODEL = "google/gemini-3.8-flash";
-
 /** Resolve a model-returned catalog name to its id (exact, case-insensitive). */
 function matchCatalogId(
   options: { id: number; name: string }[] | undefined,
@@ -424,6 +328,13 @@ async function executeMockGeneration(
     : undefined;
 
   const number = data.number?.trim() || String(data.index + 1);
+  const slotSkill = data.skill?.trim() || null;
+  const slotInstructions =
+    data.mode === "from_instructions"
+      ? [slotSkill ? `[skill:${slotSkill}]` : "", data.instructions?.trim() ?? ""]
+          .filter(Boolean)
+          .join("\n") || null
+      : null;
   if (data.mode === "from_source" && !data.sourceQuestion) {
     throw new Error("Source question is required for from_source generation.");
   }
@@ -435,8 +346,7 @@ async function executeMockGeneration(
   const inheritedTopicId = data.catalog?.topic_id ?? null;
   const needsSubjectFill =
     inheritedSubjectId == null && (data.catalogOptions?.subjects?.length ?? 0) > 0;
-  const needsTopicFill =
-    inheritedTopicId == null && (data.catalogOptions?.topics?.length ?? 0) > 0;
+  const needsTopicFill = inheritedTopicId == null && (data.catalogOptions?.topics?.length ?? 0) > 0;
   const metadataCatalog =
     needsSubjectFill || needsTopicFill
       ? {
@@ -457,43 +367,22 @@ async function executeMockGeneration(
     });
   const assetStore = createLocalImageAssetStore();
 
+  // Applied calibration edits change the skill prompt text; hydrate before authoring.
+  try {
+    applyPromptOverrides(await listAppliedPromptOverrides());
+  } catch {
+    // A missing override store still lets generation run with the static prompts.
+  }
+
   async function completeChat(
-    messages: { role: "system" | "user"; content: string | unknown[] }[],
+    messages: GenerationChatMessage[],
     options?: { vision?: boolean },
   ): Promise<string> {
-    const requestedModel = data.model?.trim();
-    const commandCodeModels: readonly string[] = options?.vision
-      ? COMMAND_CODE_VISION_MODELS
-      : COMMAND_CODE_TEXT_MODELS;
-    const targets = generationChatTargets({
-      omniroutersKey,
-      openRouterKey,
-      lovableKey,
-      commandCodeKey,
-      commandCodeBaseUrl: process.env["COMMANDCODE_BASE_URL"],
-      commandCodeModels: requestedModel
-        ? [requestedModel, ...commandCodeModels.filter((model) => model !== requestedModel)]
-        : commandCodeModels,
-      requestedModel,
-      omniroutersModel: process.env["OMNIROUTERS_MODEL"],
-      omniroutersBaseUrl: process.env["OMNIROUTERS_BASE_URL"],
-      openRouterModel: DEFAULT_MOCK_MODEL,
-      openRouterFallbacks: MOCK_MODEL_FALLBACKS,
-      lovableModel: LOVABLE_MOCK_MODEL,
+    return completeGenerationChat({
+      messages,
+      ...(options?.vision ? { vision: true } : {}),
+      requestedModel: data.model?.trim() ?? null,
     });
-    return completeChatWithFallback(
-      targets,
-      (target) =>
-        callChat({
-          url: target.url,
-          headers: target.headers,
-          model: target.model,
-          ...(target.models ? { models: target.models } : {}),
-          messages,
-          label: target.label,
-        }),
-      "No AI key is configured for mock papers. Add COMMANDCODE_API_KEY, OMNIROUTERS_API_KEY, OPENROUTER_API_KEY, or LOVABLE_API_KEY in .env.local (or Lovable project secrets), then restart the server.",
-    );
   }
 
   let savedQuestions = Array.isArray(data.savedQuestions)
@@ -501,6 +390,10 @@ async function executeMockGeneration(
     : [];
   let generationState = parseMockGeneration(data.generation);
   let questionsRev = data.questions_rev;
+  // The source agent (past-paper or practice-test) shapes the prompt and which
+  // library memory this question draws its references from.
+  const activeAgent = sourceAgent(generationState?.agent ?? null);
+  const agentBlock = activeAgent ? `\n\n${activeAgent.systemAddendum}` : "";
   const authorInstructions =
     data.mode === "from_source"
       ? data.instructions?.trim() || generationState?.instructions?.trim() || null
@@ -568,7 +461,7 @@ async function executeMockGeneration(
         : sourceQuestion
           ? toSourceQuestionRecord({ documentId: data.documentId, question: sourceQuestion })
           : null,
-    instructions: data.mode === "from_instructions" ? (data.instructions ?? null) : null,
+    instructions: slotInstructions,
     authorInstructions,
     strategy,
     number,
@@ -584,6 +477,18 @@ async function executeMockGeneration(
         ? (data.existingQuestion as Question)
         : null,
     assetStore,
+    retrieveExamples: async (analysis) =>
+      loadExemplars(
+        {
+          skill: analysis.skill_type,
+          pattern_subtype: data.pattern_subtype ?? analysis.pattern_subtype,
+          standard_id: data.catalog?.standard_id ?? null,
+          subject_id: data.catalog?.subject_id ?? null,
+          stream_id: data.catalog?.stream_id ?? null,
+          ...(activeAgent ? { agent: activeAgent.id, kinds: [activeAgent.id] } : {}),
+        },
+        3,
+      ),
     ...(needsFigureVision ? { classifySourceFigure } : {}),
     ...(cachedFigureSkill ? { sourceSkill: cachedFigureSkill } : {}),
     callGrammarModel: async (spec) => {
@@ -598,12 +503,22 @@ async function executeMockGeneration(
       if (!parsed) throw new Error("The grammar model returned unreadable output. Try again.");
       return parsed;
     },
-    callLegacyModel: async (questionId, skill) => {
+    callLegacyModel: async (questionId, skill, context) => {
       let userContent: string;
       let sourceType: Question["type"] | null = null;
       let sourceDifficulty: Question["difficulty"] | null = null;
       const grade = parseGradeFromStandardName(audience?.standard ?? null);
-      const difficultyStep = generationState?.difficulty_step ?? 0;
+      const difficultyStep =
+        (generationState?.difficulty_step ?? 0) +
+        (await difficultyBiasFor(
+          {
+            agent: activeAgent?.id ?? null,
+            standard_id: data.catalog?.standard_id ?? null,
+            subject_id: data.catalog?.subject_id ?? null,
+            stream_id: data.catalog?.stream_id ?? null,
+          },
+          skill,
+        ));
       const plan = skillAuthorPlan({ skill, grade, difficultyStep, hasImages: false });
       const wantsImages = plan?.requiresImages === true || skillByType(skill)?.visual === true;
       const images = wantsImages && sourceQuestion ? await questionImages(sourceQuestion) : [];
@@ -614,12 +529,16 @@ async function executeMockGeneration(
           .join("\n");
       if (skill === "synonym_antonym") {
         const relationText = (
-          sourceQuestion?.instructions ?? sourceQuestion?.stem ?? ""
+          sourceQuestion?.instructions ??
+          sourceQuestion?.stem ??
+          ""
         ).toLowerCase();
         if (/opposite|antonym/i.test(relationText)) {
-          skillNote += "\n\nThis item must ask for the OPPOSITE (antonym) word. The answer is a word that means the reverse of the stem word.";
+          skillNote +=
+            "\n\nThis item must ask for the OPPOSITE (antonym) word. The answer is a word that means the reverse of the stem word.";
         } else if (/synonym|same meaning|similar meaning|same in meaning/i.test(relationText)) {
-          skillNote += "\n\nThis item must ask for the SYNONYM (same meaning) word. The answer is a word that means the same as the stem word.";
+          skillNote +=
+            "\n\nThis item must ask for the SYNONYM (same meaning) word. The answer is a word that means the same as the stem word.";
         }
       }
       if (data.mode === "from_source") {
@@ -645,9 +564,14 @@ async function executeMockGeneration(
           authorInstructions,
           strategy,
           ...(metadataCatalog ? { metadataCatalog } : {}),
+          ...(context.exemplars.length ? { exemplars: context.exemplars } : {}),
         });
       } else {
-        const instructions = data.instructions?.trim();
+        const instructions =
+          data.instructions?.trim() ||
+          (slotSkill
+            ? `Write one new ${slotSkill.replaceAll("_", " ")} question for this class.`
+            : "");
         if (!instructions)
           throw new Error("Instructions are required for from_instructions generation.");
         userContent = buildFromInstructionsUserPrompt({
@@ -656,6 +580,7 @@ async function executeMockGeneration(
           total: data.total,
           previousStems: data.previousStems ?? [],
           ...(audience ? { audience } : {}),
+          ...(context.exemplars.length ? { exemplars: context.exemplars } : {}),
         });
       }
       const authorBlock = authorInstructions
@@ -665,15 +590,15 @@ async function executeMockGeneration(
         messages: [
           {
             role: "system",
-            content: `${skillNote ? `${SYSTEM_PROMPT}\n\n${skillNote}` : SYSTEM_PROMPT}${authorBlock}`,
+            content: `${skillNote ? `${SYSTEM_PROMPT}\n\n${skillNote}` : SYSTEM_PROMPT}${agentBlock}${authorBlock}`,
           },
           { role: "user", content: userContent },
         ],
         images,
         searchQuery: buildSearchQuery({
-          stem: sourceQuestion?.stem ?? data.instructions,
-          subject: audience?.subject,
-          exam: audience?.exam,
+          stem: sourceQuestion?.stem ?? data.instructions ?? null,
+          ...(audience?.subject != null ? { subject: audience.subject } : {}),
+          ...(audience?.exam != null ? { exam: audience.exam } : {}),
         }),
         accept: (text) => {
           const parsed = extractJson(text);
@@ -844,6 +769,9 @@ export const regenerateMockQuestion = createServerFn({ method: "POST" })
     const generation = loaded.document.generation;
     const previous = generation.items?.find((entry) => entry.candidate_question_id === current.id);
     const sequence = previous?.sequence ?? 0;
+    // A syllabus mock carries no instructions, so recover this question's slot
+    // to keep its skill and subject on a single-question regenerate.
+    const planSlot = generation.plan ? (expandSlots(generation.plan)[sequence] ?? null) : null;
     const jobId = generation.job_id ?? data.documentId;
     const fresh = emptyGenerationItem({
       jobId,
@@ -871,6 +799,7 @@ export const regenerateMockQuestion = createServerFn({ method: "POST" })
       mode: generation.mode,
       ...(source ? { sourceQuestion: source.question } : {}),
       instructions: generation.instructions,
+      ...(planSlot ? { skill: planSlot.skill, pattern_subtype: planSlot.pattern_subtype } : {}),
       ...(generation.strategy ? { strategy: generation.strategy } : {}),
       index: sequence,
       total: Math.max(generation.items?.length ?? 1, sequence + 1),
@@ -885,7 +814,8 @@ export const regenerateMockQuestion = createServerFn({ method: "POST" })
       checkpointQuestions: false,
       questions_rev: loaded.document.questions_rev,
       catalog: {
-        subject_id: source?.question.subject_id ?? loaded.document.subject_id,
+        subject_id:
+          planSlot?.subject_id ?? source?.question.subject_id ?? loaded.document.subject_id,
         topic_id: source?.question.topic_id ?? loaded.document.topic_id,
         standard_id: source?.question.standard_id ?? loaded.document.standard_id,
         stream_id: source?.question.stream_id ?? loaded.document.stream_id,

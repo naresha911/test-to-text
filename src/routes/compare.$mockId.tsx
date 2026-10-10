@@ -18,6 +18,7 @@ import {
   type DocumentMeta,
   type MockGenerationState,
 } from "@/lib/document-types";
+import { sourceAgent } from "@/lib/generation/agents/source-agents";
 import { getLocalCatalog, getLocalDocument, saveLocalDocument } from "@/lib/local-store.functions";
 import { resumeMockPaperGeneration } from "@/lib/mock-paper-client";
 import {
@@ -447,11 +448,16 @@ function ComparePage() {
             total={totalPlanned}
             generating={generating}
           />
-          {generation?.strategy ? (
+          {generation?.strategy || generation?.agent ? (
             <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
-              <Badge variant="secondary">
-                {generation.strategy === "rewrite" ? "Copyright-Safe Rewrite" : "Write New"}
-              </Badge>
+              {sourceAgent(generation?.agent ?? null) ? (
+                <Badge variant="outline">{sourceAgent(generation?.agent ?? null)?.label}</Badge>
+              ) : null}
+              {generation?.strategy ? (
+                <Badge variant="secondary">
+                  {generation.strategy === "rewrite" ? "Copyright-Safe Rewrite" : "Write New"}
+                </Badge>
+              ) : null}
             </div>
           ) : null}
         </div>

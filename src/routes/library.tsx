@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useServerFn } from "@tanstack/react-start";
-import { Columns2, Download, Loader2, Sparkles, Trash2, Upload } from "lucide-react";
+import { Columns2, Download, GraduationCap, Loader2, Sparkles, Trash2, Upload } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
@@ -30,6 +30,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
   Select,
@@ -49,7 +50,11 @@ import {
   type DocumentMeta,
   type MockGenerationState,
   type PageRecord,
+  type SourceAgentId,
 } from "@/lib/document-types";
+import { sourceAgent, sourceAgentForKind } from "@/lib/generation/agents/source-agents";
+import { CALIBRATABLE_SKILLS } from "@/lib/generation/calibration/skills";
+import { trainAgentOnDocument } from "@/lib/calibration.functions";
 import { readQuestionCrop } from "@/lib/extract.functions";
 import { generateHintSolution } from "@/lib/hint-solution.functions";
 import { useSolutionGeneration } from "@/hooks/useSolutionGeneration";
@@ -498,6 +503,7 @@ function LibraryPage() {
   const exportFn = useServerFn(exportLocalDocument);
   const pushFn = useServerFn(pushLocalDocument);
   const createMockFn = useServerFn(createAiMockFromSource);
+  const trainFn = useServerFn(trainAgentOnDocument);
   const getFn = useServerFn(getLocalDocument);
   const saveFn = useServerFn(saveLocalDocument);
   const generateFn = useServerFn(generateMockQuestion);
@@ -519,11 +525,20 @@ function LibraryPage() {
   } | null>(null);
   const [mockBlueprint, setMockBlueprint] = useState<{
     sourceId: string;
+    agent: SourceAgentId;
     gaps: string[];
     questionCount: number;
     strategy: "rewrite" | "write_new";
     difficultyStep: -1 | 0 | 1;
     notes: string;
+  } | null>(null);
+  const [trainingFor, setTrainingFor] = useState<string | null>(null);
+  const [trainBlueprint, setTrainBlueprint] = useState<{
+    sourceId: string;
+    agent: SourceAgentId;
+    skills: { skill: string; count: number }[];
+    approvedTotal: number;
+    casesPerSkill: number;
   } | null>(null);
 
   const papers = useQuery({
@@ -617,11 +632,11 @@ function LibraryPage() {
     setCreatingMockFor(sourceId);
     try {
       const loaded = await getFn({ data: { id: sourceId } });
-      const questions = loaded?.questions ?? [];
-      if (!questions.length) {
+      if (!loaded?.questions.length) {
         await startMockFromSource(sourceId);
         return;
       }
+      const questions = loaded.questions;
       const seenNumbers = new Set<string>();
       let questionCount = 0;
       for (const question of questions) {
@@ -630,11 +645,14 @@ function LibraryPage() {
         if (number) seenNumbers.add(number);
         questionCount += 1;
       }
+      // The source paper's kind picks the agent; the server derives it the same way.
+      const agent = sourceAgentForKind(loaded.document.kind) ?? "past_paper";
       setMockBlueprint({
         sourceId,
+        agent,
         gaps: numberGaps(questions.map((question) => question.number ?? "")),
         questionCount,
-        strategy: "write_new",
+        strategy: sourceAgent(agent)?.defaultStrategy ?? "write_new",
         difficultyStep: 0,
         notes: "",
       });
@@ -654,6 +672,82 @@ function LibraryPage() {
       difficultyStep: draft.difficultyStep,
       authorInstructions: draft.notes,
     });
+  }
+
+  async function prepareTrainAgent(paperId: string) {
+    setTrainingFor(paperId);
+    try {
+      const loaded = await getFn({ data: { id: paperId } });
+      const approved = (loaded?.questions ?? []).filter(
+        (question) =>
+          question.approved ||
+          question.approval_status === "reviewed" ||
+          question.approval_status === "published",
+      );
+      const counts = new Map<string, number>();
+      for (const question of approved) {
+        if (!question.skill_type) continue;
+        counts.set(question.skill_type, (counts.get(question.skill_type) ?? 0) + 1);
+      }
+      const skills = [...counts.entries()]
+        .filter(([skill]) => CALIBRATABLE_SKILLS.includes(skill))
+        .map(([skill, count]) => ({ skill, count }))
+        .sort((a, b) => b.count - a.count);
+      if (!skills.length) {
+        toast.error(
+          approved.length
+            ? "None of the approved questions use a skill the agent can generate yet."
+            : "Approve some questions in this paper first.",
+        );
+        return;
+      }
+      const agent = sourceAgentForKind(loaded?.document.kind ?? "past_paper") ?? "past_paper";
+      setTrainBlueprint({
+        sourceId: paperId,
+        agent,
+        skills,
+        approvedTotal: approved.length,
+        casesPerSkill: 3,
+      });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Could not load that paper.");
+    } finally {
+      setTrainingFor(null);
+    }
+  }
+
+  async function startTrainAgent(sourceId: string, casesPerSkill: number) {
+    setTrainingFor(sourceId);
+    try {
+      const result = await trainFn({ data: { documentId: sourceId, casesPerSkill } });
+      const summary = result.summary;
+      toast.success(
+        `Training finished: ${summary.passed}/${summary.cases} passed, ${summary.alerts} alert${
+          summary.alerts === 1 ? "" : "s"
+        }. Review it on the Calibrate page.`,
+      );
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Training failed.");
+    } finally {
+      for (const key of [
+        "local-documents",
+        "calibration-status",
+        "calibration-runs",
+        "calibration-run",
+        "calibration-proposals",
+        "calibration-alerts",
+      ]) {
+        void queryClient.invalidateQueries({ queryKey: [key] });
+      }
+      setTrainingFor(null);
+    }
+  }
+
+  function confirmTrainAgent() {
+    const draft = trainBlueprint;
+    if (!draft) return;
+    setTrainBlueprint(null);
+    void startTrainAgent(draft.sourceId, draft.casesPerSkill);
   }
 
   async function resumeInstructionMock(mockId: string) {
@@ -798,6 +892,12 @@ function LibraryPage() {
                       ) : null}
                     </div>
                     <Badge variant="outline">{documentKindBadge(paper.kind)}</Badge>
+                    {paper.used_for_training ? (
+                      <Badge variant="secondary">
+                        <GraduationCap className="mr-1 h-3 w-3" aria-hidden="true" />
+                        Trained
+                      </Badge>
+                    ) : null}
 
                     {paper.kind === "ai_mock" ? (
                       <>
@@ -830,28 +930,58 @@ function LibraryPage() {
                         ) : null}
                       </>
                     ) : (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        disabled={
-                          creatingMockFor === paper.id ||
-                          paper.question_count === 0 ||
-                          mockBlueprint?.sourceId === paper.id
-                        }
-                        onClick={() => void prepareMockFromSource(paper.id)}
-                      >
-                        {creatingMockFor === paper.id ? (
-                          <>
-                            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                            Starting…
-                          </>
-                        ) : (
-                          <>
-                            <Sparkles className="h-4 w-4" aria-hidden="true" />
-                            Generate AI Mock
-                          </>
-                        )}
-                      </Button>
+                      <>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={
+                            creatingMockFor === paper.id ||
+                            paper.question_count === 0 ||
+                            mockBlueprint?.sourceId === paper.id
+                          }
+                          onClick={() => void prepareMockFromSource(paper.id)}
+                        >
+                          {creatingMockFor === paper.id ? (
+                            <>
+                              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                              Starting…
+                            </>
+                          ) : (
+                            <>
+                              <Sparkles className="h-4 w-4" aria-hidden="true" />
+                              Generate AI Mock
+                            </>
+                          )}
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={
+                            paper.used_for_training ||
+                            paper.question_count === 0 ||
+                            trainingFor === paper.id ||
+                            trainBlueprint?.sourceId === paper.id
+                          }
+                          title={
+                            paper.used_for_training
+                              ? "Already used to train the agent."
+                              : undefined
+                          }
+                          onClick={() => void prepareTrainAgent(paper.id)}
+                        >
+                          {trainingFor === paper.id ? (
+                            <>
+                              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                              Training…
+                            </>
+                          ) : (
+                            <>
+                              <GraduationCap className="h-4 w-4" aria-hidden="true" />
+                              Train Agent
+                            </>
+                          )}
+                        </Button>
+                      </>
                     )}
 
                     {paper.kind !== "ai_mock" ? (
@@ -951,6 +1081,15 @@ function LibraryPage() {
               unchanged.
             </DialogDescription>
           </DialogHeader>
+          {mockBlueprint ? (
+            <p className="rounded-md border border-border bg-muted/40 p-2 text-sm">
+              <span className="text-muted-foreground">Agent: </span>
+              <span className="font-medium">{sourceAgent(mockBlueprint.agent)?.label}</span>
+              <span className="mt-0.5 block text-xs text-muted-foreground">
+                {sourceAgent(mockBlueprint.agent)?.summary}
+              </span>
+            </p>
+          ) : null}
           {mockBlueprint?.gaps.length ? (
             <p className="text-sm text-muted-foreground">
               Missing question numbers: {mockBlueprint.gaps.join(", ")}
@@ -1038,6 +1177,85 @@ function LibraryPage() {
             </Button>
             <Button onClick={confirmMockBlueprint} disabled={creatingMockFor != null}>
               Generate AI Mock
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={trainBlueprint != null}
+        onOpenChange={(open) => {
+          if (!open) setTrainBlueprint(null);
+        }}
+      >
+        <DialogContent className="max-h-[85vh] max-w-lg overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Train Agent</DialogTitle>
+            <DialogDescription>
+              Calibration runs now, using only this paper's {trainBlueprint?.approvedTotal ?? 0}{" "}
+              approved questions as the reference. The agent is tested against them and its tuning
+              updates. This paper can only train once.
+            </DialogDescription>
+          </DialogHeader>
+          {trainBlueprint ? (
+            <p className="rounded-md border border-border bg-muted/40 p-2 text-sm">
+              <span className="text-muted-foreground">Agent: </span>
+              <span className="font-medium">{sourceAgent(trainBlueprint.agent)?.label}</span>
+              <span className="mt-0.5 block text-xs text-muted-foreground">
+                {sourceAgent(trainBlueprint.agent)?.summary}
+              </span>
+            </p>
+          ) : null}
+          {trainBlueprint ? (
+            <div className="space-y-2">
+              <Label>Skills under test</Label>
+              <ul className="space-y-1 text-sm">
+                {trainBlueprint.skills.map((entry) => (
+                  <li
+                    key={entry.skill}
+                    className="flex items-center justify-between rounded-md border border-border px-2 py-1"
+                  >
+                    <span>{entry.skill.replaceAll("_", " ")}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {entry.count} approved
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          <div className="space-y-2">
+            <Label htmlFor="train-cases">Questions per skill</Label>
+            <Input
+              id="train-cases"
+              className="w-24"
+              type="number"
+              min={1}
+              max={10}
+              value={trainBlueprint?.casesPerSkill ?? 3}
+              onChange={(event) =>
+                setTrainBlueprint((current) =>
+                  current
+                    ? {
+                        ...current,
+                        casesPerSkill: Math.min(10, Math.max(1, Number(event.target.value) || 1)),
+                      }
+                    : current,
+                )
+              }
+            />
+            <p className="text-xs text-muted-foreground">
+              Runs immediately and stays busy until finished — keep this page
+              open. Up to 40 questions are tested per run. Results and any
+              prompt proposals appear on the Calibrate page.
+            </p>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setTrainBlueprint(null)}>
+              Cancel
+            </Button>
+            <Button onClick={confirmTrainAgent} disabled={trainingFor != null}>
+              Train Agent
             </Button>
           </DialogFooter>
         </DialogContent>

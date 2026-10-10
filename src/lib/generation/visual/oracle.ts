@@ -1,4 +1,4 @@
-import type { MirrorElement, MirrorImageSpec } from "@/lib/generation/visual/spec";
+import type { MirrorAxis, MirrorElement, MirrorImageSpec } from "@/lib/generation/visual/spec";
 import {
   combineValidation,
   type ValidationCheck,
@@ -10,20 +10,29 @@ type Dot = { cx: number; cy: number; r: number };
 
 function independentMirror(
   elements: MirrorElement[],
-  width: number,
+  canvas: { width: number; height: number },
+  axis: MirrorAxis,
 ): { rects: Box[]; circles: Dot[] } {
   const rects: Box[] = [];
   const circles: Dot[] = [];
   for (const element of elements) {
     if (element.shape === "rect") {
-      rects.push({
-        x: width - (element.x + element.w),
-        y: element.y,
-        w: element.w,
-        h: element.h,
-      });
+      rects.push(
+        axis === "vertical"
+          ? { x: canvas.width - (element.x + element.w), y: element.y, w: element.w, h: element.h }
+          : {
+              x: element.x,
+              y: canvas.height - (element.y + element.h),
+              w: element.w,
+              h: element.h,
+            },
+      );
     } else {
-      circles.push({ cx: width - element.cx, cy: element.cy, r: element.r });
+      circles.push(
+        axis === "vertical"
+          ? { cx: canvas.width - element.cx, cy: element.cy, r: element.r }
+          : { cx: element.cx, cy: canvas.height - element.cy, r: element.r },
+      );
     }
   }
   return { rects, circles };
@@ -79,7 +88,7 @@ export function validateMirrorSvgs(
   optionSvgs: Record<string, string>,
   createdAt?: string,
 ): ValidationResult {
-  const expected = independentMirror(spec.elements, spec.canvas.width);
+  const expected = independentMirror(spec.elements, spec.canvas, spec.transformation.axis);
   const checks: ValidationCheck[] = [];
   const correctSvg = optionSvgs[spec.correct_key];
   if (!correctSvg) {
@@ -95,7 +104,7 @@ export function validateMirrorSvgs(
     checks.push({
       name: "visual",
       status: "failed" as const,
-      details: "The keyed option is not the vertical mirror of the question figure.",
+      details: `The keyed option is not the ${spec.transformation.axis} mirror of the question figure.`,
     });
   } else {
     checks.push({

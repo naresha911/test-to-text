@@ -1,6 +1,7 @@
 import type { Difficulty } from "@/lib/document-types";
 import type { Question, QuestionType } from "@/lib/question-schema";
 import { detectSkill } from "@/lib/generation/skill-detect";
+import { patternSubtypeOf, patternTypeOf } from "@/lib/generation/pattern-classifier";
 import { isAutoGeneratable, skillByType, type SkillFamily } from "@/lib/question-taxonomy";
 
 import type { PatternAnalysis, StructuralConstraints } from "@/lib/generation/pattern-types";
@@ -51,7 +52,9 @@ export function analyzePattern(input: {
   const detectInstructions =
     [input.instructions ?? "", source?.instructions ?? ""].filter(Boolean).join("\n") || null;
   const overrideSkill =
-    input.skillTypeOverride && skillByType(input.skillTypeOverride) ? input.skillTypeOverride : null;
+    input.skillTypeOverride && skillByType(input.skillTypeOverride)
+      ? input.skillTypeOverride
+      : null;
   const skillType =
     overrideSkill ??
     explicitSkill ??
@@ -79,11 +82,14 @@ export function analyzePattern(input: {
     }
   }
 
-  if (skillType === "mirror_image") {
+  if (skillType === "mirror_image" || skillType === "water_image") {
+    const water = skillType === "water_image";
     family = "intelligence";
     type = "mcq";
-    intent = "Choose the exact vertical mirror image of a new asymmetric figure.";
-    pattern = { transformation: "vertical", option_count: 4 };
+    intent = water
+      ? "Choose the exact water image (horizontal reflection) of a new asymmetric figure."
+      : "Choose the exact vertical mirror image of a new asymmetric figure.";
+    pattern = { transformation: water ? "horizontal" : "vertical", option_count: 4 };
     base.has_figure = true;
     base.has_option_images = true;
     base.option_count = 4;
@@ -116,6 +122,8 @@ export function analyzePattern(input: {
     family,
     type,
     skill_type: skillType,
+    pattern_type: patternTypeOf(skillType),
+    pattern_subtype: patternSubtypeOf({ skillType, source, text }),
     learning_intent: intent,
     difficulty: difficultyOf(source),
     structural_constraints: base,

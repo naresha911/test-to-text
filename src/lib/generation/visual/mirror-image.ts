@@ -1,4 +1,9 @@
-import type { MirrorElement, MirrorImageSpec, MirrorTransform } from "@/lib/generation/visual/spec";
+import type {
+  MirrorAxis,
+  MirrorElement,
+  MirrorImageSpec,
+  MirrorTransform,
+} from "@/lib/generation/visual/spec";
 import { hashSeed } from "@/lib/generation/job-types";
 
 const WIDTH = 160;
@@ -25,19 +30,22 @@ function templates(seed: number): MirrorElement[] {
   ];
 }
 
-const DISTRACTORS: MirrorTransform[] = ["identity", "mirror_horizontal", "rotate_180"];
+const VERTICAL_DISTRACTORS: MirrorTransform[] = ["identity", "mirror_horizontal", "rotate_180"];
+const HORIZONTAL_DISTRACTORS: MirrorTransform[] = ["identity", "mirror_vertical", "rotate_180"];
 
 /** Builds a new figure. The source crop is not traced or reflected into these coordinates. */
-export function inventMirrorSpec(seedKey: string): MirrorImageSpec {
+export function inventMirrorSpec(seedKey: string, axis: MirrorAxis = "vertical"): MirrorImageSpec {
   const seed = hashSeed(seedKey);
   const correctSlot = seed % 4;
+  const correct: MirrorTransform = axis === "horizontal" ? "mirror_horizontal" : "mirror_vertical";
+  const distractors = axis === "horizontal" ? HORIZONTAL_DISTRACTORS : VERTICAL_DISTRACTORS;
   const option_transforms: Record<string, MirrorTransform> = {};
   let distractor = 0;
   for (let index = 0; index < 4; index += 1) {
     const key = String.fromCharCode(65 + index);
-    if (index === correctSlot) option_transforms[key] = "mirror_vertical";
+    if (index === correctSlot) option_transforms[key] = correct;
     else {
-      option_transforms[key] = DISTRACTORS[distractor] ?? "identity";
+      option_transforms[key] = distractors[distractor] ?? "identity";
       distractor += 1;
     }
   }
@@ -45,7 +53,7 @@ export function inventMirrorSpec(seedKey: string): MirrorImageSpec {
     kind: "mirror_image",
     canvas: { width: WIDTH, height: HEIGHT },
     elements: templates(seed),
-    transformation: { axis: "vertical", coordinate_system: "cartesian" },
+    transformation: { axis, coordinate_system: "cartesian" },
     correct_key: String.fromCharCode(65 + correctSlot),
     option_transforms,
   };

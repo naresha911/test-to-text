@@ -20,6 +20,7 @@ import { validateGrammarQuestion } from "@/lib/generation/textual/validator";
 import { attachMirrorAssets, mirrorOptionSvgs } from "@/lib/generation/visual/assets";
 import { inventMirrorSpec } from "@/lib/generation/visual/mirror-image";
 import { validateMirrorSvgs } from "@/lib/generation/visual/oracle";
+import type { MirrorAxis } from "@/lib/generation/visual/spec";
 import type { ValidationResult } from "@/lib/generation/validation-types";
 import { skillByType } from "@/lib/question-taxonomy";
 import {
@@ -53,7 +54,13 @@ export type RunGenerationInput = {
   existingQuestion?: Question | null;
   assetStore: AssetStore;
   callGrammarModel?: (spec: ReturnType<typeof buildGenerationSpec>) => Promise<unknown>;
-  callLegacyModel?: (questionId: string, skill: string) => Promise<Question>;
+  callLegacyModel?: (
+    questionId: string,
+    skill: string,
+    context: { analysis: PatternAnalysis; exemplars: Question[] },
+  ) => Promise<Question>;
+  /** Source questions from the library to show the model as reference for this slot. */
+  retrieveExamples?: (analysis: PatternAnalysis) => Promise<Question[]>;
   describeSourceFigure?: () => Promise<string | null>;
   /** Vision pass that names the source figure's skill when the text is uninformative. */
   classifySourceFigure?: () => Promise<string | null>;
@@ -135,6 +142,16 @@ export async function runGenerationItem(input: RunGenerationInput): Promise<{
     }
   }
 
+  let exemplars: Question[] = [];
+  if (input.retrieveExamples) {
+    try {
+      exemplars = (await input.retrieveExamples(analysis)) ?? [];
+    } catch {
+      // Retrieval is best effort; generation continues without references.
+      exemplars = [];
+    }
+  }
+
   const skill = skillByType(analysis.skill_type);
   const authorNotes = input.authorInstructions?.trim() ?? "";
   const rewrite = input.strategy === "rewrite";
@@ -175,7 +192,9 @@ export async function runGenerationItem(input: RunGenerationInput): Promise<{
       });
       return generated.question;
     }
-    if (analysis.skill_type === "mirror_image" && (!rewrite || skillFromVision)) {
+    const isReflection =
+      analysis.skill_type === "mirror_image" || analysis.skill_type === "water_image";
+    if (isReflection && (!rewrite || skillFromVision)) {
       if (
         input.describeSourceFigure &&
         sourceQuestion?.figures.some((figure) => figure.image_path)
@@ -186,24 +205,30 @@ export async function runGenerationItem(input: RunGenerationInput): Promise<{
           // A vision failure still leaves a new spec to draw. The crop is not traced.
         }
       }
-      const mirror = inventMirrorSpec(seedKey);
+      const axis: MirrorAxis = analysis.skill_type === "water_image" ? "horizontal" : "vertical";
+      const label = axis === "horizontal" ? "water" : "vertical mirror";
+      const mirror = inventMirrorSpec(seedKey, axis);
       const draft = emptyQuestion({
         id: questionId,
         number: input.number,
         type: "mcq",
-        skill_type: "mirror_image",
-        stem: "Which option shows the exact vertical mirror image of the figure?",
+        skill_type: analysis.skill_type,
+        pattern_subtype: axis === "horizontal" ? "water" : "vertical",
+        stem: `Which option shows the exact ${label} image of the figure?`,
         options: ["A", "B", "C", "D"].map((key) => ({
           key,
           text: "",
           is_correct: key === mirror.correct_key,
         })),
         answer_keys: [mirror.correct_key],
-        hint: "Reflect each part across a vertical line down the middle.",
-        explanation: `Option ${mirror.correct_key} is the vertical mirror. The other options are turned or flipped a different way.`,
+        hint:
+          axis === "horizontal"
+            ? "Reflect each part across a horizontal line through the middle."
+            : "Reflect each part across a vertical line down the middle.",
+        explanation: `Option ${mirror.correct_key} is the ${label}. The other options are turned or flipped a different way.`,
         marks: 1,
         difficulty: "medium",
-        tags: ["mirror_image"],
+        tags: [analysis.skill_type],
         approved: false,
         approval_status: "generated",
         source_question_id: input.source?.source_question_id ?? null,
@@ -216,6 +241,7 @@ export async function runGenerationItem(input: RunGenerationInput): Promise<{
         store: input.assetStore,
         documentId: input.documentId,
         idempotencyKey: item.idempotency_key,
+        label,
       });
     }
     if (analysis.skill_type === "grammar" && !rewrite) {
@@ -245,7 +271,10 @@ export async function runGenerationItem(input: RunGenerationInput): Promise<{
         generation_job_id: input.jobId,
       });
     }
-    const legacy = await input.callLegacyModel(questionId, analysis.skill_type);
+    const legacy = await input.callLegacyModel(questionId, analysis.skill_type, {
+      analysis,
+      exemplars,
+    });
     legacy.id = questionId;
     legacy.approved = false;
     legacy.approval_status = "generated";
@@ -282,7 +311,8 @@ export async function runGenerationItem(input: RunGenerationInput): Promise<{
           {
             name: "author_instructions",
             status: "needs_review",
-            details: "Teacher instructions replaced the automatic solver, so a person needs to review it.",
+            details:
+              "Teacher instructions replaced the automatic solver, so a person needs to review it.",
           },
         ],
         errors: [],
@@ -293,7 +323,7 @@ export async function runGenerationItem(input: RunGenerationInput): Promise<{
     if (isCheckedSkill(analysis.skill_type)) return validateCheckedQuestion(candidate, input.now);
     if (analysis.skill_type === "number_series")
       return validateNumberSeriesQuestion(candidate, input.now);
-    if (analysis.skill_type === "mirror_image") {
+    if (analysis.skill_type === "mirror_image" || analysis.skill_type === "water_image") {
       const mirror = candidate.visual_spec;
       if (!mirror || mirror["kind"] !== "mirror_image") {
         return {

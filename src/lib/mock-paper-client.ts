@@ -1,5 +1,6 @@
 import type { DocumentMeta, MockGenerationState, MockStrategy } from "@/lib/document-types";
 import { ensureGenerationItems, mockGenerationTotal } from "@/lib/document-types";
+import { expandSlots } from "@/lib/generation/agents/paper-architect";
 import type { GenerationItem } from "@/lib/generation/job-types";
 import {
   advanceGenerationAfterSuccess,
@@ -35,6 +36,9 @@ type GenerateFn = (input: {
     savedQuestions?: Question[];
     existingQuestion?: Question | null;
     strategy?: MockStrategy;
+    /** Forced skill for a full-syllabus slot. */
+    skill?: string;
+    pattern_subtype?: string | null;
     catalogOptions?: MockCatalogOptions;
     questions_rev: number;
   };
@@ -129,6 +133,7 @@ export async function resumeMockPaperGeneration(options: {
 
   const baseAudience = audienceFromDocument(options.document, options.catalogNames);
   const topicsById = options.catalogNames?.topicsById ?? {};
+  const planSequence = state.plan ? expandSlots(state.plan) : null;
 
   while (state.cursor < total) {
     if (options.signal?.cancelled) {
@@ -243,26 +248,36 @@ export async function resumeMockPaperGeneration(options: {
           ),
         };
       } else {
+        const slot = planSequence?.[index] ?? null;
+        if (planSequence && !slot) {
+          throw new Error(
+            "The paper plan is out of sync with the question count — recreate the paper.",
+          );
+        }
         const instructions = state.instructions?.trim();
-        if (!instructions) {
+        if (!instructions && !slot) {
           throw new Error("Mock instructions are missing.");
         }
         const catalog = {
-          subject_id: options.document.subject_id,
+          subject_id: slot?.subject_id ?? options.document.subject_id,
           topic_id: options.document.topic_id,
           standard_id: options.document.standard_id,
           stream_id: options.document.stream_id,
         };
+        const audience: MockPaperAudience = slot
+          ? { ...baseAudience, topic: (slot.topic || baseAudience.topic) ?? null }
+          : baseAudience;
         const generated = await options.runGenerate({
           data: {
             mode: "from_instructions",
-            instructions,
+            instructions: instructions ?? null,
+            ...(slot ? { skill: slot.skill, pattern_subtype: slot.pattern_subtype } : {}),
             index,
             total,
             number: String(index + 1),
             sourceQuestionId: null,
             previousStems: questions.map((q) => q.stem).filter(Boolean),
-            audience: baseAudience,
+            audience,
             catalog,
             documentId: options.mockId,
             jobId: state.job_id ?? options.mockId,

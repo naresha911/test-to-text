@@ -1301,7 +1301,8 @@ export const QuestionCard = memo(function QuestionCard({
                   {regeneratingQuestion ? "Regenerating…" : "Regenerate question"}
                 </Button>
               ) : null}
-              {onRegenerateFigure && question.skill_type === "mirror_image" ? (
+              {onRegenerateFigure &&
+              (question.skill_type === "mirror_image" || question.skill_type === "water_image") ? (
                 <Button
                   type="button"
                   size="sm"

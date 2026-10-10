@@ -112,6 +112,7 @@ const emptyMeta = (
   section_timing: false,
   negative_marking: true,
   allow_pause: true,
+  used_for_training: false,
   max_attempts: 1,
   default_marks: 1,
   default_negative_marks: 0,

@@ -1,0 +1,225 @@
+{
+  "standard_id": 8,
+  "label": "AISSEE Class 9 (from 8th standard)",
+  "subjects": [
+    {
+      "key": "mathematics",
+      "name": "Mathematics",
+      "catalog_subject": "Mathematics",
+      "catalog_aliases": ["Maths", "Math"],
+      "sections": [
+        {
+          "name": "Algebra",
+          "skills": [
+            { "topic": "Linear equations in one variable", "skill": "linear_equation", "count": 3 },
+            {
+              "topic": "Algebraic expressions and identities",
+              "skill": "algebraic_identities",
+              "count": 3
+            },
+            { "topic": "Factorization", "skill": "factorization", "count": 2 },
+            { "topic": "Exponents and powers", "skill": "exponents", "count": 2 },
+            { "topic": "Direct and inverse proportions", "skill": "proportion", "count": 2 }
+          ]
+        },
+        {
+          "name": "Number Systems",
+          "skills": [
+            { "topic": "Rational numbers", "skill": "rational_numbers", "count": 3 },
+            { "topic": "Squares and square roots", "skill": "squares_roots", "count": 3 },
+            { "topic": "Cubes and cube roots", "skill": "cubes_roots", "count": 2 },
+            {
+              "topic": "Playing with numbers and divisibility tests",
+              "skill": "divisibility",
+              "count": 2
+            }
+          ]
+        },
+        {
+          "name": "Geometry",
+          "skills": [
+            { "topic": "Understanding quadrilaterals", "skill": "quadrilaterals", "count": 2 },
+            { "topic": "Triangle and its properties", "skill": "triangle_properties", "count": 2 },
+            { "topic": "Parallel lines", "skill": "parallel_lines", "count": 1 },
+            {
+              "topic": "Visualizing solid shapes and Euler's formula",
+              "skill": "euler_formula",
+              "count": 2
+            },
+            { "topic": "Angles", "skill": "angles", "count": 1 }
+          ]
+        },
+        {
+          "name": "Mensuration",
+          "skills": [
+            { "topic": "Area and perimeter of plane figures", "skill": "mensuration", "count": 3 },
+            {
+              "topic": "Volume and surface area of solids",
+              "skill": "surface_area_volume",
+              "count": 3
+            }
+          ]
+        },
+        {
+          "name": "Commercial Math",
+          "skills": [
+            { "topic": "Percentage, profit, loss and discount", "skill": "discount", "count": 2 },
+            { "topic": "Simple interest", "skill": "simple_interest", "count": 1 },
+            { "topic": "Compound interest", "skill": "compound_interest", "count": 2 },
+            { "topic": "Time and work", "skill": "work_rate", "count": 2 }
+          ]
+        },
+        {
+          "name": "Data & Probability",
+          "skills": [
+            { "topic": "Mean, median and mode", "skill": "statistics", "count": 2 },
+            { "topic": "Probability", "skill": "probability", "count": 2 },
+            {
+              "topic": "Data handling (bar, line and pie charts)",
+              "skill": "data_interpretation",
+              "count": 2
+            },
+            { "topic": "Introduction to graphs", "skill": "graphs", "count": 1 }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "general_science",
+      "name": "General Science",
+      "catalog_subject": "General Science",
+      "catalog_aliases": ["Science", "General Knowledge"],
+      "sections": [
+        {
+          "name": "Physics & Chemistry",
+          "skills": [
+            {
+              "topic": "Force and pressure, friction, sound, light, stars, synthetic fibres, metals, coal and petroleum, combustion",
+              "skill": "general_knowledge",
+              "count": 13
+            }
+          ]
+        },
+        {
+          "name": "Biology & Environment",
+          "skills": [
+            {
+              "topic": "Crop production, microorganisms, conservation, cell structure, reproduction, adolescence, pollution",
+              "skill": "general_knowledge",
+              "count": 12
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "social_science",
+      "name": "Social Science",
+      "catalog_subject": "Social Science",
+      "catalog_aliases": ["Social Studies"],
+      "sections": [
+        {
+          "name": "History",
+          "skills": [
+            {
+              "topic": "British expansion, revolt of 1857, education under British rule, national movement",
+              "skill": "general_knowledge",
+              "count": 9
+            }
+          ]
+        },
+        {
+          "name": "Geography",
+          "skills": [
+            {
+              "topic": "Resources, land, soil, water, agriculture, industries, human resources",
+              "skill": "general_knowledge",
+              "count": 8
+            }
+          ]
+        },
+        {
+          "name": "Civics & Political Science",
+          "skills": [
+            {
+              "topic": "The Constitution, secularism, parliamentary government, judiciary, social justice",
+              "skill": "general_knowledge",
+              "count": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "english",
+      "name": "English",
+      "catalog_subject": "English",
+      "catalog_aliases": ["Language", "English Language"],
+      "sections": [
+        {
+          "name": "Advanced Grammar",
+          "skills": [
+            {
+              "topic": "Tenses, active and passive voice, reported speech, subject-verb agreement, clauses, modals, prepositions, conjunctions",
+              "skill": "grammar",
+              "count": 10
+            }
+          ]
+        },
+        {
+          "name": "Vocabulary & Mechanics",
+          "skills": [
+            { "topic": "Synonyms and antonyms", "skill": "synonym_antonym", "count": 2 },
+            { "topic": "Idioms and phrases", "skill": "idioms", "count": 2 },
+            { "topic": "One-word substitution", "skill": "one_word_substitution", "count": 2 },
+            { "topic": "Cloze test", "skill": "cloze", "count": 2 },
+            { "topic": "Spotting errors", "skill": "spotting_errors", "count": 2 },
+            { "topic": "Spelling test", "skill": "spelling", "count": 1 }
+          ]
+        },
+        {
+          "name": "Comprehension",
+          "skills": [
+            { "topic": "Reading unseen passages", "skill": "comprehension", "count": 2 },
+            { "topic": "Reordering of sentences", "skill": "jumbled_sentences", "count": 2 }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "intelligence",
+      "name": "Intelligence",
+      "catalog_subject": "Intelligence",
+      "catalog_aliases": ["Reasoning", "General Intelligence", "Mental Ability"],
+      "sections": [
+        {
+          "name": "Verbal Reasoning",
+          "skills": [
+            { "topic": "Word analogies", "skill": "word_analogy", "count": 2 },
+            { "topic": "Number analogies", "skill": "number_analogy", "count": 2 },
+            { "topic": "Number series", "skill": "number_series", "count": 2 },
+            { "topic": "Letter series", "skill": "letter_series", "count": 2 },
+            { "topic": "Matrix coding", "skill": "matrix_coding", "count": 2 },
+            { "topic": "Coding and decoding", "skill": "coding_decoding", "count": 2 },
+            { "topic": "Blood relations", "skill": "blood_relations", "count": 2 },
+            { "topic": "Syllogisms", "skill": "syllogism", "count": 2 },
+            { "topic": "Mathematical reasoning", "skill": "symbol_operations", "count": 2 }
+          ]
+        },
+        {
+          "name": "Non-Verbal Reasoning",
+          "skills": [
+            { "topic": "Mirror images", "skill": "mirror_image", "count": 2 },
+            { "topic": "Water images", "skill": "water_image", "count": 1 },
+            { "topic": "Pattern completion", "skill": "figure_pattern", "count": 2 },
+            { "topic": "Embedded figures", "skill": "embedded_figure", "count": 1 }
+          ]
+        },
+        {
+          "name": "Critical Thinking",
+          "skills": [{ "topic": "Critical thinking", "skill": "critical_thinking", "count": 1 }]
+        }
+      ]
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+import type { SlotPlan } from "@/lib/generation/agents/types";
 import {
   emptyGenerationItem,
   parseGenerationItem,
@@ -7,6 +8,10 @@ import type { ContentMode } from "@/lib/reading/mode";
 
 export const DOCUMENT_KINDS = ["past_paper", "practice_test", "ai_mock"] as const;
 export type DocumentKind = (typeof DOCUMENT_KINDS)[number];
+
+/** The two source agents a mock can be generated with. Matches the source document kinds. */
+export const SOURCE_AGENT_IDS = ["past_paper", "practice_test"] as const;
+export type SourceAgentId = (typeof SOURCE_AGENT_IDS)[number];
 
 export const DIFFICULTIES = ["easy", "medium", "hard"] as const;
 export type Difficulty = (typeof DIFFICULTIES)[number];
@@ -57,6 +62,12 @@ export type MockGenerationState = {
   drill_skill?: string | null;
   /** Figure skill named by vision for each source question, so repeat runs skip the vision call. */
   figure_skills?: Record<string, string>;
+  /** Full-syllabus paper plan: one slot per skill group, in generation order. */
+  plan?: SlotPlan[];
+  /** How this mock is being generated. */
+  generation_target?: "instructions" | "topic" | "syllabus";
+  /** The source agent that generates this mock (past-paper or practice-test). */
+  agent?: SourceAgentId | null;
 };
 
 export type DocumentMeta = {
@@ -78,6 +89,8 @@ export type DocumentMeta = {
   section_timing: boolean;
   negative_marking: boolean;
   allow_pause: boolean;
+  /** True once this paper has trained an agent via calibration; disables retraining. */
+  used_for_training: boolean;
   max_attempts: number;
   default_marks: number | null;
   default_negative_marks: number | null;
@@ -149,6 +162,26 @@ export function emptyMockGeneration(
   };
 }
 
+function parsePlan(value: unknown): SlotPlan[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const slots: SlotPlan[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const row = entry as Record<string, unknown>;
+    if (typeof row["skill"] !== "string") continue;
+    slots.push({
+      skill: row["skill"],
+      pattern_subtype: typeof row["pattern_subtype"] === "string" ? row["pattern_subtype"] : null,
+      subject_id: typeof row["subject_id"] === "number" ? row["subject_id"] : null,
+      subject_key: typeof row["subject_key"] === "string" ? row["subject_key"] : "",
+      topic: typeof row["topic"] === "string" ? row["topic"] : "",
+      count: typeof row["count"] === "number" ? row["count"] : 1,
+      difficulty_step: typeof row["difficulty_step"] === "number" ? row["difficulty_step"] : 0,
+    });
+  }
+  return slots.length ? slots : undefined;
+}
+
 export function parseMockGeneration(raw: unknown): MockGenerationState | null {
   if (raw == null || raw === "") return null;
   let value: unknown = raw;
@@ -192,6 +225,7 @@ export function parseMockGeneration(raw: unknown): MockGenerationState | null {
         .map((item) => parseGenerationItem(item))
         .filter((item): item is GenerationItem => item != null)
     : [];
+  const plan = parsePlan(obj["plan"]);
   return {
     mode,
     status: statusOk ? status : "pending",
@@ -227,7 +261,9 @@ export function parseMockGeneration(raw: unknown): MockGenerationState | null {
       : obj["drill_skill"] === null
         ? { drill_skill: null }
         : {}),
-    ...(obj["figure_skills"] && typeof obj["figure_skills"] === "object" && !Array.isArray(obj["figure_skills"])
+    ...(obj["figure_skills"] &&
+    typeof obj["figure_skills"] === "object" &&
+    !Array.isArray(obj["figure_skills"])
       ? {
           figure_skills: Object.fromEntries(
             Object.entries(obj["figure_skills"] as Record<string, unknown>).filter(
@@ -235,6 +271,15 @@ export function parseMockGeneration(raw: unknown): MockGenerationState | null {
             ),
           ),
         }
+      : {}),
+    ...(plan ? { plan } : {}),
+    ...(obj["generation_target"] === "instructions" ||
+    obj["generation_target"] === "topic" ||
+    obj["generation_target"] === "syllabus"
+      ? { generation_target: obj["generation_target"] }
+      : {}),
+    ...(obj["agent"] === "past_paper" || obj["agent"] === "practice_test"
+      ? { agent: obj["agent"] }
       : {}),
   };
 }

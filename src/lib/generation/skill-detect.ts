@@ -1,5 +1,7 @@
 import { skillByType } from "@/lib/question-taxonomy";
 
+const WATER =
+  /\bwater\s+image\b|\bwater\s+reflection\b|\breflection\s+in\s+water\b|\breflected\s+in\s+water\b/i;
 const MIRROR = /\bmirror(?:\s|-)?image\b|\bwater\s+image\b|\breflection of the figure\b/i;
 const SERIES = /\bnumber\s+series\b|\bfind the next\b|\bwhat comes next\b|\bmissing number\b/i;
 const GRAMMAR =
@@ -41,6 +43,7 @@ export function detectSkill(input: SkillDetectInput): string {
   const figures = (input.figureCount ?? 0) + (input.optionImageCount ?? 0);
   const options = optionBlob(input);
 
+  if (WATER.test(text)) return "water_image";
   if (MIRROR.test(text) || (figures > 0 && /\bmirror\b/i.test(text))) return "mirror_image";
   if (/exactly embedded/i.test(text)) return "embedded_figure";
   if (/complete the pattern/i.test(text)) return "figure_pattern";
@@ -57,6 +60,8 @@ export function detectSkill(input: SkillDetectInput): string {
     return "figure_identity";
   }
 
+  if (/position in the alphabet|matrix coding/i.test(text)) return "matrix_coding";
+  if (/syllogism|definitely follows/i.test(text)) return "syllogism";
   if (/letter series|gaps in the given letter|set of letters when sequentially/i.test(text)) {
     return "letter_series";
   }
@@ -92,10 +97,7 @@ export function detectSkill(input: SkillDetectInput): string {
   if (/\b(adverb|verb|noun|adjective|preposition|conjunction)\b/.test(options)) {
     return "parts_of_speech";
   }
-  if (
-    GRAMMAR.test(text) ||
-    /\b(idiom|phrase)\b/i.test(text)
-  ) {
+  if (GRAMMAR.test(text) || /\b(idiom|phrase)\b/i.test(text)) {
     if (/\bidiom/.test(lower) || /piece of one's mind|kill two birds|fool's paradise/i.test(stem)) {
       return "idioms";
     }
@@ -115,6 +117,27 @@ export function detectSkill(input: SkillDetectInput): string {
     return "synonym_antonym";
   }
 
+  if (/compound interest/i.test(text)) return "compound_interest";
+  if (/discount|marked price/i.test(text)) return "discount";
+  if (/probability/i.test(text)) return "probability";
+  if (/\bmean of\b|\bmedian\b|\bmode of\b/i.test(text)) return "statistics";
+  if (/hypotenuse|pythagoras/i.test(text)) return "triangle_properties";
+  if (/quadrilateral/i.test(text)) return "quadrilaterals";
+  if (/parallel lines|co-interior|transversal/i.test(text)) return "parallel_lines";
+  if (/euler/i.test(text)) return "euler_formula";
+  if (/surface area|volume of/i.test(text)) return "surface_area_volume";
+  if (/square root|squared|²/i.test(text)) return "squares_roots";
+  if (/cube root|cubed|³/i.test(text)) return "cubes_roots";
+  if (/rational number/i.test(text)) return "rational_numbers";
+  if (/factorise|factorize|factorisation/i.test(text)) return "factorization";
+  if (
+    /directly proportional|inversely proportional|inverse proportion|direct proportion/i.test(text)
+  ) {
+    return "proportion";
+  }
+  if (/suitable identity|\bidentity\b/i.test(text)) return "algebraic_identities";
+  if (/\bexponent|\^/i.test(text)) return "exponents";
+  if (/line graph|graph represents|graph of/i.test(text)) return "graphs";
   if (/profit|loss|selling price|cost price/i.test(text)) return "profit_loss";
   if (/dividend|divisor|quotient|remainder/i.test(text)) return "division";
   if (/\bfraction\b/i.test(text)) return "fractions";

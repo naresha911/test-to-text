@@ -159,6 +159,21 @@ export function stripQuestionForPrompt(question: Question): Question {
   });
 }
 
+/** Real library questions shown as reference. Wording and answers are stripped. */
+function referenceBlock(exemplars: Question[] | undefined): string[] {
+  if (!exemplars?.length) return [];
+  const lines: string[] = [
+    "",
+    "REFERENCE ITEMS (real questions from this class's library — copy the pattern, never the wording, numbers or answers):",
+  ];
+  exemplars.slice(0, 3).forEach((question, index) => {
+    const payload = buildQuestionPromptPayload(stripQuestionForPrompt(question), {});
+    lines.push(`--- reference ${index + 1} (skill: ${question.skill_type ?? "unknown"}) ---`);
+    lines.push(payload);
+  });
+  return lines;
+}
+
 /** Extra lines describing nested sub-questions (for comprehension / multi-part sources). */
 function appendSubQuestionPattern(lines: string[], question: Question, depth = 0): void {
   if (!question.sub_questions.length) return;
@@ -196,6 +211,8 @@ export function buildFromSourceUserPrompt(options: {
   strategy?: MockStrategy;
   /** Catalog names the model may pick from to fill missing subject/topic metadata. */
   metadataCatalog?: { subjects?: string[]; topics?: string[] };
+  /** Real library questions of the same skill, shown as pattern references. */
+  exemplars?: Question[];
 }): string {
   const stripped = stripQuestionForPrompt(options.sourceQuestion);
   const payload = buildQuestionPromptPayload(stripped, {
@@ -222,8 +239,8 @@ export function buildFromSourceUserPrompt(options: {
       ? [
           "COMPREHENSION / PASSAGE SET (required):",
           '- type must be "comprehension".',
-          '- REWORD the source passage with new names, facts and numbers; keep the same theme and reading level.',
-          '- Keep the SAME number of sub-questions as the source. Each sub needs answers + hint + explanation.',
+          "- REWORD the source passage with new names, facts and numbers; keep the same theme and reading level.",
+          "- Keep the SAME number of sub-questions as the source. Each sub needs answers + hint + explanation.",
           "- Do NOT copy the source passage — reword it.",
         ]
       : [
@@ -321,6 +338,7 @@ export function buildFromSourceUserPrompt(options: {
     "",
     ...describeSourceMetadata(options.sourceQuestion),
     ...comprehensionRules,
+    ...referenceBlock(options.exemplars),
     "",
     extras.join("\n"),
     "",
@@ -338,6 +356,8 @@ export function buildFromInstructionsUserPrompt(options: {
   total: number;
   audience?: MockPaperAudience;
   previousStems?: string[];
+  /** Real library questions of the same skill, shown as pattern references. */
+  exemplars?: Question[];
 }): string {
   const extras: string[] = [];
   extras.push(`Question slot: ${options.index + 1} of ${options.total}`);
@@ -355,7 +375,7 @@ export function buildFromInstructionsUserPrompt(options: {
     "Create ONE original exam question for an AI mock paper.",
     "Follow the teacher instructions. Choose a suitable type, difficulty, and content.",
     "Include correct answers, a short learner hint, a full explanation, and a difficulty field.",
-    "Use LaTeX for math ($...$ / $$...$$). For diagrams, describe the question figure in figures[].description; when the answer options are figures, describe each one in its option \"image_description\" field instead; option text may stay empty.",
+    'Use LaTeX for math ($...$ / $$...$$). For diagrams, describe the question figure in figures[].description; when the answer options are figures, describe each one in its option "image_description" field instead; option text may stay empty.',
     FIGURE_SVG_RULE,
     "Return a full Question JSON object.",
     "",
@@ -365,6 +385,7 @@ export function buildFromInstructionsUserPrompt(options: {
     "",
     extras.join("\n"),
     "",
+    ...referenceBlock(options.exemplars),
     "TEACHER INSTRUCTIONS:",
     options.instructions,
     ...avoid,

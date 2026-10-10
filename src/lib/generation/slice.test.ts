@@ -43,6 +43,7 @@ function document(): DocumentMeta {
     section_timing: false,
     negative_marking: false,
     allow_pause: true,
+    used_for_training: false,
     max_attempts: 1,
     default_marks: 1,
     default_negative_marks: 0,

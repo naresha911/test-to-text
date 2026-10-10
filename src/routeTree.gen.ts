@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AuthRouteImport } from './routes/auth'
+import { Route as CalibrateRouteImport } from './routes/calibrate'
 import { Route as LibraryRouteImport } from './routes/library'
 import { Route as MockNewRouteImport } from './routes/mock-new'
 import { Route as SettingsRouteImport } from './routes/settings'
@@ -24,6 +25,11 @@ const IndexRoute = IndexRouteImport.update({
 const AuthRoute = AuthRouteImport.update({
   id: '/auth',
   path: '/auth',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CalibrateRoute = CalibrateRouteImport.update({
+  id: '/calibrate',
+  path: '/calibrate',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LibraryRoute = LibraryRouteImport.update({
@@ -50,6 +56,7 @@ const CompareMockIdRoute = CompareMockIdRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/calibrate': typeof CalibrateRoute
   '/library': typeof LibraryRoute
   '/mock-new': typeof MockNewRoute
   '/settings': typeof SettingsRoute
@@ -58,6 +65,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/calibrate': typeof CalibrateRoute
   '/library': typeof LibraryRoute
   '/mock-new': typeof MockNewRoute
   '/settings': typeof SettingsRoute
@@ -67,6 +75,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/auth': typeof AuthRoute
+  '/calibrate': typeof CalibrateRoute
   '/library': typeof LibraryRoute
   '/mock-new': typeof MockNewRoute
   '/settings': typeof SettingsRoute
@@ -75,14 +84,27 @@ export interface FileRoutesById {
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/auth' | '/library' | '/mock-new' | '/settings' | '/compare/$mockId'
+    | '/'
+    | '/auth'
+    | '/calibrate'
+    | '/library'
+    | '/mock-new'
+    | '/settings'
+    | '/compare/$mockId'
   fileRoutesByTo: FileRoutesByTo
   to:
-    '/' | '/auth' | '/library' | '/mock-new' | '/settings' | '/compare/$mockId'
+    | '/'
+    | '/auth'
+    | '/calibrate'
+    | '/library'
+    | '/mock-new'
+    | '/settings'
+    | '/compare/$mockId'
   id:
     | '__root__'
     | '/'
     | '/auth'
+    | '/calibrate'
     | '/library'
     | '/mock-new'
     | '/settings'
@@ -92,6 +114,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AuthRoute: typeof AuthRoute
+  CalibrateRoute: typeof CalibrateRoute
   LibraryRoute: typeof LibraryRoute
   MockNewRoute: typeof MockNewRoute
   SettingsRoute: typeof SettingsRoute
@@ -112,6 +135,13 @@ declare module '@tanstack/react-router' {
       path: '/auth'
       fullPath: '/auth'
       preLoaderRoute: typeof AuthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/calibrate': {
+      id: '/calibrate'
+      path: '/calibrate'
+      fullPath: '/calibrate'
+      preLoaderRoute: typeof CalibrateRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/library': {
@@ -148,6 +178,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AuthRoute: AuthRoute,
+  CalibrateRoute: CalibrateRoute,
   LibraryRoute: LibraryRoute,
   MockNewRoute: MockNewRoute,
   SettingsRoute: SettingsRoute,

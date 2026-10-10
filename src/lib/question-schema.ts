@@ -140,6 +140,8 @@ export type Question = {
   type: QuestionType;
   /** Educational skill, separate from the render type. Absent on older papers. */
   skill_type?: string | null;
+  /** Fine pattern variant (e.g. mirror vertical|water, series arithmetic|two_step). */
+  pattern_subtype?: string | null;
   /** Question text. Math is inline LaTeX between $...$ or display LaTeX between $$...$$. */
   stem: string;
   instructions?: string | null;
@@ -415,6 +417,7 @@ export function normalizeQuestion(raw: unknown, page: number): Question {
     number: str(r["number"]),
     type,
     skill_type: str(r["skill_type"]),
+    pattern_subtype: str(r["pattern_subtype"]),
     stem: str(r["stem"]) ?? "",
     instructions: str(r["instructions"]),
     passage: str(r["passage"]),

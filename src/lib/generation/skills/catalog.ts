@@ -29,4 +29,6 @@ export const LANGUAGE_SKILLS = [
   "general_knowledge",
   "grammar",
   "direction_sense",
+  "spotting_errors",
+  "critical_thinking",
 ] as const;

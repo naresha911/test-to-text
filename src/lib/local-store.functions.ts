@@ -4,12 +4,16 @@ import { z } from "zod";
 import {
   DOCUMENT_KINDS,
   emptyMockGeneration,
+  SOURCE_AGENT_IDS,
   type DocumentKind,
   type MockGenerationState,
 } from "@/lib/document-types";
 import { drillBlueprint } from "@/lib/generation/blueprint";
+import { buildPaperPlan } from "@/lib/generation/agents/paper-architect";
+import { sourceAgentForKind } from "@/lib/generation/agents/source-agents";
 import { skillAuthorPrompt } from "@/lib/generation/skill-prompts";
 import { skillByType } from "@/lib/question-taxonomy";
+import { loadSyllabus, type SyllabusSubject } from "@/lib/syllabus";
 import { GENERATION_ITEM_STATUSES, GENERATION_STAGES } from "@/lib/generation/job-types";
 import { buildExamPrepExport } from "@/lib/exam-prep-export";
 import {
@@ -67,6 +71,21 @@ export const GenerationSchema = z.object({
   difficulty_step: z.number().int().min(-1).max(2).optional(),
   drill_skill: z.string().max(80).nullable().optional(),
   figure_skills: z.record(z.string(), z.string().max(40)).optional(),
+  plan: z
+    .array(
+      z.object({
+        skill: z.string().max(80),
+        pattern_subtype: z.string().max(60).nullable().optional(),
+        subject_id: z.number().int().nullable().optional(),
+        subject_key: z.string().max(60).optional(),
+        topic: z.string().max(200).optional(),
+        count: z.number().int().min(1),
+        difficulty_step: z.number().int().min(-1).max(2).optional(),
+      }),
+    )
+    .optional(),
+  generation_target: z.enum(["instructions", "topic", "syllabus"]).optional(),
+  agent: z.enum(SOURCE_AGENT_IDS).optional(),
 });
 
 export const listLocalDocuments = createServerFn({ method: "GET" }).handler(async () =>
@@ -275,6 +294,8 @@ export const createAiMockFromSource = createServerFn({ method: "POST" })
     });
 
     const authorInstructions = data.authorInstructions?.trim() || null;
+    // The source paper's kind chooses the agent that will generate this mock.
+    const agent = sourceAgentForKind(loaded.document.kind);
     const generation = emptyMockGeneration({
       mode: "from_source",
       status: "pending",
@@ -283,6 +304,7 @@ export const createAiMockFromSource = createServerFn({ method: "POST" })
       strategy: data.strategy,
       instructions: authorInstructions,
       difficulty_step: data.difficultyStep ?? 0,
+      ...(agent ? { agent } : {}),
     });
 
     const created = await createDocument("ai_mock", {
@@ -358,11 +380,13 @@ export const createAiMockFromInstructions = createServerFn({ method: "POST" })
       .parse(input),
   )
   .handler(async ({ data }) => {
-    const drill = data.drill_skill ? drillBlueprint({
-      skill: data.drill_skill,
-      count: data.planned_count,
-      difficultyStep: data.difficulty_step ?? 0,
-    }) : null;
+    const drill = data.drill_skill
+      ? drillBlueprint({
+          skill: data.drill_skill,
+          count: data.planned_count,
+          difficultyStep: data.difficulty_step ?? 0,
+        })
+      : null;
     const notes = data.instructions?.trim() ?? "";
     const instructions = drill
       ? [`[skill:${drill.skill}]`, skillAuthorPrompt(drill.skill), notes].filter(Boolean).join("\n")
@@ -405,5 +429,74 @@ export const createAiMockFromInstructions = createServerFn({ method: "POST" })
 
     const next = await getDocument(created.id);
     if (!next) throw new Error("Could not load the new AI mock document");
+    return next;
+  });
+
+/** Resolve a syllabus subject to a catalog subject id by name or alias. */
+function resolveSyllabusSubjectId(
+  subject: SyllabusSubject,
+  subjects: { id: number; name: string }[],
+): number | null {
+  const names = [subject.catalog_subject, ...(subject.catalog_aliases ?? [])]
+    .filter((name): name is string => Boolean(name))
+    .map((name) => name.trim().toLowerCase());
+  const hit = subjects.find((row) => names.includes(row.name.trim().toLowerCase()));
+  return hit?.id ?? null;
+}
+
+/** Create a full-syllabus AI mock paper for a class (AISSEE Class 6 / Class 9). */
+export const createSyllabusPaper = createServerFn({ method: "POST" })
+  .validator((input: unknown) =>
+    z
+      .object({
+        standard_id: z.number().int(),
+        subject_keys: z.array(z.string().max(60)).max(10).optional(),
+        title: z.string().max(300).optional(),
+        difficulty_step: z.number().int().min(-1).max(1).optional(),
+        agent: z.enum(SOURCE_AGENT_IDS).optional(),
+      })
+      .parse(input),
+  )
+  .handler(async ({ data }) => {
+    const syllabus = loadSyllabus(data.standard_id);
+    if (!syllabus) throw new Error("No syllabus is configured for that class yet.");
+    const catalog = await getCatalog();
+    const plan = buildPaperPlan({
+      syllabus,
+      subjectKeys: data.subject_keys ?? null,
+      resolveSubjectId: (subject) => resolveSyllabusSubjectId(subject, catalog.subjects),
+      difficultyStep: data.difficulty_step ?? 0,
+    });
+    if (plan.total <= 0) throw new Error("That syllabus has no questions to generate.");
+
+    const generation = emptyMockGeneration({
+      mode: "from_instructions",
+      status: "pending",
+      instructions: null,
+      planned_count: plan.total,
+      cursor: 0,
+      blueprint: plan.slots.map((slot) => ({ skill: slot.skill, count: slot.count })),
+      plan: plan.slots,
+      generation_target: "syllabus",
+      difficulty_step: data.difficulty_step ?? 0,
+      ...(data.agent ? { agent: data.agent } : {}),
+    });
+
+    const created = await createDocument("ai_mock", {
+      title: data.title?.trim() || `${syllabus.label} — Mock`,
+      source_document_id: null,
+      generation,
+    });
+
+    await updateDocument(created.id, {
+      standard_id: data.standard_id,
+      source: "ai_mock_syllabus",
+      description: plan.label,
+      questions: [],
+      questions_rev: created.questions_rev,
+    });
+
+    const next = await getDocument(created.id);
+    if (!next) throw new Error("Could not load the new syllabus mock");
     return next;
   });

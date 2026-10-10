@@ -1,0 +1,177 @@
+{
+  "standard_id": 5,
+  "label": "AISSEE Class 6 (from 5th standard)",
+  "subjects": [
+    {
+      "key": "mathematics",
+      "name": "Mathematics",
+      "catalog_subject": "Mathematics",
+      "catalog_aliases": ["Maths", "Math"],
+      "sections": [
+        {
+          "name": "Number Systems & Arithmetic",
+          "skills": [
+            {
+              "topic": "Natural, prime and composite numbers",
+              "skill": "number_properties",
+              "count": 4
+            },
+            { "topic": "Operations on numbers", "skill": "multiplication", "count": 2 },
+            { "topic": "Division", "skill": "division", "count": 2 },
+            { "topic": "Roman numerals", "skill": "roman_numerals", "count": 2 },
+            { "topic": "LCM and HCF", "skill": "lcm_hcf", "count": 2 },
+            { "topic": "BODMAS and simplification", "skill": "bodmas", "count": 2 }
+          ]
+        },
+        {
+          "name": "Fractions & Decimals",
+          "skills": [
+            { "topic": "Fractions", "skill": "fractions", "count": 4 },
+            { "topic": "Decimals", "skill": "decimals", "count": 3 }
+          ]
+        },
+        {
+          "name": "Commercial Math",
+          "skills": [
+            { "topic": "Unitary method", "skill": "unitary_method", "count": 2 },
+            { "topic": "Average", "skill": "average", "count": 3 },
+            { "topic": "Percentage", "skill": "percentage", "count": 3 },
+            { "topic": "Profit and loss", "skill": "profit_loss", "count": 2 },
+            { "topic": "Simple interest", "skill": "simple_interest", "count": 2 },
+            { "topic": "Speed, time and distance", "skill": "speed_time", "count": 2 }
+          ]
+        },
+        {
+          "name": "Geometry & Mensuration",
+          "skills": [
+            { "topic": "Lines and angles", "skill": "angles", "count": 3 },
+            { "topic": "Circle", "skill": "circle", "count": 2 },
+            { "topic": "Area and perimeter", "skill": "mensuration", "count": 4 },
+            { "topic": "Area of a triangle", "skill": "triangle_area", "count": 2 },
+            { "topic": "Volume of cube and cuboid", "skill": "volume_solid", "count": 2 }
+          ]
+        },
+        {
+          "name": "Miscellaneous",
+          "skills": [
+            { "topic": "Temperature conversion", "skill": "temperature_conversion", "count": 1 },
+            { "topic": "Conversion of units", "skill": "metric_measures", "count": 1 }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "general_knowledge",
+      "name": "General Knowledge",
+      "catalog_subject": "General Knowledge",
+      "catalog_aliases": ["GK", "General Science", "Science", "Social Studies", "Social Science"],
+      "sections": [
+        {
+          "name": "Science & Environment",
+          "skills": [
+            {
+              "topic": "Scientific devices, shape of Earth, energy, animal young ones, human body, plants",
+              "skill": "general_knowledge",
+              "count": 9
+            }
+          ]
+        },
+        {
+          "name": "Social Studies & Culture",
+          "skills": [
+            {
+              "topic": "Icons and symbols, monuments, religions, mountain terrain, regional diversity",
+              "skill": "general_knowledge",
+              "count": 8
+            }
+          ]
+        },
+        {
+          "name": "Static Knowledge",
+          "skills": [
+            {
+              "topic": "Armed forces, renowned personalities, dance, sports and games",
+              "skill": "general_knowledge",
+              "count": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "english",
+      "name": "English",
+      "catalog_subject": "English",
+      "catalog_aliases": ["Language", "English Language"],
+      "sections": [
+        {
+          "name": "Grammar Foundations",
+          "skills": [
+            {
+              "topic": "Nouns, pronouns, adjectives, verbs, tense, adverbs, prepositions, articles, conjunctions",
+              "skill": "grammar",
+              "count": 12
+            }
+          ]
+        },
+        {
+          "name": "Vocabulary & Usage",
+          "skills": [
+            { "topic": "Synonyms and antonyms", "skill": "synonym_antonym", "count": 3 },
+            { "topic": "Idioms and phrases", "skill": "idioms", "count": 2 },
+            { "topic": "Correct spellings", "skill": "spelling", "count": 2 },
+            { "topic": "One-word substitution", "skill": "one_word_substitution", "count": 1 }
+          ]
+        },
+        {
+          "name": "Sentence Structure",
+          "skills": [
+            { "topic": "Ordering of words", "skill": "jumbled_sentences", "count": 2 },
+            { "topic": "Question tags", "skill": "question_tags", "count": 1 },
+            { "topic": "Comprehension passages", "skill": "comprehension", "count": 2 }
+          ]
+        }
+      ]
+    },
+    {
+      "key": "intelligence",
+      "name": "Intelligence",
+      "catalog_subject": "Intelligence",
+      "catalog_aliases": ["Reasoning", "General Intelligence", "Mental Ability"],
+      "sections": [
+        {
+          "name": "Verbal Reasoning",
+          "skills": [
+            { "topic": "Word analogies", "skill": "word_analogy", "count": 2 },
+            { "topic": "Number analogies", "skill": "number_analogy", "count": 2 },
+            { "topic": "Number series", "skill": "number_series", "count": 2 },
+            { "topic": "Letter series", "skill": "letter_series", "count": 2 },
+            { "topic": "Classification (odd one out)", "skill": "odd_one_out", "count": 2 },
+            { "topic": "Blood relations", "skill": "blood_relations", "count": 2 },
+            { "topic": "Direction sense", "skill": "direction_sense", "count": 2 }
+          ]
+        },
+        {
+          "name": "Non-Verbal Reasoning",
+          "skills": [
+            {
+              "topic": "Mirror images",
+              "skill": "mirror_image",
+              "pattern_subtype": "vertical",
+              "count": 3
+            },
+            { "topic": "Water images", "skill": "water_image", "count": 2 },
+            { "topic": "Embedded figures", "skill": "embedded_figure", "count": 2 },
+            {
+              "topic": "Pattern completion",
+              "skill": "figure_pattern",
+              "pattern_subtype": "completion",
+              "count": 2
+            },
+            { "topic": "Figure identity", "skill": "figure_identity", "count": 2 }
+          ]
+        }
+      ]
+    }
+  ]
+}

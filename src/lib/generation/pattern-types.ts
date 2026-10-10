@@ -1,4 +1,5 @@
 import type { Difficulty } from "@/lib/document-types";
+import type { PatternType } from "@/lib/generation/pattern-classifier";
 import type { QuestionType } from "@/lib/question-schema";
 import type { SkillFamily } from "@/lib/question-taxonomy";
 
@@ -16,6 +17,10 @@ export type PatternAnalysis = {
   family: SkillFamily;
   type: QuestionType;
   skill_type: string;
+  /** Coarse pattern category (number series, figure pattern, language, ...). */
+  pattern_type: PatternType;
+  /** Fine pattern variant (mirror: vertical|water, series: arithmetic|two_step, ...). */
+  pattern_subtype: string;
   learning_intent: string;
   difficulty: Difficulty | null;
   structural_constraints: StructuralConstraints;

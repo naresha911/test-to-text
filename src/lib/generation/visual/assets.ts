@@ -30,7 +30,10 @@ export async function attachMirrorAssets(options: {
   store: AssetStore;
   documentId: string;
   idempotencyKey: string;
+  /** "vertical mirror" (default) or "water" for a horizontal reflection. */
+  label?: string;
 }): Promise<Question> {
+  const label = options.label ?? "vertical mirror";
   const questionSvg = mirrorQuestionSvg(options.spec);
   const optionSvgs = mirrorOptionSvgs(options.spec);
   const questionAssetId = assetIdFor(options.idempotencyKey, "question_figure");
@@ -73,7 +76,7 @@ export async function attachMirrorAssets(options: {
       ...option,
       text: option.text || `Figure ${option.key}`,
       image_path: asset.storage_key,
-      image_description: `Mirror choice ${option.key}`,
+      image_description: `${label} choice ${option.key}`,
     });
   }
 
@@ -83,7 +86,7 @@ export async function attachMirrorAssets(options: {
     figures: [
       {
         id: questionAsset.asset_id,
-        description: "Asymmetric figure. Choose its vertical mirror image.",
+        description: `Asymmetric figure. Choose its ${label} image.`,
         caption: null,
         bbox: null,
         page: null,
@@ -103,17 +106,19 @@ export async function redrawMirrorFigure(options: {
   documentId: string;
   idempotencyKey: string;
 }): Promise<Question> {
-  if (!isMirrorImageSpec(options.question.visual_spec)) {
+  const spec = options.question.visual_spec;
+  if (!isMirrorImageSpec(spec)) {
     throw new Error("This question has no mirror figure to redraw.");
   }
   const stem = options.question.stem;
   const answerKeys = [...options.question.answer_keys];
   const redrawn = await attachMirrorAssets({
     question: options.question,
-    spec: options.question.visual_spec,
+    spec,
     store: options.store,
     documentId: options.documentId,
     idempotencyKey: options.idempotencyKey,
+    label: spec.transformation.axis === "horizontal" ? "water" : "vertical mirror",
   });
   return {
     ...redrawn,

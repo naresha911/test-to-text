@@ -19,9 +19,24 @@ import {
   normalizeStoredImagePath,
 } from "@/lib/question-images";
 import { ensureSvgRootAttributes } from "@/lib/assets/svg-sanitize";
+import { patternSubtypeOf, patternTypeOf } from "@/lib/generation/pattern-classifier";
+import { detectSkill } from "@/lib/generation/skill-detect";
 import { pageImageFilePath, pagesWithLostImage } from "@/lib/page-image-path";
 import type { Question } from "@/lib/question-schema";
+import { skillByType } from "@/lib/question-taxonomy";
 import { CONTENT_MODES, type ContentMode } from "@/lib/reading/mode";
+import type {
+  AgentProposal,
+  CalibrationAlert,
+  CalibrationAlertMetric,
+  CalibrationCase,
+  CalibrationProfile,
+  CalibrationRun,
+  CalibrationRunStatus,
+  CalibrationScope,
+  CalibrationSummary,
+  ProposalStatus,
+} from "@/lib/generation/calibration/types";
 
 type SqlJsDatabase = import("sql.js").Database;
 type SqlValue = import("sql.js").SqlValue;
@@ -98,6 +113,7 @@ function schemaSql(): string {
       section_timing INTEGER NOT NULL DEFAULT 0,
       negative_marking INTEGER NOT NULL DEFAULT 1,
       allow_pause INTEGER NOT NULL DEFAULT 1,
+      used_for_training INTEGER NOT NULL DEFAULT 0,
       max_attempts INTEGER NOT NULL DEFAULT 1,
       default_marks REAL,
       default_negative_marks REAL,
@@ -162,6 +178,108 @@ function schemaSql(): string {
       group_id TEXT NOT NULL,
       PRIMARY KEY (document_id, group_id)
     );
+
+    CREATE TABLE IF NOT EXISTS pp_meta (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS pp_question_index (
+      question_id TEXT PRIMARY KEY,
+      document_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      standard_id INTEGER,
+      subject_id INTEGER,
+      stream_id INTEGER,
+      topic_id INTEGER,
+      skill_type TEXT,
+      pattern_type TEXT,
+      pattern_subtype TEXT,
+      difficulty TEXT,
+      marks REAL,
+      approved INTEGER NOT NULL DEFAULT 0,
+      is_mock INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS pp_question_index_scope_idx
+      ON pp_question_index(standard_id, subject_id, stream_id, skill_type, pattern_subtype);
+    CREATE INDEX IF NOT EXISTS pp_question_index_document_idx ON pp_question_index(document_id);
+    CREATE INDEX IF NOT EXISTS pp_question_index_mock_idx ON pp_question_index(is_mock, skill_type);
+    CREATE INDEX IF NOT EXISTS pp_question_index_approved_idx
+      ON pp_question_index(approved, is_mock, skill_type);
+
+    CREATE TABLE IF NOT EXISTS pp_calibration_runs (
+      id TEXT PRIMARY KEY,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      status TEXT NOT NULL,
+      scope_json TEXT NOT NULL,
+      summary_json TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS pp_calibration_cases (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      skill_type TEXT NOT NULL,
+      standard_id INTEGER,
+      subject_id INTEGER,
+      stream_id INTEGER,
+      pattern_subtype TEXT,
+      reference_question_id TEXT,
+      reference_document_id TEXT,
+      generated_question_id TEXT,
+      generated_json TEXT,
+      reference_stem TEXT,
+      structural_json TEXT,
+      judge_json TEXT,
+      score REAL NOT NULL DEFAULT 0,
+      passed INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS pp_calibration_cases_skill_idx
+      ON pp_calibration_cases(skill_type, created_at);
+
+    CREATE TABLE IF NOT EXISTS pp_calibration_alerts (
+      id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      resolved_at TEXT,
+      severity TEXT NOT NULL,
+      skill_type TEXT,
+      standard_id INTEGER,
+      subject_id INTEGER,
+      stream_id INTEGER,
+      reason TEXT NOT NULL,
+      metric_json TEXT,
+      source TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS pp_calibration_alerts_open_idx
+      ON pp_calibration_alerts(resolved_at, severity);
+
+    CREATE TABLE IF NOT EXISTS pp_agent_proposals (
+      id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      applied_at TEXT,
+      status TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      skill_type TEXT,
+      kind TEXT NOT NULL,
+      target_json TEXT NOT NULL,
+      before TEXT,
+      after TEXT NOT NULL,
+      rationale TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS pp_calibration_profiles (
+      scope_key TEXT NOT NULL,
+      skill_type TEXT NOT NULL,
+      exemplar_limit INTEGER,
+      exemplar_scope TEXT,
+      difficulty_bias INTEGER,
+      detect_threshold REAL,
+      updated_at TEXT NOT NULL,
+      rationale TEXT,
+      PRIMARY KEY (scope_key, skill_type)
+    );
   `;
 }
 
@@ -197,7 +315,21 @@ async function openDatabase(): Promise<SqlJsDatabase> {
 }
 
 async function getDb(): Promise<SqlJsDatabase> {
-  if (!dbPromise) dbPromise = openDatabase();
+  if (!dbPromise) {
+    // The backfill runs on the raw handle before the promise settles, so every
+    // caller waits for a populated index (and the withWrite -> getDb cycle is
+    // avoided while the database promise is still resolving).
+    dbPromise = (async () => {
+      const db = await openDatabase();
+      try {
+        if (backfillQuestionIndexOn(db)) await persist(db);
+      } catch {
+        // A failed backfill must not reject the session's only db handle:
+        // serve the db un-indexed — the index self-heals on the next save.
+      }
+      return db;
+    })();
+  }
   return dbPromise;
 }
 
@@ -252,6 +384,7 @@ function rowToMeta(row: Record<string, unknown>): DocumentMeta {
     section_timing: bool(row["section_timing"], false),
     negative_marking: bool(row["negative_marking"], true),
     allow_pause: bool(row["allow_pause"], true),
+    used_for_training: bool(row["used_for_training"], false),
     max_attempts: num(row["max_attempts"]) ?? 1,
     default_marks: num(row["default_marks"]),
     default_negative_marks: num(row["default_negative_marks"]),
@@ -329,6 +462,9 @@ function ensureDocumentColumns(db: SqlJsDatabase): void {
   }
   if (!names.has("topic_id")) {
     db.run("ALTER TABLE pp_documents ADD COLUMN topic_id INTEGER");
+  }
+  if (!names.has("used_for_training")) {
+    db.run("ALTER TABLE pp_documents ADD COLUMN used_for_training INTEGER NOT NULL DEFAULT 0");
   }
 }
 
@@ -812,7 +948,12 @@ export async function updateDocument(
         next["questions"] = JSON.stringify(value);
       } else if (key === "generation") {
         next["generation_json"] = value == null ? null : JSON.stringify(value);
-      } else if (key === "section_timing" || key === "negative_marking" || key === "allow_pause") {
+      } else if (
+        key === "section_timing" ||
+        key === "negative_marking" ||
+        key === "allow_pause" ||
+        key === "used_for_training"
+      ) {
         next[key] = value ? 1 : 0;
       } else {
         next[key] = value;
@@ -826,7 +967,8 @@ export async function updateDocument(
         kind = ?, title = ?, year = ?, standard_id = ?, stream_id = ?, subject_id = ?, topic_id = ?,
         duration_minutes = ?, total_marks = ?, difficulty = ?, exam = ?, notes = ?,
         source = ?, description = ?, section_timing = ?, negative_marking = ?,
-        allow_pause = ?, max_attempts = ?, default_marks = ?, default_negative_marks = ?,
+        allow_pause = ?, used_for_training = ?, max_attempts = ?, default_marks = ?,
+        default_negative_marks = ?,
         source_document_id = ?, generation_json = ?, questions = ?, questions_rev = ?, updated_at = ?
        WHERE id = ?`,
       params(
@@ -847,6 +989,7 @@ export async function updateDocument(
         next["section_timing"],
         next["negative_marking"],
         next["allow_pause"],
+        next["used_for_training"],
         next["max_attempts"],
         next["default_marks"],
         next["default_negative_marks"],
@@ -861,6 +1004,9 @@ export async function updateDocument(
       ),
     );
     const row = queryOne(db, "SELECT * FROM pp_documents WHERE id = ?", [id]);
+    if (row && patch.questions) {
+      syncQuestionIndex(db, rowToMeta(row), patch.questions);
+    }
     return row ? rowToMeta(row) : null;
   });
 }
@@ -882,6 +1028,7 @@ export async function deleteDocument(id: string): Promise<void> {
     db.run("DELETE FROM pp_push_questions WHERE document_id = ?", [id]);
     db.run("DELETE FROM pp_push_retired_groups WHERE document_id = ?", [id]);
     db.run("DELETE FROM pp_push_documents WHERE document_id = ?", [id]);
+    db.run("DELETE FROM pp_question_index WHERE document_id = ?", [id]);
     db.run("DELETE FROM pp_pages WHERE document_id = ?", [id]);
     db.run("DELETE FROM pp_documents WHERE id = ?", [id]);
   });
@@ -1170,4 +1317,633 @@ export async function savePushStatus(
       [documentId, status.status, status.total, status.synced, status.error, nowIso()],
     );
   });
+}
+
+/* ------------------------------------------------------------------ *
+ * Question index — the retrieval + learning surface for generation.
+ * Derived from pp_documents.questions. Learned skills are aggregated
+ * from this index (idempotent, so repeated saves do not inflate counts).
+ * ------------------------------------------------------------------ */
+
+/** Lightweight document load: questions and meta only, no page/figure images. */
+export async function getStoredQuestions(
+  id: string,
+): Promise<{ document: DocumentMeta; questions: Question[] } | null> {
+  const db = await getDb();
+  const row = queryOne(db, "SELECT * FROM pp_documents WHERE id = ?", [id]);
+  if (!row) return null;
+  return { document: rowToMeta(row), questions: toQuestions(row["questions"]) };
+}
+
+function indexedSkill(question: Question): {
+  skill_type: string | null;
+  pattern_type: string | null;
+  pattern_subtype: string | null;
+} {
+  const explicit =
+    question.skill_type && skillByType(question.skill_type) ? question.skill_type : null;
+  const detected =
+    explicit ??
+    detectSkill({
+      stem: question.stem,
+      instructions: question.instructions,
+      type: question.type,
+      figureCount: question.figures.length,
+      optionImageCount: question.options.filter((option) => option.image_path).length,
+      optionTexts: question.options.map((option) => option.text),
+      passage: question.passage,
+    });
+  const skill = detected && detected !== "unsupported" ? detected : null;
+  if (!skill) return { skill_type: null, pattern_type: null, pattern_subtype: null };
+  return {
+    skill_type: skill,
+    pattern_type: patternTypeOf(skill),
+    pattern_subtype:
+      question.pattern_subtype ?? patternSubtypeOf({ skillType: skill, source: question }),
+  };
+}
+
+function syncQuestionIndex(db: SqlJsDatabase, meta: DocumentMeta, questions: Question[]): void {
+  db.run("DELETE FROM pp_question_index WHERE document_id = ?", [meta.id]);
+  const createdAt = nowIso();
+  const isMock = meta.kind === "ai_mock" ? 1 : 0;
+  for (const question of questions) {
+    if (question.approval_status === "rejected") continue;
+    const { skill_type, pattern_type, pattern_subtype } = indexedSkill(question);
+    const approved =
+      question.approved ||
+      question.approval_status === "reviewed" ||
+      question.approval_status === "published"
+        ? 1
+        : 0;
+    db.run(
+      `INSERT INTO pp_question_index (
+         question_id, document_id, kind, standard_id, subject_id, stream_id, topic_id,
+         skill_type, pattern_type, pattern_subtype, difficulty, marks, approved, is_mock, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      params(
+        question.id,
+        meta.id,
+        meta.kind,
+        meta.standard_id ?? null,
+        question.subject_id ?? meta.subject_id ?? null,
+        question.stream_id ?? meta.stream_id ?? null,
+        question.topic_id ?? meta.topic_id ?? null,
+        skill_type,
+        pattern_type,
+        pattern_subtype,
+        question.difficulty ?? null,
+        question.marks ?? null,
+        approved,
+        isMock,
+        createdAt,
+      ),
+    );
+  }
+}
+
+/** Re-index a document's questions. Called from updateDocument on every save. */
+export async function syncDocumentQuestionIndex(documentId: string): Promise<void> {
+  await withWrite((db) => {
+    const row = queryOne(db, "SELECT * FROM pp_documents WHERE id = ?", [documentId]);
+    if (!row) return;
+    syncQuestionIndex(db, rowToMeta(row), toQuestions(row["questions"]));
+  });
+}
+
+/** Index every document once. Returns true when it did work and the db needs persisting. */
+function backfillQuestionIndexOn(db: SqlJsDatabase): boolean {
+  const done = queryOne(db, "SELECT value FROM pp_meta WHERE key = 'question_index_backfilled'");
+  if (done?.["value"] === "1") return false;
+  const rows = queryAll(db, "SELECT * FROM pp_documents");
+  for (const row of rows) {
+    syncQuestionIndex(db, rowToMeta(row), toQuestions(row["questions"]));
+  }
+  db.run("INSERT OR REPLACE INTO pp_meta (key, value) VALUES ('question_index_backfilled', '1')");
+  return true;
+}
+
+/** Index every document once, guarded so it runs a single time. */
+export async function backfillQuestionIndex(): Promise<void> {
+  await withWrite((db) => {
+    backfillQuestionIndexOn(db);
+  });
+}
+
+export type QuestionIndexScope = {
+  standard_id?: number | null;
+  subject_id?: number | null;
+  stream_id?: number | null;
+  skill_type?: string | null;
+  pattern_subtype?: string | null;
+  /** false = only source papers, true = only mocks, undefined = both. */
+  is_mock?: boolean;
+  /** Restrict to given source document kinds (agent memory separation). */
+  kinds?: DocumentKind[];
+  /** Restrict to one document (paper-scoped calibration training). */
+  document_id?: string | null;
+};
+
+export type IndexedQuestionRef = {
+  question_id: string;
+  document_id: string;
+  kind: string;
+  skill_type: string | null;
+  pattern_type: string | null;
+  pattern_subtype: string | null;
+  is_mock: number;
+  created_at: string;
+};
+
+function scopeWhere(scope: QuestionIndexScope): { clause: string; bind: SqlValue[] } {
+  const conditions: string[] = [];
+  const bind: SqlValue[] = [];
+  const add = (column: string, value: number | string | null | undefined) => {
+    if (value == null || value === "") return;
+    conditions.push(`${column} = ?`);
+    bind.push(value as SqlValue);
+  };
+  add("standard_id", scope.standard_id);
+  add("subject_id", scope.subject_id);
+  add("stream_id", scope.stream_id);
+  add("skill_type", scope.skill_type);
+  add("pattern_subtype", scope.pattern_subtype);
+  add("document_id", scope.document_id);
+  if (scope.is_mock !== undefined) {
+    conditions.push("is_mock = ?");
+    bind.push(scope.is_mock ? 1 : 0);
+  }
+  if (scope.kinds?.length) {
+    conditions.push(`kind IN (${scope.kinds.map(() => "?").join(", ")})`);
+    bind.push(...scope.kinds);
+  }
+  return { clause: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "", bind };
+}
+
+/** Source questions matching a scope, most recent first, source papers preferred. */
+export async function queryExemplarQuestions(
+  scope: QuestionIndexScope,
+  limit: number,
+): Promise<IndexedQuestionRef[]> {
+  const db = await getDb();
+  const { clause, bind } = scopeWhere(scope);
+  const rows = queryAll(
+    db,
+    `SELECT question_id, document_id, kind, skill_type, pattern_type, pattern_subtype, is_mock, created_at
+       FROM pp_question_index ${clause}
+     ORDER BY is_mock ASC, created_at DESC
+     LIMIT ?`,
+    [...bind, Math.max(1, Math.floor(limit))],
+  );
+  return rows.map((row) => ({
+    question_id: String(row["question_id"]),
+    document_id: String(row["document_id"]),
+    kind: String(row["kind"]),
+    skill_type: str(row["skill_type"]),
+    pattern_type: str(row["pattern_type"]),
+    pattern_subtype: str(row["pattern_subtype"]),
+    is_mock: Number(row["is_mock"] ?? 0),
+    created_at: String(row["created_at"]),
+  }));
+}
+
+export type LearnedSkill = {
+  standard_id: number | null;
+  subject_id: number | null;
+  stream_id: number | null;
+  skill_type: string;
+  pattern_subtype: string;
+  source_count: number;
+  mock_count: number;
+  last_seen_at: string;
+};
+
+/** The agent's learned skill vocabulary for a scope, aggregated from the index. */
+export async function readLearnedSkills(scope: QuestionIndexScope): Promise<LearnedSkill[]> {
+  const db = await getDb();
+  const { clause, bind } = scopeWhere(scope);
+  const where = clause ? `${clause} AND skill_type IS NOT NULL` : "WHERE skill_type IS NOT NULL";
+  const rows = queryAll(
+    db,
+    `SELECT standard_id, subject_id, stream_id, skill_type, pattern_subtype,
+            SUM(CASE WHEN is_mock = 0 THEN 1 ELSE 0 END) AS source_count,
+            SUM(CASE WHEN is_mock = 1 THEN 1 ELSE 0 END) AS mock_count,
+            MAX(created_at) AS last_seen_at
+       FROM pp_question_index ${where}
+      GROUP BY standard_id, subject_id, stream_id, skill_type, pattern_subtype
+      ORDER BY source_count DESC, mock_count DESC`,
+    bind,
+  );
+  return rows.map((row) => ({
+    standard_id: num(row["standard_id"]),
+    subject_id: num(row["subject_id"]),
+    stream_id: num(row["stream_id"]),
+    skill_type: String(row["skill_type"]),
+    pattern_subtype: String(row["pattern_subtype"] ?? ""),
+    source_count: Number(row["source_count"] ?? 0),
+    mock_count: Number(row["mock_count"] ?? 0),
+    last_seen_at: String(row["last_seen_at"] ?? ""),
+  }));
+}
+
+/**
+ * Approved past-paper questions for a skill. These are the expected output the
+ * calibrator compares generated questions against. Mocks are excluded.
+ */
+export async function queryApprovedReferenceQuestions(
+  scope: QuestionIndexScope,
+  limit: number,
+): Promise<IndexedQuestionRef[]> {
+  const db = await getDb();
+  const { clause, bind } = scopeWhere(scope);
+  const where = `${clause ? `${clause} AND` : "WHERE"} approved = 1 AND is_mock = 0`;
+  const rows = queryAll(
+    db,
+    `SELECT question_id, document_id, kind, skill_type, pattern_type, pattern_subtype, is_mock, created_at
+       FROM pp_question_index ${where}
+     ORDER BY created_at DESC
+     LIMIT ?`,
+    [...bind, Math.max(1, Math.floor(limit))],
+  );
+  return rows.map((row) => ({
+    question_id: String(row["question_id"]),
+    document_id: String(row["document_id"]),
+    kind: String(row["kind"]),
+    skill_type: str(row["skill_type"]),
+    pattern_type: str(row["pattern_type"]),
+    pattern_subtype: str(row["pattern_subtype"]),
+    is_mock: Number(row["is_mock"] ?? 0),
+    created_at: String(row["created_at"]),
+  }));
+}
+
+/** Distinct skills among a document's approved source questions (training input). */
+export async function readApprovedDocumentSkills(documentId: string): Promise<string[]> {
+  const db = await getDb();
+  const rows = queryAll(
+    db,
+    `SELECT DISTINCT skill_type FROM pp_question_index
+      WHERE document_id = ? AND approved = 1 AND is_mock = 0 AND skill_type IS NOT NULL
+      ORDER BY skill_type`,
+    params(documentId),
+  );
+  return rows.map((row) => String(row["skill_type"]));
+}
+
+function parseJsonColumn<T>(value: unknown, fallback: T): T {
+  if (value == null || value === "") return fallback;
+  if (typeof value === "object") return value as T;
+  try {
+    return JSON.parse(String(value)) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function rowToCalibrationRun(row: Record<string, unknown>): CalibrationRun {
+  return {
+    id: String(row["id"]),
+    started_at: String(row["started_at"]),
+    finished_at: str(row["finished_at"]),
+    status: (str(row["status"]) as CalibrationRunStatus) ?? "running",
+    scope: parseJsonColumn<CalibrationScope>(row["scope_json"], {
+      standard_id: null,
+      subject_id: null,
+      stream_id: null,
+      skills: [],
+    }),
+    summary: parseJsonColumn<CalibrationSummary | null>(row["summary_json"], null),
+  };
+}
+
+function rowToCalibrationCase(row: Record<string, unknown>): CalibrationCase {
+  return {
+    id: String(row["id"]),
+    run_id: String(row["run_id"]),
+    skill_type: String(row["skill_type"]),
+    standard_id: num(row["standard_id"]),
+    subject_id: num(row["subject_id"]),
+    stream_id: num(row["stream_id"]),
+    pattern_subtype: str(row["pattern_subtype"]),
+    reference_question_id: str(row["reference_question_id"]),
+    reference_document_id: str(row["reference_document_id"]),
+    generated_question_id: str(row["generated_question_id"]),
+    generated: parseJsonColumn<Question | null>(row["generated_json"], null),
+    reference_stem: str(row["reference_stem"]),
+    structural: parseJsonColumn(row["structural_json"], null),
+    judge: parseJsonColumn(row["judge_json"], null),
+    score: Number(row["score"] ?? 0),
+    passed: Number(row["passed"] ?? 0) !== 0,
+    created_at: String(row["created_at"]),
+  };
+}
+
+export async function createCalibrationRun(scope: CalibrationScope): Promise<CalibrationRun> {
+  const run: CalibrationRun = {
+    id: uuid(),
+    started_at: nowIso(),
+    finished_at: null,
+    status: "running",
+    scope,
+    summary: null,
+  };
+  await withWrite((db) => {
+    db.run(
+      `INSERT INTO pp_calibration_runs (id, started_at, finished_at, status, scope_json, summary_json)
+        VALUES (?, ?, NULL, 'running', ?, NULL)`,
+      params(run.id, run.started_at, JSON.stringify(scope)),
+    );
+  });
+  return run;
+}
+
+export async function finishCalibrationRun(
+  id: string,
+  input: { status: CalibrationRunStatus; summary: CalibrationSummary | null },
+): Promise<void> {
+  await withWrite((db) => {
+    db.run(
+      `UPDATE pp_calibration_runs SET finished_at = ?, status = ?, summary_json = ? WHERE id = ?`,
+      params(nowIso(), input.status, input.summary ? JSON.stringify(input.summary) : null, id),
+    );
+  });
+}
+
+export async function listCalibrationRuns(limit = 20): Promise<CalibrationRun[]> {
+  const db = await getDb();
+  return queryAll(
+    db,
+    `SELECT * FROM pp_calibration_runs ORDER BY started_at DESC LIMIT ?`,
+    params(Math.max(1, Math.floor(limit))),
+  ).map(rowToCalibrationRun);
+}
+
+export async function getCalibrationRun(id: string): Promise<CalibrationRun | null> {
+  const db = await getDb();
+  const row = queryOne(db, `SELECT * FROM pp_calibration_runs WHERE id = ?`, params(id));
+  return row ? rowToCalibrationRun(row) : null;
+}
+
+export async function insertCalibrationCase(record: CalibrationCase): Promise<void> {
+  await withWrite((db) => {
+    db.run(
+      `INSERT OR REPLACE INTO pp_calibration_cases (
+         id, run_id, skill_type, standard_id, subject_id, stream_id, pattern_subtype,
+         reference_question_id, reference_document_id, generated_question_id,
+         generated_json, reference_stem, structural_json, judge_json, score, passed, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      params(
+        record.id,
+        record.run_id,
+        record.skill_type,
+        record.standard_id,
+        record.subject_id,
+        record.stream_id,
+        record.pattern_subtype,
+        record.reference_question_id,
+        record.reference_document_id,
+        record.generated_question_id,
+        record.generated ? JSON.stringify(record.generated) : null,
+        record.reference_stem,
+        record.structural ? JSON.stringify(record.structural) : null,
+        record.judge ? JSON.stringify(record.judge) : null,
+        record.score,
+        record.passed ? 1 : 0,
+        record.created_at,
+      ),
+    );
+  });
+}
+
+export async function listCalibrationCases(runId: string): Promise<CalibrationCase[]> {
+  const db = await getDb();
+  return queryAll(
+    db,
+    `SELECT * FROM pp_calibration_cases WHERE run_id = ? ORDER BY created_at ASC`,
+    params(runId),
+  ).map(rowToCalibrationCase);
+}
+
+function rowToCalibrationProfile(row: Record<string, unknown>): CalibrationProfile {
+  const scope = str(row["exemplar_scope"]);
+  return {
+    scope_key: String(row["scope_key"]),
+    skill_type: String(row["skill_type"]),
+    exemplar_limit: num(row["exemplar_limit"]),
+    exemplar_scope: scope === "exact" || scope === "skill" ? scope : null,
+    difficulty_bias: num(row["difficulty_bias"]),
+    detect_threshold: num(row["detect_threshold"]),
+    updated_at: String(row["updated_at"]),
+    rationale: str(row["rationale"]),
+  };
+}
+
+export async function readCalibrationProfile(
+  scopeKey: string,
+  skillType: string,
+): Promise<CalibrationProfile | null> {
+  const db = await getDb();
+  const row = queryOne(
+    db,
+    `SELECT * FROM pp_calibration_profiles WHERE scope_key = ? AND skill_type = ?`,
+    params(scopeKey, skillType),
+  );
+  return row ? rowToCalibrationProfile(row) : null;
+}
+
+export async function listCalibrationProfiles(scopeKey: string): Promise<CalibrationProfile[]> {
+  const db = await getDb();
+  return queryAll(
+    db,
+    `SELECT * FROM pp_calibration_profiles WHERE scope_key = ?`,
+    params(scopeKey),
+  ).map(rowToCalibrationProfile);
+}
+
+export async function upsertCalibrationProfile(profile: CalibrationProfile): Promise<void> {
+  await withWrite((db) => {
+    db.run(
+      `INSERT OR REPLACE INTO pp_calibration_profiles (
+         scope_key, skill_type, exemplar_limit, exemplar_scope,
+         difficulty_bias, detect_threshold, updated_at, rationale
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      params(
+        profile.scope_key,
+        profile.skill_type,
+        profile.exemplar_limit,
+        profile.exemplar_scope,
+        profile.difficulty_bias,
+        profile.detect_threshold,
+        profile.updated_at,
+        profile.rationale,
+      ),
+    );
+  });
+}
+
+function rowToCalibrationAlert(row: Record<string, unknown>): CalibrationAlert {
+  return {
+    id: String(row["id"]),
+    created_at: String(row["created_at"]),
+    resolved_at: str(row["resolved_at"]),
+    severity: (str(row["severity"]) as CalibrationAlert["severity"]) ?? "warn",
+    skill_type: str(row["skill_type"]),
+    standard_id: num(row["standard_id"]),
+    subject_id: num(row["subject_id"]),
+    stream_id: num(row["stream_id"]),
+    reason: String(row["reason"]),
+    metric: parseJsonColumn<CalibrationAlertMetric>(row["metric_json"], {}),
+    source: String(row["source"]),
+  };
+}
+
+export async function insertCalibrationAlert(
+  input: Omit<CalibrationAlert, "id" | "created_at" | "resolved_at">,
+): Promise<CalibrationAlert> {
+  const alert: CalibrationAlert = {
+    ...input,
+    id: uuid(),
+    created_at: nowIso(),
+    resolved_at: null,
+  };
+  await withWrite((db) => {
+    db.run(
+      `INSERT INTO pp_calibration_alerts (
+         id, created_at, resolved_at, severity, skill_type, standard_id, subject_id,
+         stream_id, reason, metric_json, source
+       ) VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      params(
+        alert.id,
+        alert.created_at,
+        alert.severity,
+        alert.skill_type,
+        alert.standard_id,
+        alert.subject_id,
+        alert.stream_id,
+        alert.reason,
+        JSON.stringify(alert.metric),
+        alert.source,
+      ),
+    );
+  });
+  return alert;
+}
+
+export async function listCalibrationAlerts(
+  options: { openOnly?: boolean } = {},
+): Promise<CalibrationAlert[]> {
+  const db = await getDb();
+  const where = options.openOnly ? "WHERE resolved_at IS NULL" : "";
+  return queryAll(db, `SELECT * FROM pp_calibration_alerts ${where} ORDER BY created_at DESC`).map(
+    rowToCalibrationAlert,
+  );
+}
+
+export async function countOpenCalibrationAlerts(): Promise<number> {
+  const db = await getDb();
+  const row = queryOne(
+    db,
+    `SELECT COUNT(*) AS total FROM pp_calibration_alerts WHERE resolved_at IS NULL`,
+  );
+  return Number(row?.["total"] ?? 0);
+}
+
+export async function resolveCalibrationAlert(id: string): Promise<void> {
+  await withWrite((db) => {
+    db.run(
+      `UPDATE pp_calibration_alerts SET resolved_at = ? WHERE id = ? AND resolved_at IS NULL`,
+      params(nowIso(), id),
+    );
+  });
+}
+
+function rowToAgentProposal(row: Record<string, unknown>): AgentProposal {
+  return {
+    id: String(row["id"]),
+    created_at: String(row["created_at"]),
+    applied_at: str(row["applied_at"]),
+    status: (str(row["status"]) as ProposalStatus) ?? "proposed",
+    agent_id: String(row["agent_id"]),
+    skill_type: str(row["skill_type"]),
+    kind: String(row["kind"]),
+    target: parseJsonColumn(row["target_json"], { skill: "" }),
+    before: str(row["before"]),
+    after: String(row["after"] ?? ""),
+    rationale: str(row["rationale"]),
+  };
+}
+
+export async function insertAgentProposal(
+  input: Omit<AgentProposal, "id" | "created_at" | "applied_at" | "status">,
+): Promise<AgentProposal> {
+  const proposal: AgentProposal = {
+    ...input,
+    id: uuid(),
+    created_at: nowIso(),
+    applied_at: null,
+    status: "proposed",
+  };
+  await withWrite((db) => {
+    db.run(
+      `INSERT INTO pp_agent_proposals (
+         id, created_at, applied_at, status, agent_id, skill_type, kind,
+         target_json, before, after, rationale
+       ) VALUES (?, ?, NULL, 'proposed', ?, ?, ?, ?, ?, ?, ?)`,
+      params(
+        proposal.id,
+        proposal.created_at,
+        proposal.agent_id,
+        proposal.skill_type,
+        proposal.kind,
+        JSON.stringify(proposal.target),
+        proposal.before,
+        proposal.after,
+        proposal.rationale,
+      ),
+    );
+  });
+  return proposal;
+}
+
+export async function listAgentProposals(status?: ProposalStatus): Promise<AgentProposal[]> {
+  const db = await getDb();
+  const where = status ? "WHERE status = ?" : "";
+  const bind = status ? params(status) : [];
+  return queryAll(
+    db,
+    `SELECT * FROM pp_agent_proposals ${where} ORDER BY created_at DESC`,
+    bind,
+  ).map(rowToAgentProposal);
+}
+
+export async function getAgentProposal(id: string): Promise<AgentProposal | null> {
+  const db = await getDb();
+  const row = queryOne(db, `SELECT * FROM pp_agent_proposals WHERE id = ?`, params(id));
+  return row ? rowToAgentProposal(row) : null;
+}
+
+export async function setAgentProposalStatus(id: string, status: ProposalStatus): Promise<void> {
+  await withWrite((db) => {
+    db.run(
+      `UPDATE pp_agent_proposals SET status = ?, applied_at = ? WHERE id = ?`,
+      params(status, status === "applied" ? nowIso() : null, id),
+    );
+  });
+}
+
+/** Latest applied prompt edit per skill, for the prompt composer. */
+export async function listAppliedPromptOverrides(): Promise<Record<string, string>> {
+  const db = await getDb();
+  const rows = queryAll(
+    db,
+    `SELECT skill_type, after, applied_at FROM pp_agent_proposals
+      WHERE status = 'applied' AND kind = 'prompt_edit' AND skill_type IS NOT NULL
+      ORDER BY applied_at ASC`,
+  );
+  const overrides: Record<string, string> = {};
+  for (const row of rows) {
+    const skill = str(row["skill_type"]);
+    if (skill) overrides[skill] = String(row["after"] ?? "");
+  }
+  return overrides;
 }

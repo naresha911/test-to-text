@@ -21,12 +21,17 @@ const PROMPTS: Record<string, string> = {
   one_word_substitution:
     "Write a one-word substitution. The stem is a definition. Exactly one option is the word.",
   comprehension:
-    "Write a new reading passage and questions that can be answered only from that passage. Put the passage in \"passage\" and the items in \"sub_questions\".",
+    'Write a new reading passage and questions that can be answered only from that passage. Put the passage in "passage" and the items in "sub_questions".',
   parts_of_speech:
     "Write a sentence and ask which word is a given part of speech. Exactly one option is correct.",
   sentence_completion:
     "Write a sentence with one missing word or phrase. Exactly one option completes it.",
-  grammar: "Write an original grammar question at the student's level. Do not copy the source sentence.",
+  grammar:
+    "Write an original grammar question at the student's level. Do not copy the source sentence.",
+  spotting_errors:
+    "Write a sentence with one error in grammar, spelling or punctuation. Exactly one option names the part that has the error; the others name correct parts.",
+  critical_thinking:
+    "Write a short reasoning puzzle that needs a careful conclusion from the given facts. Exactly one option follows logically from the facts.",
   general_knowledge:
     "Write a new fact question in the same subject as the source. The answer must be a real fact. If you are not sure, leave the answer empty rather than inventing one.",
   symbol_operations:
@@ -34,9 +39,9 @@ const PROMPTS: Record<string, string> = {
   clock_direction:
     "Write a new clock-direction question. State the facing of one hand at a time and ask for the facing at a later time.",
   embedded_figure:
-    "The attached image is the source figure. Invent a new simple figure and four option figures. Exactly one option contains the new figure embedded. Describe each option figure in its option \"image_description\" field; figures[].description is only for the question figure. The answer must match your new figure.",
+    'The attached image is the source figure. Invent a new simple figure and four option figures. Exactly one option contains the new figure embedded. Describe each option figure in its option "image_description" field; figures[].description is only for the question figure. The answer must match your new figure.',
   figure_identity:
-    "The attached image is the source figure. Invent a different figure of the same kind and four answer figures. Describe each option figure in its option \"image_description\" field; figures[].description is only for the question figure. Do not copy the source picture onto the new question.",
+    'The attached image is the source figure. Invent a different figure of the same kind and four answer figures. Describe each option figure in its option "image_description" field; figures[].description is only for the question figure. Do not copy the source picture onto the new question.',
   meaningful_order:
     "Write a new meaningful-order item: a list of words and options that are sequences. Exactly one sequence is the sensible order.",
   letter_series:
@@ -54,24 +59,24 @@ const PROMPTS: Record<string, string> = {
   odd_one_out:
     "Write an odd-one-out item with four options. Exactly one does not belong, and the explanation names the shared property of the other three.",
   figure_pattern:
-    "The attached image is the source pattern. Invent a new visual pattern of the same kind and four options. Describe the new pattern in figures[].description and each answer option in its option \"image_description\" field. Exactly one option completes your new pattern.",
+    'The attached image is the source pattern. Invent a new visual pattern of the same kind and four options. Describe the new pattern in figures[].description and each answer option in its option "image_description" field. Exactly one option completes your new pattern.',
   figure_analogy:
-    "The attached image shows a source figure analogy. Invent a new pair of figures with the same kind of change, then a third figure and four options. Describe the question figures in figures[].description and each answer option in its option \"image_description\" field. The answer must match the new figures, not the source.",
-  word_analogy: "Write a new word analogy A : B :: C : ?. Exactly one option keeps the same relation.",
+    'The attached image shows a source figure analogy. Invent a new pair of figures with the same kind of change, then a third figure and four options. Describe the question figures in figures[].description and each answer option in its option "image_description" field. The answer must match the new figures, not the source.',
+  word_analogy:
+    "Write a new word analogy A : B :: C : ?. Exactly one option keeps the same relation.",
   number_analogy:
     "Write a new number analogy. The rule that links the first pair must link the second pair to exactly one option.",
   figure_series:
-    "The attached image is the source figure series. Invent a new series of the same kind and four option figures. Describe the series in figures[].description and each option figure in its option \"image_description\" field. Exactly one option is the next figure.",
+    'The attached image is the source figure series. Invent a new series of the same kind and four option figures. Describe the series in figures[].description and each option figure in its option "image_description" field. Exactly one option is the next figure.',
   word_formation:
     "Write a new word-formation item. Give one source word and four candidates. Exactly one cannot be made from those letters.",
   direction_sense:
     "Write a new direction question with turns and distances or a rotated compass. Exactly one option is the final facing or place.",
   venn_diagram:
-    "The attached image shows source Venn options. Write three new sets and four different circle relationships. Describe each option figure in its option \"image_description\" field. Exactly one diagram matches the sets.",
+    'The attached image shows source Venn options. Write three new sets and four different circle relationships. Describe each option figure in its option "image_description" field. Exactly one diagram matches the sets.',
   seating_arrangement:
     "Write a new seating arrangement with a short setup and one question. The setup must make exactly one option true.",
-  date_puzzle:
-    "Write a new date puzzle with two statements that together leave exactly one date.",
+  date_puzzle: "Write a new date puzzle with two statements that together leave exactly one date.",
   ranking:
     "Write a new ranking-in-a-row question. Give the row length and the shift. Exactly one option is the earlier or later position.",
   missing_number_figure:
@@ -100,10 +105,8 @@ const PROMPTS: Record<string, string> = {
     "Write a new simple-interest question. Exactly one option is the rate, interest, or amount.",
   metric_measures:
     "Write a new metric conversion. Exactly one option is the value in the requested unit.",
-  linear_equation:
-    "Write a new one-variable linear equation. Exactly one option is the solution.",
-  work_rate:
-    "Write a new work-rate question. Exactly one option is the number of workers or days.",
+  linear_equation: "Write a new one-variable linear equation. Exactly one option is the solution.",
+  work_rate: "Write a new work-rate question. Exactly one option is the number of workers or days.",
   unitary_method:
     "Write a new unitary-method question. Exactly one option follows from the given rate.",
   mean_proportion:
@@ -115,18 +118,38 @@ const PROMPTS: Record<string, string> = {
   rounding: "Write a new rounding question. Exactly one option is the rounded value.",
 };
 
+export function skillBasePrompt(skill: string): string | null {
+  return PROMPTS[skill] ?? null;
+}
+
+/**
+ * Applied prompt edits from calibration, keyed by skill. Kept in a module cache
+ * because the prompt composer is synchronous; callers hydrate it from the store.
+ */
+let OVERRIDES: Record<string, string> = {};
+
+/** Replace the applied override set (empty map clears them). */
+export function applyPromptOverrides(overrides: Record<string, string>): void {
+  OVERRIDES = { ...overrides };
+}
+
 export function skillAuthorPrompt(skill: string): string | null {
-  const prompt = PROMPTS[skill];
+  const prompt = OVERRIDES[skill] ?? PROMPTS[skill];
   if (!prompt) return null;
   return VISION.has(skill) ? `${prompt} ${DRAW_FIGURES}` : prompt;
 }
 
+/**
+ * The prompt calibration proposals build on: the applied override
+ * when one exists, else the base prompt. No DRAW_FIGURES suffix —
+ * this is proposal base text, not a generation prompt.
+ */
+export function skillEffectivePrompt(skill: string): string | null {
+  return OVERRIDES[skill] ?? PROMPTS[skill] ?? null;
+}
+
 /** How hard this skill should be for a class, and one optional step up. */
-export function skillDifficultyGuidance(
-  skill: string,
-  grade: number | null,
-  step: number,
-): string {
+export function skillDifficultyGuidance(skill: string, grade: number | null, step: number): string {
   const classLine =
     grade == null
       ? "Keep the question at the same level as the source."
