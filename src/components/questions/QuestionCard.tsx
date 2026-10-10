@@ -11,15 +11,7 @@ import {
   RefreshCw,
   Trash2,
 } from "lucide-react";
-import {
-  memo,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type ClipboardEvent,
-  type ReactNode,
-} from "react";
+import { memo, useEffect, useRef, useState, type ClipboardEvent, type ReactNode } from "react";
 import { toast } from "sonner";
 
 import { MathText } from "@/components/MathText";
@@ -37,11 +29,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  buildSolutionUserPrompt,
-  questionHasAnswer,
-  SOLUTION_SYSTEM_PROMPT,
-} from "@/lib/question-context";
+import { questionHasAnswer } from "@/lib/question-context";
 import { clipboardImageFile } from "@/lib/image-utils";
 import { detachImagePath, questionWithoutOption, withPastedFigure } from "@/lib/question-images";
 import { applyCropReading, type CropLayout } from "@/lib/reading/crop-layout";
@@ -650,6 +638,7 @@ function HintSolutionBlock({
   onChange?: ((next: Question) => void) | undefined;
   onRegenerate?: (() => void) | undefined;
 }) {
+  const [open, setOpen] = useState(true);
   const answerMissing =
     !questionHasAnswer(question) && Boolean(question.hint?.trim() || question.explanation?.trim());
   const show =
@@ -659,24 +648,25 @@ function HintSolutionBlock({
   return (
     <>
       <Separator className="my-3" />
-      <div className="space-y-3 text-sm">
+      <Collapsible open={open} onOpenChange={setOpen} className="text-sm">
         <div className="flex flex-wrap items-center gap-2">
-          <p className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+          <CollapsibleTrigger className="flex flex-wrap items-center gap-2 text-sm font-medium text-foreground [&[data-state=open]>svg]:rotate-180">
+            <ChevronDown className="h-4 w-4 transition-transform" aria-hidden="true" />
             Hint & solution
-          </p>
-          {generating ? (
-            <Badge variant="outline" className="gap-1">
-              <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
-              Generating…
-            </Badge>
-          ) : queued ? (
-            <Badge variant="outline">Queued</Badge>
-          ) : null}
-          {answerMissing && !generating && !queued ? (
-            <Badge variant="outline" className="border-destructive/50 text-destructive">
-              No answer
-            </Badge>
-          ) : null}
+            {generating ? (
+              <Badge variant="outline" className="gap-1">
+                <Loader2 className="h-3 w-3 animate-spin" aria-hidden="true" />
+                Generating…
+              </Badge>
+            ) : queued ? (
+              <Badge variant="outline">Queued</Badge>
+            ) : null}
+            {answerMissing && !generating && !queued ? (
+              <Badge variant="outline" className="border-destructive/50 text-destructive">
+                No answer
+              </Badge>
+            ) : null}
+          </CollapsibleTrigger>
           {onRegenerate && !generating && !queued && (question.approved || answerMissing) ? (
             <Button
               type="button"
@@ -690,56 +680,56 @@ function HintSolutionBlock({
             </Button>
           ) : null}
         </div>
-        {answerMissing && !generating && !queued ? (
-          <p className="text-destructive">
-            No right answer was found. Edit the AI prompt below and regenerate.
-          </p>
-        ) : null}
+        <CollapsibleContent className="mt-2 space-y-3">
+          {answerMissing && !generating && !queued ? (
+            <p className="text-destructive">No right answer was found. Regenerate to try again.</p>
+          ) : null}
 
-        <div>
-          <FieldLabel>Hint</FieldLabel>
-          {editing && onChange ? (
-            <Textarea
-              value={question.hint ?? ""}
-              rows={2}
-              placeholder="Short nudge — no final answer"
-              onChange={(event) => onChange({ ...question, hint: event.target.value })}
-            />
-          ) : question.hint ? (
-            <MathText value={question.hint} className="text-muted-foreground" />
-          ) : (
-            <p className="text-muted-foreground italic">
-              {generating
-                ? "Writing a hint…"
-                : queued
-                  ? "Waiting in the queue…"
-                  : "Approve this question to generate a hint."}
-            </p>
-          )}
-        </div>
+          <div>
+            <FieldLabel>Hint</FieldLabel>
+            {editing && onChange ? (
+              <Textarea
+                value={question.hint ?? ""}
+                rows={2}
+                placeholder="Short nudge — no final answer"
+                onChange={(event) => onChange({ ...question, hint: event.target.value })}
+              />
+            ) : question.hint ? (
+              <MathText value={question.hint} className="text-muted-foreground" />
+            ) : (
+              <p className="text-muted-foreground italic">
+                {generating
+                  ? "Writing a hint…"
+                  : queued
+                    ? "Waiting in the queue…"
+                    : "Approve this question to generate a hint."}
+              </p>
+            )}
+          </div>
 
-        <div>
-          <FieldLabel>Solution</FieldLabel>
-          {editing && onChange ? (
-            <Textarea
-              value={question.explanation ?? ""}
-              rows={5}
-              placeholder="Full worked solution"
-              onChange={(event) => onChange({ ...question, explanation: event.target.value })}
-            />
-          ) : question.explanation ? (
-            <MathText value={question.explanation} className="text-muted-foreground" />
-          ) : (
-            <p className="text-muted-foreground italic">
-              {generating
-                ? "Writing a solution…"
-                : queued
-                  ? "Waiting in the queue…"
-                  : "Approve this question to generate a solution."}
-            </p>
-          )}
-        </div>
-      </div>
+          <div>
+            <FieldLabel>Solution</FieldLabel>
+            {editing && onChange ? (
+              <Textarea
+                value={question.explanation ?? ""}
+                rows={5}
+                placeholder="Full worked solution"
+                onChange={(event) => onChange({ ...question, explanation: event.target.value })}
+              />
+            ) : question.explanation ? (
+              <MathText value={question.explanation} className="text-muted-foreground" />
+            ) : (
+              <p className="text-muted-foreground italic">
+                {generating
+                  ? "Writing a solution…"
+                  : queued
+                    ? "Waiting in the queue…"
+                    : "Approve this question to generate a solution."}
+              </p>
+            )}
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
     </>
   );
 }
@@ -811,89 +801,6 @@ function ReadFlags({
         ),
       )}
     </div>
-  );
-}
-
-function SolutionPrompt({
-  open,
-  onOpenChange,
-  value,
-  busy,
-  canReset,
-  answerMissing,
-  onChange,
-  onReset,
-  onRegenerate,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  value: string;
-  busy: boolean;
-  canReset: boolean;
-  answerMissing: boolean;
-  onChange: (value: string) => void;
-  onReset: () => void;
-  onRegenerate: () => void;
-}) {
-  return (
-    <Collapsible open={open} onOpenChange={onOpenChange} className="mt-3">
-      <CollapsibleTrigger className="flex flex-wrap items-center gap-2 text-sm font-medium text-foreground [&[data-state=open]>svg]:rotate-180">
-        <ChevronDown className="h-4 w-4 transition-transform" aria-hidden="true" />
-        AI prompt
-        {answerMissing ? (
-          <Badge variant="outline" className="border-destructive/50 text-destructive">
-            No answer
-          </Badge>
-        ) : null}
-      </CollapsibleTrigger>
-      <CollapsibleContent className="mt-2 space-y-3">
-        <p className="text-sm text-muted-foreground">
-          This message is sent when you approve or regenerate. It includes the question details.
-          The fixed instructions below go with it. Edit the message and regenerate if the model
-          did not find a right answer. Several approvals run one at a time, in the order you check
-          them.
-        </p>
-        <div>
-          <FieldLabel>Question message</FieldLabel>
-          <Textarea
-            value={value}
-            rows={12}
-            maxLength={80000}
-            spellCheck={false}
-            className="font-mono text-xs leading-relaxed"
-            aria-label="AI prompt for this question"
-            onChange={(event) => onChange(event.target.value)}
-          />
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {canReset ? (
-            <Button type="button" variant="outline" size="sm" onClick={onReset}>
-              Reset to current question
-            </Button>
-          ) : null}
-          <Button
-            type="button"
-            size="sm"
-            disabled={busy || !value.trim()}
-            onClick={onRegenerate}
-          >
-            <RefreshCw className="h-3 w-3" aria-hidden="true" />
-            Regenerate
-          </Button>
-        </div>
-        <Collapsible>
-          <CollapsibleTrigger className="flex items-center gap-2 text-xs font-medium text-muted-foreground [&[data-state=open]>svg]:rotate-180">
-            <ChevronDown className="h-3 w-3 transition-transform" aria-hidden="true" />
-            Fixed instructions
-          </CollapsibleTrigger>
-          <CollapsibleContent>
-            <pre className="mt-2 max-h-48 overflow-auto rounded-md bg-secondary/40 p-3 text-xs whitespace-pre-wrap text-muted-foreground">
-              {SOLUTION_SYSTEM_PROMPT}
-            </pre>
-          </CollapsibleContent>
-        </Collapsible>
-      </CollapsibleContent>
-    </Collapsible>
   );
 }
 
@@ -1008,32 +915,15 @@ export const QuestionCard = memo(function QuestionCard({
   const canRegenerateSolution =
     Boolean(onRegenerate) &&
     (question.type !== "comprehension" || question.sub_questions.length === 0);
-  const showSolutionPrompt = canRegenerateSolution && !question.approval_status;
-  const audience = solutionUi?.audience;
   const catalog = solutionUi?.catalog;
   const subjectTopics = (() => {
     const all = catalog?.topics ?? [];
     if (question.subject_id == null) return all;
     return all.filter((t) => t.subject_id == null || t.subject_id === question.subject_id);
   })();
-  const builtPrompt = useMemo(
-    () =>
-      buildSolutionUserPrompt(question, {
-        ...(parentPassage !== undefined ? { parentPassage } : {}),
-        ...(audience ? { audience } : {}),
-      }),
-    [question, parentPassage, audience],
-  );
-  const [prompt, setPrompt] = useState(builtPrompt);
-  const [promptDirty, setPromptDirty] = useState(false);
   const answerMissing =
     !questionHasAnswer(question) &&
-    Boolean(
-      question.hint?.trim() ||
-        question.explanation?.trim() ||
-        solutionUi?.promptReveal?.ids.includes(question.id),
-    );
-  const [promptOpen, setPromptOpen] = useState(false);
+    Boolean(question.hint?.trim() || question.explanation?.trim());
   const offerSolutionRegenerate =
     canRegenerateSolution &&
     (!question.approval_status || question.approved || answerMissing);
@@ -1049,36 +939,10 @@ export const QuestionCard = memo(function QuestionCard({
     articleRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [startEditing]);
 
-  useEffect(() => {
-    if (!promptDirty) setPrompt(builtPrompt);
-  }, [builtPrompt, promptDirty]);
-
-  useEffect(() => {
-    if (solutionUi?.promptReveal?.ids.includes(question.id)) setPromptOpen(true);
-  }, [solutionUi?.promptReveal, question.id]);
-
-  useEffect(() => {
-    if (!showSolutionPrompt) return;
-    const text = (promptDirty ? prompt : builtPrompt).trim();
-    if (text) solutionUi?.prompts.current.set(question.id, text);
-  }, [showSolutionPrompt, promptDirty, prompt, builtPrompt, question.id, solutionUi?.prompts]);
-
-  function promptText(): string {
-    return (promptDirty ? prompt : builtPrompt).trim();
-  }
-
-  function rememberPrompt(text: string) {
-    if (text) solutionUi?.prompts.current.set(question.id, text);
-    setPrompt(text);
-    setPromptDirty(true);
-  }
-
   function submitRegenerate() {
     flush();
-    const text = promptText();
-    if (!text || !onRegenerate) return;
-    rememberPrompt(text);
-    onRegenerate(question.id, { userPrompt: text });
+    if (!onRegenerate) return;
+    onRegenerate(question.id);
   }
 
   async function pasteStemImage(event: ClipboardEvent<HTMLTextAreaElement>) {
@@ -1335,13 +1199,7 @@ export const QuestionCard = memo(function QuestionCard({
                 checked={question.approved === true}
                 onCheckedChange={(checked) => {
                   flush();
-                  if (checked === true) {
-                    const text = showSolutionPrompt ? promptText() : "";
-                    if (text) rememberPrompt(text);
-                    onApprovalChange(question.id, true, text ? { userPrompt: text } : undefined);
-                  } else {
-                    onApprovalChange(question.id, false);
-                  }
+                  onApprovalChange(question.id, checked === true);
                 }}
                 aria-label={`Mark question ${question.number ?? index + 1} approved`}
               />
@@ -1620,35 +1478,14 @@ export const QuestionCard = memo(function QuestionCard({
       />
 
       {question.type !== "comprehension" || !question.sub_questions.length ? (
-        <>
-          <HintSolutionBlock
-            question={question}
-            editing={editing}
-            {...(generating ? { generating: true } : {})}
-            {...(queued ? { queued: true } : {})}
-            {...(onChange ? { onChange } : {})}
-            {...(offerSolutionRegenerate ? { onRegenerate: submitRegenerate } : {})}
-          />
-          {showSolutionPrompt ? (
-            <SolutionPrompt
-              open={promptOpen}
-              onOpenChange={setPromptOpen}
-              value={promptDirty ? prompt : builtPrompt}
-              busy={generating || queued}
-              canReset={promptDirty && prompt.trim() !== builtPrompt.trim()}
-              answerMissing={answerMissing}
-              onChange={(next) => {
-                setPrompt(next);
-                setPromptDirty(true);
-              }}
-              onReset={() => {
-                setPrompt(builtPrompt);
-                setPromptDirty(false);
-              }}
-              onRegenerate={submitRegenerate}
-            />
-          ) : null}
-        </>
+        <HintSolutionBlock
+          question={question}
+          editing={editing}
+          {...(generating ? { generating: true } : {})}
+          {...(queued ? { queued: true } : {})}
+          {...(onChange ? { onChange } : {})}
+          {...(offerSolutionRegenerate ? { onRegenerate: submitRegenerate } : {})}
+        />
       ) : null}
     </article>
   );

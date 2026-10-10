@@ -60,7 +60,7 @@ type Options = {
 };
 
 const NO_ANSWER =
-  "No right answer was found. The question was left unapproved. Edit the AI prompt and regenerate.";
+  "No right answer was found. The question was left unapproved. Regenerate to try again.";
 
 /**
  * Hint/solution requests run one at a time, in the order questions were approved.

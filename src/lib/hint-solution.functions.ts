@@ -345,7 +345,7 @@ export const generateHintSolution = createServerFn({ method: "POST" })
       throw new Error("The solution model did not return a hint or solution. Try again.");
     }
     if (!chat.accepted) {
-      throw new Error("No right answer was found. Edit the AI prompt and regenerate.");
+      throw new Error("No right answer was found. Regenerate to try again.");
     }
     return result;
   });
